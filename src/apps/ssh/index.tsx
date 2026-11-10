@@ -61,10 +61,7 @@ function TabView({ tab }: { tab: Tab }) {
   );
 }
 
-export const sshApp: AppModule = {
-  id: "ssh",
-  title: "SSH",
-  icon: "🖥",
+const sshApp: AppModule = {
   Sidebar,
   TabView,
   commands: () =>
@@ -75,3 +72,5 @@ export const sshApp: AppModule = {
       run: () => connect(h),
     })),
 };
+
+export default sshApp;

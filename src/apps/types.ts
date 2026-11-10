@@ -19,21 +19,32 @@ export interface Command {
   title: string;
   /** Nhóm hiển thị, thường là tên app. */
   group: string;
+  /** Phím tắt hiển thị bên cạnh (chỉ để xem). */
+  hint?: string;
   run: () => void;
 }
 
 /**
- * Hợp đồng chung của một app con. Shell chỉ biết đến interface này,
- * không import trực tiếp nội dung bên trong app.
+ * Phần "nhẹ" của một mini app: shell luôn biết, nằm trong bundle chính.
+ * Code thật của app chỉ được tải qua `load()` khi người dùng mở app lần đầu.
  */
-export interface AppModule {
+export interface AppManifest {
   id: AppId;
   title: string;
   icon: string;
-  /** Nội dung cột sidebar khi app được chọn trên activity bar. */
+  /** Dynamic import → Vite tách mỗi app thành một chunk riêng. */
+  load: () => Promise<{ default: AppModule }>;
+}
+
+/**
+ * Phần "nặng" của mini app (export default từ `src/apps/<id>/index.tsx`).
+ * Shell chỉ biết đến interface này, không import trực tiếp nội dung bên trong app.
+ */
+export interface AppModule {
+  /** Nội dung cột sidebar của app. */
   Sidebar: ComponentType;
   /** Nội dung một tab thuộc app này. */
   TabView: ComponentType<{ tab: Tab }>;
-  /** Lệnh đóng góp vào Ctrl+K. */
+  /** Lệnh đóng góp vào Ctrl+K (chỉ hiện khi app đã được tải). */
   commands?: () => Command[];
 }

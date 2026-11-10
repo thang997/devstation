@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { APPS } from "../apps/registry";
+import { APPS, appShortcut, loadedApp } from "../apps/registry";
 import type { Command } from "../apps/types";
 import { useWorkbench } from "../store/workbench";
 
@@ -10,17 +10,29 @@ export function CommandPalette() {
   const [sel, setSel] = useState(0);
 
   const all = useMemo<Command[]>(() => {
+    const s = useWorkbench.getState();
     const shell: Command[] = [
-      { id: "shell.sidebar", group: "Giao diện", title: "Ẩn/hiện sidebar", run: wb.toggleSidebar },
-      { id: "shell.panel", group: "Giao diện", title: "Ẩn/hiện panel output", run: wb.togglePanel },
+      { id: "shell.sidebar", group: "Giao diện", title: "Ẩn/hiện sidebar", hint: "Ctrl+B", run: s.toggleSidebar },
+      { id: "shell.panel", group: "Giao diện", title: "Ẩn/hiện panel output", hint: "Ctrl+`", run: s.togglePanel },
       ...APPS.map((a) => ({
         id: `shell.app.${a.id}`,
-        group: "Giao diện",
-        title: `Chuyển sang ${a.title}`,
-        run: () => wb.setActiveApp(a.id),
+        group: "App",
+        title: `Chuyển sang ${a.icon} ${a.title}`,
+        hint: appShortcut(a.id),
+        run: () => s.switchApp(a.id),
       })),
+      ...s.mounted.map((id) => {
+        const a = APPS.find((x) => x.id === id)!;
+        return {
+          id: `shell.unload.${id}`,
+          group: "App",
+          title: `Đóng app ${a.icon} ${a.title} (giải phóng bộ nhớ, đóng mọi tab)`,
+          run: () => s.unloadApp(id),
+        };
+      }),
     ];
-    return [...APPS.flatMap((a) => a.commands?.() ?? []), ...shell];
+    // Chỉ app đã tải mới góp lệnh — không tải app nặng chỉ để mở palette.
+    return [...APPS.flatMap((a) => loadedApp(a.id)?.commands?.() ?? []), ...shell];
   }, []);
 
   const items = useMemo(() => {
@@ -60,6 +72,7 @@ export function CommandPalette() {
               onClick={() => run(c)}
             >
               <span className="grow">{c.title}</span>
+              {c.hint && <kbd>{c.hint}</kbd>}
               <span className="muted small">{c.group}</span>
             </div>
           ))}

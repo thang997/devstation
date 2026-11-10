@@ -111,13 +111,12 @@ function TabView({ tab }: { tab: Tab }) {
   );
 }
 
-export const httpApp: AppModule = {
-  id: "http",
-  title: "HTTP Client",
-  icon: "⚡",
+const httpApp: AppModule = {
   Sidebar,
   TabView,
   commands: () => [
     { id: "http.new", group: "HTTP", title: "Request mới", run: () => newRequest() },
   ],
 };
+
+export default httpApp;

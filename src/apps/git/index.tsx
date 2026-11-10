@@ -72,10 +72,7 @@ function TabView({ tab }: { tab: Tab }) {
   );
 }
 
-export const gitApp: AppModule = {
-  id: "git",
-  title: "Git",
-  icon: "🌿",
+const gitApp: AppModule = {
   Sidebar,
   TabView,
   commands: () =>
@@ -86,3 +83,5 @@ export const gitApp: AppModule = {
       run: () => openRepo(r),
     })),
 };
+
+export default gitApp;

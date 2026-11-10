@@ -1,22 +1,44 @@
 import { useEffect } from "react";
-import { APPS, appById } from "../apps/registry";
+import { APPS, appById, appShortcut, loadApp } from "../apps/registry";
 import { useWorkbench } from "../store/workbench";
+import { AppHost } from "./AppHost";
 import { CommandPalette } from "./CommandPalette";
 
-/** Bố cục kiểu IDE: activity bar | sidebar | (tab bar + vùng làm việc + panel) / status bar. */
+/**
+ * Bố cục: activity bar | mini app đang chọn (sidebar + tab riêng) / panel output / status bar.
+ * App chỉ được tải khi mở lần đầu; app đã mở được giữ trong DOM (ẩn) để không mất trạng thái.
+ */
 export function Shell() {
-  const wb = useWorkbench();
-  const activeTab = wb.tabs.find((t) => t.id === wb.activeTabId) ?? null;
-  const SidebarView = appById(wb.activeApp).Sidebar;
+  const activeApp = useWorkbench((s) => s.activeApp);
+  const mounted = useWorkbench((s) => s.mounted);
+  const sidebarOpen = useWorkbench((s) => s.apps[s.activeApp].sidebarOpen);
+  const tabCount = useWorkbench((s) => s.apps[s.activeApp].tabs.length);
+  const panelOpen = useWorkbench((s) => s.panelOpen);
+  const paletteOpen = useWorkbench((s) => s.paletteOpen);
+  const logs = useWorkbench((s) => s.logs);
+  const { clickApp, setPalette, togglePanel } = useWorkbench.getState();
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = e.ctrlKey || e.metaKey;
       const s = useWorkbench.getState();
-      if (mod && e.key.toLowerCase() === "k") { e.preventDefault(); s.setPalette(!s.paletteOpen); }
-      else if (mod && e.key.toLowerCase() === "b") { e.preventDefault(); s.toggleSidebar(); }
+      const key = e.key.toLowerCase();
+      // Dùng e.code để không phụ thuộc bố cục bàn phím / Unikey.
+      const digit = /^Digit([1-9])$/.exec(e.code)?.[1];
+      if (mod && digit && !e.shiftKey && !e.altKey) {
+        const app = APPS[Number(digit) - 1];
+        if (app) { e.preventDefault(); s.switchApp(app.id); }
+      }
+      else if (mod && key === "k") { e.preventDefault(); s.setPalette(!s.paletteOpen); }
+      else if (mod && key === "b") { e.preventDefault(); s.toggleSidebar(); }
       else if (mod && e.key === "`") { e.preventDefault(); s.togglePanel(); }
-      else if (mod && e.key.toLowerCase() === "w" && s.activeTabId) { e.preventDefault(); s.closeTab(s.activeTabId); }
+      else if (mod && e.key === "Tab") { e.preventDefault(); s.cycleTab(e.shiftKey ? -1 : 1); }
+      else if (mod && e.key === "PageDown") { e.preventDefault(); s.cycleTab(1); }
+      else if (mod && e.key === "PageUp") { e.preventDefault(); s.cycleTab(-1); }
+      else if (mod && key === "w") {
+        const tabId = s.apps[s.activeApp].activeTabId;
+        if (tabId) { e.preventDefault(); s.closeTab(tabId); }
+      }
       else if (e.key === "Escape" && s.paletteOpen) s.setPalette(false);
     };
     window.addEventListener("keydown", onKey);
@@ -27,91 +49,54 @@ export function Shell() {
     <div className="shell">
       <div className="body">
         <nav className="activity">
-          {APPS.map((a) => (
+          {APPS.map((a, i) => (
             <button
               key={a.id}
-              title={a.title}
-              className={a.id === wb.activeApp && wb.sidebarOpen ? "on" : ""}
-              onClick={() => wb.setActiveApp(a.id)}
+              title={`${a.title} (${appShortcut(a.id)})`}
+              className={a.id === activeApp && sidebarOpen ? "on" : ""}
+              onClick={() => clickApp(a.id)}
+              // Rê chuột vào là tải trước code (chưa mount) để lúc bấm mở gần như tức thì.
+              onMouseEnter={() => void loadApp(a.id).catch(() => {})}
             >
               {a.icon}
+              <span className="key-hint">{i + 1}</span>
+              {mounted.includes(a.id) && <span className="live-dot" />}
             </button>
           ))}
           <span className="grow" />
-          <button title="Command palette (Ctrl+K)" onClick={() => wb.setPalette(true)}>🔍</button>
+          <button title="Command palette (Ctrl+K)" onClick={() => setPalette(true)}>🔍</button>
           <button title="Cài đặt">⚙</button>
         </nav>
 
-        {wb.sidebarOpen && (
-          <aside className="sidebar">
-            <SidebarView />
-          </aside>
-        )}
-
-        <main className="main">
-          <div className="tabbar">
-            {wb.tabs.map((t) => (
-              <div
-                key={t.id}
-                className={`tab ${t.id === wb.activeTabId ? "on" : ""} ${t.danger ? "danger" : ""}`}
-                onClick={() => wb.focusTab(t.id)}
-                onAuxClick={(e) => e.button === 1 && wb.closeTab(t.id)}
-              >
-                <span className="ellipsis">{t.title}</span>
-                <button className="x" onClick={(e) => { e.stopPropagation(); wb.closeTab(t.id); }}>×</button>
-              </div>
+        <div className="stage">
+          <div className="apps">
+            {mounted.map((id) => (
+              <AppHost key={id} id={id} active={id === activeApp} />
             ))}
           </div>
 
-          <section className="workspace">
-            {/* Giữ mọi tab trong DOM, chỉ ẩn tab không active — để terminal SSH
-                và form request không mất trạng thái khi chuyển tab. */}
-            {wb.tabs.map((t) => {
-              const View = appById(t.appId).TabView;
-              return (
-                <div key={t.id} className="tab-host" hidden={t.id !== wb.activeTabId}>
-                  <View tab={t} />
-                </div>
-              );
-            })}
-            {!activeTab && <Welcome />}
-          </section>
-
-          {wb.panelOpen && (
+          {panelOpen && (
             <section className="panel">
               <div className="pane-title">
                 OUTPUT <span className="grow" />
-                <button className="icon-btn" onClick={wb.togglePanel}>×</button>
+                <button className="icon-btn" onClick={togglePanel}>×</button>
               </div>
-              <pre className="mono log">{wb.logs.join("\n") || "Chưa có log."}</pre>
+              <pre className="mono log">{logs.join("\n") || "Chưa có log."}</pre>
             </section>
           )}
-        </main>
+        </div>
       </div>
 
       <footer className="statusbar">
+        <span>{appById(activeApp).icon} {appById(activeApp).title}</span>
         <span>🗂 Workspace: Mặc định</span>
         <span className="grow" />
-        <span>{wb.tabs.length} tab</span>
-        <button onClick={wb.togglePanel}>Output {wb.logs.length ? `(${wb.logs.length})` : ""}</button>
+        <span title="Số app đang giữ trong bộ nhớ">{mounted.length}/{APPS.length} app đang mở</span>
+        <span>{tabCount} tab</span>
+        <button onClick={togglePanel}>Output {logs.length ? `(${logs.length})` : ""}</button>
       </footer>
 
-      {wb.paletteOpen && <CommandPalette />}
-    </div>
-  );
-}
-
-function Welcome() {
-  return (
-    <div className="welcome">
-      <h1>DevStation</h1>
-      <p className="muted">Git · HTTP · SSH · Tiện ích — trong một cửa sổ.</p>
-      <ul className="keys">
-        <li><kbd>Ctrl</kbd>+<kbd>K</kbd> Tìm & chạy lệnh</li>
-        <li><kbd>Ctrl</kbd>+<kbd>B</kbd> Ẩn/hiện sidebar</li>
-        <li><kbd>Ctrl</kbd>+<kbd>`</kbd> Ẩn/hiện panel output</li>
-        <li><kbd>Ctrl</kbd>+<kbd>W</kbd> Đóng tab</li>
-      </ul>
+      {paletteOpen && <CommandPalette />}
     </div>
   );
 }

@@ -82,10 +82,7 @@ function TabView({ tab }: { tab: Tab }) {
   );
 }
 
-export const toolsApp: AppModule = {
-  id: "tools",
-  title: "Tiện ích",
-  icon: "🧰",
+const toolsApp: AppModule = {
   Sidebar,
   TabView,
   commands: () =>
@@ -96,3 +93,5 @@ export const toolsApp: AppModule = {
       run: () => openTool(id),
     })),
 };
+
+export default toolsApp;
