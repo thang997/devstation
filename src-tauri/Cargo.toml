@@ -1,0 +1,20 @@
+[package]
+name = "devstation"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Sẽ thêm theo từng giai đoạn:
+#   rusqlite (lưu workspace/history), keyring (mật khẩu/key),
+#   reqwest (HTTP client), russh + russh-sftp (SSH), git2 (đọc repo).
+
+[profile.release]
+strip = true
+lto = true
