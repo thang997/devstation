@@ -1,0 +1,8 @@
+Copyright (c) 2026 Bui Nguyen Thang. All rights reserved.
+
+DevStation là phần mềm mã nguồn đóng. Không được sao chép, sửa đổi, phân phối
+hoặc sử dụng mã nguồn này dưới bất kỳ hình thức nào khi chưa có sự cho phép
+bằng văn bản của chủ sở hữu.
+
+Các thư viện bên thứ ba (Tauri, React, sqlx, ...) giữ nguyên giấy phép riêng của chúng
+(MIT / Apache-2.0), cho phép dùng trong phần mềm mã nguồn đóng.

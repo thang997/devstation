@@ -4,3 +4,8 @@ src-tauri/target/
 src-tauri/gen/
 *.log
 .env
+
+# Bản phát hành (bộ cài + latest.json) — upload lên GitHub Releases, không commit
+release/
+# Khoá ký update KHÔNG BAO GIỜ commit
+*.key

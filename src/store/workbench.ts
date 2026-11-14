@@ -1,37 +1,66 @@
 import { create } from "zustand";
 import type { AppId, Tab } from "../apps/types";
 
-/** Trạng thái riêng của từng mini app. */
+/** Trạng thái riêng của từng mini app (dùng bởi TabbedLayout). */
 export interface AppState {
   tabs: Tab[];
   activeTabId: string | null;
   sidebarOpen: boolean;
 }
 
-const emptyApp = (): AppState => ({ tabs: [], activeTabId: null, sidebarOpen: true });
+/**
+ * Nhớ trạng thái ẩn/hiện sidebar của từng app giữa các lần mở.
+ * Git mặc định thu gọn để tiết kiệm chỗ; app khác mở sẵn. (Test chạy trong Node không có localStorage.)
+ */
+const SIDEBAR_KEY = "devstation.sidebar";
+const readSidebar = (): Partial<Record<AppId, boolean>> => {
+  try {
+    return JSON.parse(globalThis.localStorage?.getItem(SIDEBAR_KEY) ?? "{}");
+  } catch {
+    return {};
+  }
+};
+const saveSidebar = (id: AppId, open: boolean) => {
+  try {
+    globalThis.localStorage?.setItem(SIDEBAR_KEY, JSON.stringify({ ...readSidebar(), [id]: open }));
+  } catch {
+    /* riêng tư / hết chỗ — không sao, chỉ mất ghi nhớ */
+  }
+};
+
+const emptyApp = (sidebarOpen = true): AppState => ({ tabs: [], activeTabId: null, sidebarOpen });
+const freshApp = (id: AppId) => emptyApp(readSidebar()[id] ?? id !== "git");
 
 interface WorkbenchState {
-  activeApp: AppId;
+  /** App đang hiển thị; null = màn hình chính (launcher). */
+  activeApp: AppId | null;
   /** App đang được giữ trong DOM, xếp theo lần dùng gần nhất (cuối = mới nhất). */
   mounted: AppId[];
   apps: Record<AppId, AppState>;
   panelOpen: boolean;
-  paletteOpen: boolean;
+  /** Launcher dạng overlay (Ctrl+K) khi đang ở trong một app. */
+  launcherOpen: boolean;
   /** Dòng log hiện ở panel dưới (output của pull/push, request, ssh...). */
   logs: string[];
 
-  /** Chuyển sang app (Ctrl+1..9). Lần đầu sẽ tải code của app. */
-  switchApp: (id: AppId) => void;
-  /** Bấm icon trên activity bar: bấm lại app đang chọn thì gập/mở sidebar, giống VS Code. */
-  clickApp: (id: AppId) => void;
+  /** Vào app (Ctrl+1..9 hoặc chọn trong launcher). Lần đầu sẽ tải code của app. */
+  openApp: (id: AppId) => void;
+  /** Về màn hình chính; các app đã mở vẫn chạy nền. */
+  goHome: () => void;
   /** Gỡ app khỏi DOM để giải phóng bộ nhớ; mọi tab của app bị đóng. */
   unloadApp: (id: AppId) => void;
   toggleSidebar: () => void;
+  /** Đặt trạng thái sidebar của một app (dùng khi vào/ra phiên làm việc). */
+  setSidebar: (id: AppId, open: boolean) => void;
   togglePanel: () => void;
-  setPalette: (open: boolean) => void;
+  setLauncher: (open: boolean) => void;
   /** Mở tab trong app của nó (tự chuyển sang app đó); nếu đã có tab cùng id thì chỉ chuyển sang. */
   openTab: (tab: Tab) => void;
   closeTab: (id: string) => void;
+  /** Đóng mọi tab khác trong cùng app, giữ lại tab `id`. */
+  closeOtherTabs: (id: string) => void;
+  /** Đóng toàn bộ tab của một app. */
+  closeAllTabs: (appId: AppId) => void;
   focusTab: (id: string) => void;
   /** Chuyển tab kế tiếp/trước đó trong app hiện tại (Ctrl+Tab). */
   cycleTab: (dir: 1 | -1) => void;
@@ -43,42 +72,39 @@ const ownerOf = (apps: Record<AppId, AppState>, tabId: string) =>
   (Object.keys(apps) as AppId[]).find((a) => apps[a].tabs.some((t) => t.id === tabId));
 
 export const useWorkbench = create<WorkbenchState>((set) => ({
-  activeApp: "git",
-  mounted: ["git"],
-  apps: { git: emptyApp(), http: emptyApp(), ssh: emptyApp(), tools: emptyApp() },
+  activeApp: null,
+  mounted: [],
+  apps: { git: freshApp("git"), http: freshApp("http"), ssh: freshApp("ssh"), tools: freshApp("tools"), db: freshApp("db"), redis: freshApp("redis") },
   panelOpen: false,
-  paletteOpen: false,
+  launcherOpen: false,
   logs: [],
 
-  switchApp: (id) => set((s) => ({ activeApp: id, mounted: touch(s.mounted, id) })),
-  clickApp: (id) =>
-    set((s) =>
-      s.activeApp === id
-        ? { apps: { ...s.apps, [id]: { ...s.apps[id], sidebarOpen: !s.apps[id].sidebarOpen } } }
-        : {
-            activeApp: id,
-            mounted: touch(s.mounted, id),
-            apps: { ...s.apps, [id]: { ...s.apps[id], sidebarOpen: true } },
-          },
-    ),
+  openApp: (id) => set((s) => ({ activeApp: id, mounted: touch(s.mounted, id), launcherOpen: false })),
+  goHome: () => set({ activeApp: null, launcherOpen: false }),
   unloadApp: (id) =>
     set((s) => {
       const mounted = s.mounted.filter((m) => m !== id);
-      // Đóng app đang xem → quay về app dùng gần nhất; nếu không còn app nào thì app này khởi động lại sạch.
-      const activeApp = s.activeApp === id ? (mounted[mounted.length - 1] ?? id) : s.activeApp;
-      return {
-        activeApp,
-        mounted: activeApp === id ? [id] : mounted,
-        apps: { ...s.apps, [id]: emptyApp() },
-      };
+      // Đóng app đang xem → quay về app dùng gần nhất, hết app thì về màn hình chính.
+      const activeApp = s.activeApp === id ? (mounted[mounted.length - 1] ?? null) : s.activeApp;
+      return { activeApp, mounted, apps: { ...s.apps, [id]: freshApp(id) } };
     }),
   toggleSidebar: () =>
     set((s) => {
+      if (!s.activeApp) return {};
       const a = s.apps[s.activeApp];
-      return { apps: { ...s.apps, [s.activeApp]: { ...a, sidebarOpen: !a.sidebarOpen } } };
+      const open = !a.sidebarOpen;
+      saveSidebar(s.activeApp, open);
+      return { apps: { ...s.apps, [s.activeApp]: { ...a, sidebarOpen: open } } };
+    }),
+  setSidebar: (id, open) =>
+    set((s) => {
+      const a = s.apps[id];
+      if (!a) return {};
+      saveSidebar(id, open);
+      return { apps: { ...s.apps, [id]: { ...a, sidebarOpen: open } } };
     }),
   togglePanel: () => set((s) => ({ panelOpen: !s.panelOpen })),
-  setPalette: (open) => set({ paletteOpen: open }),
+  setLauncher: (open) => set({ launcherOpen: open }),
 
   openTab: (tab) =>
     set((s) => {
@@ -112,8 +138,19 @@ export const useWorkbench = create<WorkbenchState>((set) => ({
         apps: { ...s.apps, [appId]: { ...s.apps[appId], activeTabId: id } },
       };
     }),
+  closeOtherTabs: (id) =>
+    set((s) => {
+      const appId = ownerOf(s.apps, id);
+      if (!appId) return {};
+      const a = s.apps[appId];
+      const tabs = a.tabs.filter((t) => t.id === id);
+      return { apps: { ...s.apps, [appId]: { ...a, tabs, activeTabId: id } } };
+    }),
+  closeAllTabs: (appId) =>
+    set((s) => ({ apps: { ...s.apps, [appId]: { ...s.apps[appId], tabs: [], activeTabId: null } } })),
   cycleTab: (dir) =>
     set((s) => {
+      if (!s.activeApp) return {};
       const a = s.apps[s.activeApp];
       if (a.tabs.length < 2) return {};
       const idx = a.tabs.findIndex((t) => t.id === a.activeTabId);

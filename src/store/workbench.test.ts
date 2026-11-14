@@ -8,10 +8,25 @@ const tab = (appId: "git" | "http" | "ssh" | "tools", id: string) => ({ id, appI
 describe("workbench: mini app", () => {
   beforeEach(() => useWorkbench.setState(initial, true));
 
-  it("chuyển app thì mount app đó, giữ app cũ trong DOM", () => {
-    wb().switchApp("ssh");
+  it("khởi động ở màn hình chính, chưa tải app nào", () => {
+    expect(wb().activeApp).toBeNull();
+    expect(wb().mounted).toEqual([]);
+  });
+
+  it("vào app thì mount app đó, giữ app cũ trong DOM, đóng launcher", () => {
+    wb().openApp("git");
+    wb().setLauncher(true);
+    wb().openApp("ssh");
     expect(wb().activeApp).toBe("ssh");
     expect(wb().mounted).toEqual(["git", "ssh"]);
+    expect(wb().launcherOpen).toBe(false);
+  });
+
+  it("về màn hình chính không gỡ app đang chạy", () => {
+    wb().openApp("git");
+    wb().goHome();
+    expect(wb().activeApp).toBeNull();
+    expect(wb().mounted).toEqual(["git"]);
   });
 
   it("mỗi app có danh sách tab riêng; mở tab tự chuyển sang app của nó", () => {
@@ -26,7 +41,7 @@ describe("workbench: mini app", () => {
     wb().openTab(tab("git", "g1"));
     wb().openTab(tab("git", "g2"));
     wb().openTab(tab("http", "h1"));
-    wb().switchApp("git");
+    wb().openApp("git");
     wb().cycleTab(1);
     expect(wb().apps.git.activeTabId).toBe("g1");
     expect(wb().apps.http.activeTabId).toBe("h1");
@@ -39,19 +54,22 @@ describe("workbench: mini app", () => {
     expect(wb().apps.git.activeTabId).toBe("g1");
   });
 
-  it("đóng app đang xem → quay về app dùng gần nhất, tab của nó bị xoá", () => {
+  it("đóng app đang xem → về app dùng gần nhất; hết app → màn hình chính", () => {
     wb().openTab(tab("http", "h1"));
     wb().openTab(tab("ssh", "s1"));
     wb().unloadApp("ssh");
     expect(wb().activeApp).toBe("http");
-    expect(wb().mounted).toEqual(["git", "http"]);
     expect(wb().apps.ssh.tabs).toEqual([]);
+    wb().unloadApp("http");
+    expect(wb().activeApp).toBeNull();
+    expect(wb().mounted).toEqual([]);
   });
 
-  it("bấm lại icon app đang chọn thì gập sidebar của app đó", () => {
-    wb().clickApp("git");
+  it("Git mặc định thu gọn sidebar, Ctrl+B ẩn/hiện theo từng app", () => {
     expect(wb().apps.git.sidebarOpen).toBe(false);
-    wb().clickApp("http");
-    expect(wb().apps.http.sidebarOpen).toBe(true);
+    wb().openApp("tools");
+    wb().toggleSidebar();
+    expect(wb().apps.tools.sidebarOpen).toBe(false);
+    expect(wb().apps.http.sidebarOpen).toBe(true); // app khác vẫn mở sidebar
   });
 });

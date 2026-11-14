@@ -1,71 +1,127 @@
+/* Bảng màu & kiểu chữ lấy theo GitHub Desktop (dark): Primer dark.
+   Bố cục giữ nguyên — chỉ đổi màu, bo góc, viền, chữ. */
 :root {
-  --bg: #1e1f22;
-  --bg-2: #2b2d31;
-  --bg-3: #313338;
-  --line: #3a3c42;
-  --fg: #dcdde0;
-  --muted: #8b8e95;
-  --accent: #4f8cff;
-  --danger: #f2545b;
+  --bg: #0d1117;        /* canvas */
+  --bg-2: #161b22;      /* sidebar / header */
+  --bg-3: #21262d;      /* hover / nút */
+  --line: #30363d;      /* viền */
+  --line-muted: #21262d;
+  --fg: #e6edf3;
+  --muted: #8b949e;
+  --accent: #2f81f7;
+  --accent-dim: #1f6feb;
+  /* Xanh dương nút chính kiểu GitHub Desktop (Pull origin / Commit to…). */
+  --primary: #1f6feb;
+  --primary-hover: #1a63d4;
+  --danger: #f85149;
+  --danger-bg: #da3633;
   --ok: #3fb950;
   --warn: #d29922;
-  font-family: "Segoe UI", system-ui, sans-serif;
+  --sel: #1f6feb33;
+  font-family: system-ui, -apple-system, "Segoe UI", "Noto Sans", sans-serif;
   font-size: 13px;
   color: var(--fg);
   background: var(--bg);
   color-scheme: dark;
 }
+
+/* ── Nền sáng (GitHub Primer light). Giữ nút chính xanh dương như nền tối. ── */
+:root[data-theme="light"] {
+  /* Nền sáng dịu kiểu PonTea Toolkit — không dùng trắng gắt #fff cho canvas. */
+  --bg: #f4f5f7;        /* canvas: xám rất nhạt, đỡ chói */
+  --bg-2: #eceef1;      /* sidebar / header: sâu hơn một bậc để tách khối */
+  --bg-3: #e2e5ea;      /* hover / nút */
+  --line: #d7dbe1;
+  --line-muted: #e6e9ee;
+  --fg: #1b1f24;
+  --muted: #5a626c;
+  --accent: #0969da;
+  --accent-dim: #0969da;
+  --danger: #cf222e;
+  --danger-bg: #d1242f;
+  --ok: #1a7f37;
+  --warn: #9a6700;
+  --sel: #0969da22;
+  color-scheme: light;
+}
+:root[data-theme="light"] input::placeholder,
+:root[data-theme="light"] textarea::placeholder { color: #8c959f; }
+:root[data-theme="light"] button:hover { border-color: #afb8c1; }
+:root[data-theme="light"] .error-box { background: #cf222e14; border-color: #cf222e55; color: #a40e26; }
+:root[data-theme="light"] .diff .add { background: #2da44e26; color: #0a3f1d; }
+:root[data-theme="light"] .diff .del { background: #cf222e1f; color: #82071e; }
+:root[data-theme="light"] .diff .hunk { background: #ddf4ff; color: #0550ae; }
+:root[data-theme="light"] .history-row .mono,
+:root[data-theme="light"] .ref { color: #0550ae; }
+:root[data-theme="light"] .ref { background: #ddf4ff; border-color: #54aeff66; }
+:root[data-theme="light"] .ref.head { background: #dafbe1; border-color: #4ac26b66; color: #0a3f1d; }
+:root[data-theme="light"] ::selection { background: #0969da33; }
+
 * { box-sizing: border-box; }
 html, body, #root { margin: 0; height: 100%; overflow: hidden; }
 button, input, select, textarea { font: inherit; color: inherit; }
+::selection { background: #1f6feb66; }
+
 button {
-  background: var(--bg-3); border: 1px solid var(--line); border-radius: 4px;
-  padding: 3px 10px; cursor: pointer;
+  background: var(--bg-3); border: 1px solid var(--line); border-radius: 3px;
+  padding: 3px 12px; cursor: pointer; font-weight: 500; color: var(--fg);
+  transition: background .12s, border-color .12s;
 }
-button:hover { border-color: var(--muted); }
-button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button:hover { background: var(--line); border-color: #8b949e; }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+button.primary { background: var(--primary); border-color: #0000; color: #fff; }
+button.primary:hover { background: var(--primary-hover); border-color: #0000; }
+button.danger { background: var(--danger-bg); border-color: #0000; color: #fff; }
+button.danger:hover { background: var(--danger); border-color: #0000; }
 button.block { width: 100%; }
-input, select, textarea {
-  background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 4px 8px;
+button:disabled { opacity: .5; cursor: default; }
+button:disabled:hover { background: var(--bg-3); border-color: var(--line); }
+/* Nút chính bị khoá: GitHub Desktop chuyển hẳn sang nền xám, không phủ mờ màu xanh. */
+button.primary:disabled, button.primary:disabled:hover,
+button.danger:disabled, button.danger:disabled:hover {
+  background: var(--bg-3); border: 1px solid var(--line); color: var(--muted); opacity: 1;
 }
-input:focus, textarea:focus, select:focus { outline: 1px solid var(--accent); }
+
+input, select, textarea {
+  background: #010409; border: 1px solid var(--line); border-radius: 3px; padding: 4px 8px;
+}
+input:focus, textarea:focus, select:focus {
+  outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px #2f81f74d;
+}
+input::placeholder, textarea::placeholder { color: #6e7681; }
 [hidden] { display: none !important; }
+
+/* Thanh cuộn mảnh kiểu GitHub. */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; border: 2px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-thumb:hover { background: #484f58; background-clip: content-box; }
 
 .grow { flex: 1; }
 .muted { color: var(--muted); }
 .small { font-size: 11px; }
-.mono { font-family: "Cascadia Mono", Consolas, monospace; }
+.mono { font-family: "Cascadia Mono", "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", "Ubuntu Mono", monospace; }
 .pad { padding: 6px 10px; }
 .ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .danger-text { color: var(--danger); }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
 .dot.red { background: var(--danger); }
 .dot.green { background: var(--ok); }
+.dot.yellow { background: var(--warn); }
 .dot.grey { background: var(--muted); }
+/* Chấm trạng thái kết nối trên toolbar tab SSH — nhỏ hơn chấm danh sách. */
+.dot.status-dot { width: 6px; height: 6px; margin-right: 0; }
 .icon-btn { border: none; background: none; padding: 0 4px; }
+.icon-btn:hover { background: var(--bg-3); border: none; }
 
 /* ── Khung ───────────────────────────────────── */
 .shell { display: flex; flex-direction: column; height: 100%; }
-.body { flex: 1; display: flex; min-height: 0; }
 
-.activity {
-  width: 48px; background: var(--bg); border-right: 1px solid var(--line);
-  display: flex; flex-direction: column; align-items: center; padding: 6px 0; gap: 4px;
-}
-.activity button {
-  width: 40px; height: 40px; font-size: 18px; border: none; background: none;
-  border-left: 2px solid transparent; border-radius: 0; opacity: .6;
-}
-.activity button.on, .activity button:hover { opacity: 1; }
-.activity button.on { border-left-color: var(--accent); }
-.activity button { position: relative; }
-.key-hint { position: absolute; right: 3px; bottom: 1px; font-size: 9px; color: var(--muted); }
-/* Chấm xanh = app đang giữ trong bộ nhớ. */
-.live-dot { position: absolute; left: 4px; top: 4px; width: 5px; height: 5px; border-radius: 50%; background: var(--ok); }
-
-.stage { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.stage { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .apps { flex: 1; min-height: 0; position: relative; }
 .app-host { position: absolute; inset: 0; display: flex; }
+.app-host > * { flex: 1; }
+.tabbed { display: flex; min-width: 0; height: 100%; }
 
 .sidebar { width: 260px; background: var(--bg-2); border-right: 1px solid var(--line); overflow: auto; }
 .side-list { display: flex; flex-direction: column; }
@@ -74,20 +130,46 @@ input:focus, textarea:focus, select:focus { outline: 1px solid var(--accent); }
   padding: 10px 10px 4px; font-size: 11px; font-weight: 600; color: var(--muted); letter-spacing: .5px;
 }
 .side-group { padding: 4px 10px; color: var(--muted); }
-.side-item { display: flex; align-items: center; gap: 6px; padding: 4px 10px; cursor: pointer; }
+.side-item { display: flex; align-items: center; gap: 6px; padding: 4px 10px; cursor: pointer; border-radius: 0; }
 .side-item.indent { padding-left: 22px; }
 .side-item:hover { background: var(--bg-3); }
+/* Click 1 lần = chọn hàng (double-click mới mở) — hiện đang chọn host/kết nối nào. */
+.side-item.sel { background: var(--sel); }
+/* Kéo-thả sắp vị trí (kết nối / host / request). */
+.side-item.dragging, .tree-row.dragging { opacity: .4; }
+.side-item.drop-before, .tree-row.drop-before { box-shadow: inset 0 2px 0 var(--primary); }
+.side-item.drop-into, .tree-row.drop-into { background: var(--sel); box-shadow: inset 0 0 0 1px var(--primary); }
+.side-actions { display: flex; gap: 2px; }
+
+/* Cây collections (folder + request) trong app HTTP. */
+.tree { display: flex; flex-direction: column; overflow: auto; }
+.tree-row {
+  display: flex; align-items: center; gap: 6px; padding: 4px 8px; cursor: pointer;
+  user-select: none;
+}
+.tree-row:hover { background: var(--bg-3); }
+.tree-row:focus-visible { outline: none; background: var(--sel); }
+.tree-row.sel { background: var(--sel); }
+.tree-caret { width: 12px; color: var(--muted); font-size: 10px; flex: 0 0 auto; }
+.tree-icon { flex: 0 0 auto; }
+.tree-row.req { padding-left: 22px; }
+.tree-row .method { width: 40px; }
+/* Nhóm routine (Procedures / Functions / Events) dưới một database. */
+.tree-row.sub { padding-top: 2px; padding-bottom: 2px; text-transform: uppercase; letter-spacing: .3px; }
+.routine-ic { flex: 0 0 auto; width: 16px; text-align: center; color: var(--muted); font-style: normal; }
+.tree-rename { flex: 1; padding: 1px 6px; min-width: 0; }
 
 .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .tabbar { display: flex; background: var(--bg); border-bottom: 1px solid var(--line); overflow-x: auto; min-height: 34px; }
 .tab {
   display: flex; align-items: center; gap: 6px; padding: 0 8px 0 12px; max-width: 220px;
-  border-right: 1px solid var(--line); cursor: pointer; color: var(--muted); border-top: 2px solid transparent;
+  border-right: 1px solid var(--line); cursor: pointer; color: var(--muted); border-bottom: 2px solid transparent;
 }
-.tab.on { background: var(--bg-2); color: var(--fg); border-top-color: var(--accent); }
-.tab.danger { border-top-color: var(--danger); }
-.tab .x { border: none; background: none; padding: 0 4px; opacity: .5; }
-.tab .x:hover { opacity: 1; }
+.tab:hover { background: var(--bg-2); }
+.tab.on { background: var(--bg-2); color: var(--fg); border-bottom-color: #f78166; }
+.tab.danger { border-bottom-color: var(--danger); }
+.tab .x { border: none; background: none; padding: 0 4px; opacity: .5; border-radius: 3px; }
+.tab .x:hover { opacity: 1; background: var(--line); }
 
 .workspace { flex: 1; min-height: 0; background: var(--bg-2); position: relative; }
 .tab-host { position: absolute; inset: 0; overflow: auto; }
@@ -97,58 +179,538 @@ input:focus, textarea:focus, select:focus { outline: 1px solid var(--accent); }
 
 .statusbar {
   display: flex; align-items: center; gap: 12px; height: 24px; padding: 0 10px;
-  background: var(--accent); color: #fff; font-size: 12px;
+  background: var(--bg-2); border-top: 1px solid var(--line); color: var(--muted); font-size: 12px;
 }
-.statusbar button { background: none; border: none; color: #fff; padding: 0 4px; }
+.statusbar button { background: none; border: none; color: var(--muted); padding: 0 4px; border-radius: 3px; }
+.statusbar button:hover { background: var(--bg-3); color: var(--fg); border: none; }
+.sb-lang { font-weight: 700; font-size: 11px; letter-spacing: .5px; }
+
+/* Nút đổi nền: icon mặt trời/mặt trăng line-art (học từ PonTea Toolkit). */
+.statusbar button.theme-btn { display: inline-flex; align-items: center; padding: 0 5px; }
+.theme-btn svg { display: block; }
+.theme-btn.sun { color: var(--warn); }    /* đang tối → hiện mặt trời (vàng) để đổi sang sáng */
+.theme-btn.moon { color: var(--accent); }  /* đang sáng → hiện mặt trăng (xanh) để đổi sang tối */
+.statusbar button.theme-btn:hover { background: var(--bg-3); }
 
 /* ── Nội dung tab ────────────────────────────── */
 .view { display: flex; flex-direction: column; height: 100%; gap: 8px; padding: 8px; }
 .toolbar { display: flex; align-items: center; gap: 6px; }
+/* Toolbar app DB nhiều nút → cho xuống dòng thay vì đè lên nhau khi cửa sổ hẹp. */
+.db-toolbar { flex-wrap: wrap; row-gap: 6px; }
+.db-toolbar > button, .db-toolbar > label, .db-toolbar > .picker, .db-toolbar > .db-active { flex: 0 0 auto; white-space: nowrap; }
 .split { flex: 1; display: flex; gap: 8px; min-height: 0; }
 .pane {
   flex: 1; display: flex; flex-direction: column; min-height: 0;
-  background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 0;
 }
 .pane.narrow { flex: 0 0 280px; padding-bottom: 8px; }
 .pane.narrow > * { margin-left: 8px; margin-right: 8px; }
 .pane.narrow > .pane-title { margin: 0; }
+/* width:100% + margin 8px hai bên sẽ tràn khung → để flex tự giãn thay vì 100%. */
+.pane.narrow > .block { width: auto; align-self: stretch; }
 .pane.history { flex: 0 0 160px; }
 .pane-title {
   display: flex; align-items: center; gap: 6px; padding: 6px 10px; font-size: 11px;
-  font-weight: 600; color: var(--muted); border-bottom: 1px solid var(--line);
+  font-weight: 600; color: var(--muted); border-bottom: 1px solid var(--line); background: var(--bg-2);
+  border-radius: 0;
 }
 .empty { flex: 1; display: grid; place-items: center; color: var(--muted); padding: 20px; }
 .commit-msg { min-height: 70px; resize: vertical; margin-top: auto; margin-bottom: 6px; }
 .io { flex: 1; margin: 0; border: none; resize: none; padding: 10px; background: transparent; overflow: auto; white-space: pre-wrap; }
-.error-box { margin: 10px; padding: 10px; border-radius: 4px; background: #f2545b22; color: var(--danger); }
+.io:focus { box-shadow: none; }
+.error-box {
+  margin: 10px; padding: 10px; border-radius: 0;
+  background: #f851491a; border: 1px solid #f851494d; color: #ffa198;
+}
+/* Hộp thao tác với commit: trung tính (không phải lỗi), nổi để dễ thấy. */
+.commit-action { background: var(--bg-2); border: 1px solid var(--line); color: var(--fg); }
+.commit-action textarea { width: 100%; min-height: 84px; resize: vertical; margin: 8px 0; }
+.commit-action input { width: 100%; margin: 8px 0; }
+.commit-action b { color: var(--fg); }
+/* Form lưu request vào collection (trong modal, app HTTP). */
+.save-form { max-width: none; width: 100%; padding: 0; }
+.save-form label input, .save-form label select { width: 100%; }
+
+/* Ô chọn kiểu "field" + Picker thay cho select native (hover đẹp như bên Git). */
+.field { display: flex; flex-direction: column; gap: 4px; }
+.field-cap { color: var(--muted); font-size: 12px; font-weight: 600; }
+.picker-field .picker, .picker-field .picker-btn { width: 100%; }
+/* Dropdown method trong toolbar: bề rộng cố định, chữ đậm, màu theo method. */
+.method-picker .picker-btn { width: 104px; font-weight: 700; }
+.picker-item.m-GET, .picker-item.m-POST, .picker-item.m-PUT, .picker-item.m-PATCH,
+.picker-item.m-DELETE, .picker-item.m-HEAD, .picker-item.m-OPTIONS { font-weight: 700; }
 
 .subtabs { display: flex; align-items: center; gap: 2px; padding: 4px 6px; border-bottom: 1px solid var(--line); }
-.subtabs button { border: none; background: none; color: var(--muted); }
-.subtabs button.on { color: var(--fg); box-shadow: inset 0 -2px var(--accent); border-radius: 0; }
+.subtabs button { border: none; background: none; color: var(--muted); border-radius: 0; }
+.subtabs button:hover { background: none; color: var(--fg); border: none; }
+.subtabs button.on { color: var(--fg); box-shadow: inset 0 -2px #f78166; border-radius: 0; }
 
-.url { font-family: "Cascadia Mono", Consolas, monospace; }
+.url { font-family: "Cascadia Mono", "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", "Ubuntu Mono", monospace; }
 .method { font-size: 10px; font-weight: 700; width: 44px; }
 .m-GET { color: var(--ok); }
 .m-POST { color: var(--warn); }
 .m-PUT, .m-PATCH { color: var(--accent); }
 .m-DELETE { color: var(--danger); }
 .method-select { font-weight: 700; }
+.method-select option { background: var(--bg-2); font-weight: 700; }
+.m-HEAD, .m-OPTIONS { color: var(--muted); }
 
-.terminal { flex: 1; background: #0c0c0c; border-radius: 6px; padding: 10px; }
+/* Thanh công cụ nhỏ phía trên ô Body (format/minify JSON). */
+.body-toolbar { display: flex; align-items: center; gap: 10px; padding: 4px 10px; border-bottom: 1px solid var(--line); }
+
+/* Tab Auth + Script + modal Biến. */
+.auth-editor { padding: 10px; max-width: 560px; }
+.auth-editor label select { max-width: 240px; }
+.script-editor { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: auto; }
+.script-help { padding: 6px 10px; border-bottom: 1px solid var(--line); }
+/* Hai khối script: Pre-request + After response, mỗi khối một ô soạn. */
+.script-section { display: flex; flex-direction: column; min-height: 160px; flex: 1; border-bottom: 1px solid var(--line); }
+.script-title { padding: 5px 10px; font-size: 11px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase; color: var(--muted); background: var(--bg-2); }
+.script-pre, .script-post { min-height: 110px; }
+.script-msg { padding: 4px 10px; font-size: 12px; border-top: 1px solid var(--line); color: var(--ok); }
+.var-row { display: flex; align-items: center; gap: 6px; }
+.var-row input { flex: 1; min-width: 0; }
+.var-k { flex: 0 0 140px; color: var(--accent); }
+
+/* ── HTTP client ── */
+.http .insecure { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); padding-right: 8px; }
+.http .insecure input { margin: 0; }
+.req-body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: auto; }
+.req-raw { flex: 1; width: 100%; min-height: 0; resize: none; border: 0; background: transparent; padding: 8px 10px; }
+.req-raw:focus-visible { outline: none; }
+
+.kv { display: flex; flex-direction: column; padding: 6px; gap: 4px; }
+.kv-row { display: grid; grid-template-columns: 20px 1fr 1.4fr 24px; align-items: center; gap: 6px; }
+.kv-row input[type="checkbox"] { margin: 0; }
+.kv-row input { padding: 3px 7px; }
+.kv-add { align-self: flex-start; border: 1px dashed var(--line); background: none; color: var(--muted); margin-top: 2px; }
+.kv-add:hover { color: var(--fg); border-color: #8b949e; background: none; }
+
+.res-meta { display: flex; align-items: center; gap: 8px; }
+.res-status { font-weight: 700; }
+.res-raw { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 8px 10px; white-space: pre-wrap; word-break: break-word; font-size: 12px; }
+.res-headers { flex: 1; min-height: 0; overflow: auto; padding: 6px 10px; font-size: 12px; }
+.res-h { display: grid; grid-template-columns: minmax(120px, 240px) 1fr; gap: 10px; padding: 3px 0; border-bottom: 1px solid #30363d55; }
+.res-hk { color: var(--muted); font-weight: 600; word-break: break-all; }
+.res-hv { word-break: break-all; }
+
+/* Màu theo nhóm mã trạng thái (2xx..5xx) — dùng cho response và chấm trong lịch sử. */
+.st-2 { color: var(--ok); }
+.st-3 { color: var(--accent); }
+.st-4 { color: var(--warn); }
+.st-5 { color: var(--danger); }
+.st-0 { color: var(--muted); }
+.st-dot { font-size: 10px; font-weight: 700; min-width: 26px; text-align: right; }
+
+/* Hộp thoại nổi (Modal) — tài khoản Git… */
+.modal-backdrop { position: fixed; inset: 0; background: #0009; display: grid; place-items: center; z-index: 60; }
+.modal {
+  background: var(--bg-2); border: 1px solid var(--line); border-radius: 0;
+  box-shadow: 0 12px 48px #000a; max-width: 92vw; max-height: 88vh; display: flex; flex-direction: column; overflow: hidden;
+}
+.modal-head {
+  display: flex; align-items: center; gap: 8px; padding: 9px 12px; background: var(--bg);
+  border-bottom: 1px solid var(--line); font-weight: 600;
+}
+.modal-body { padding: 14px; overflow: auto; background: var(--bg); }
+
+/* Thẻ tài khoản đăng nhập trong Tài khoản Git. */
+.account-form { max-width: none; width: 100%; padding: 0; }
+/* Danh sách nhánh trong modal Merge. */
+.merge-list { display: flex; flex-direction: column; gap: 2px; max-height: 50vh; overflow: auto; }
+.merge-row { display: flex; align-items: center; gap: 8px; text-align: left; background: none; border: 1px solid transparent; padding: 6px 8px; }
+.merge-row:hover { background: var(--bg-3); border-color: var(--line); }
+.merge-ic { flex: 0 0 auto; }
+.merge-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1 1 auto; }
+.merge-name { font-weight: 600; }
+.merge-sub { min-width: 0; }
+.account-card { display: flex; align-items: center; gap: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 0; background: var(--bg-2); }
+.account-avatar {
+  width: 32px; height: 32px; flex: 0 0 auto; border-radius: 50%; display: grid; place-items: center;
+  background: var(--primary); color: #fff; font-weight: 700; font-size: 15px;
+}
+
+.terminal { flex: 1; background: #010409; border: 1px solid var(--line); border-radius: 0; padding: 10px; }
+
+/* ── SSH ── */
+.side-item:hover .row-actions { visibility: visible; }
+.ssh-view { gap: 6px; }
+/* Dải thống kê server (CPU/RAM/net/disk) kiểu MobaXterm. */
+.ssh-stats { display: flex; align-items: center; gap: 14px; flex: 0 0 auto; flex-wrap: wrap;
+  padding: 4px 8px; font-size: 11px; color: var(--muted); background: var(--bg-2);
+  border: 1px solid var(--line); border-radius: 3px; }
+.stat-item { display: inline-flex; align-items: center; gap: 5px; }
+.stat-label { color: var(--muted); font-weight: 600; letter-spacing: .3px; display: inline-flex; align-items: center; gap: 4px; }
+.stat-label svg { opacity: .85; }
+.stat-val { color: var(--fg); font-variant-numeric: tabular-nums; }
+.stat-bar { width: 54px; height: 6px; background: var(--bg-3); border-radius: 3px; overflow: hidden; }
+.stat-fill { display: block; height: 100%; background: var(--ok, #2ea043); border-radius: 3px; transition: width .4s; }
+.stat-fill.warm { background: var(--warn, #d29922); }
+.stat-fill.hot { background: var(--danger, #f85149); }
+.ssh-stats .net .stat-val { min-width: 62px; }
+.ssh-body { display: flex; flex: 1; min-height: 0; }
+.ssh-term-wrap { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
+.ssh-files-wrap { display: flex; min-height: 0; overflow: hidden; }
+.icon-btn.on { color: var(--primary); }
+.xterm-host { flex: 1; min-height: 0; overflow: hidden; background: #010409; border: 1px solid var(--line); border-radius: 0; padding: 4px 6px; }
+/* Terminal (xterm) dùng scrollbar overlay kiểu VS Code (`.slider`, màu xám sáng đặt inline) —
+   không phải scrollbar native. Override `.slider` (cần !important vì màu đặt inline) cho khớp app. */
+.xterm .xterm-scrollable-element > .scrollbar.vertical { width: 7px !important; }
+.xterm .xterm-scrollable-element > .scrollbar.vertical > .slider {
+  width: 7px !important;
+  background: var(--line) !important;
+  border-radius: 0;
+  border: 1px solid transparent;
+  background-clip: content-box;
+}
+.xterm .xterm-scrollable-element > .scrollbar.vertical > .slider:hover {
+  background: #484f58 !important;
+  background-clip: content-box;
+}
+
+/* ── SFTP panel (duyệt file remote kiểu MobaXterm) ── */
+.sftp-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0;
+  background: var(--bg-2); border: 1px solid var(--line); border-radius: 0; overflow: hidden; }
+.sftp-bar { display: flex; align-items: center; gap: 4px; padding: 5px 8px; border-bottom: 1px solid var(--line); }
+.sftp-title { font-size: 11px; font-weight: 600; color: var(--muted); letter-spacing: .5px; text-transform: uppercase; }
+.sftp-path { padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.sftp-path input { width: 100%; background: var(--bg-1); border: 1px solid var(--line); border-radius: 3px;
+  padding: 3px 8px; color: var(--fg); font-size: 12px; }
+.sftp-path input:focus { border-color: var(--primary); outline: none; }
+.sftp-err { margin: 6px 8px 0; }
+/* Tiêu đề cột: sticky ở đầu vùng cuộn (nền đục + z-index để KHÔNG lộ hàng phía sau). */
+/* Khối header + hàng ".." dính trên đỉnh vùng cuộn (không mất khi kéo xuống). */
+.sftp-sticky { position: sticky; top: 0; z-index: 2; background: var(--bg-2); }
+.sftp-head { display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+  font-size: 10px; font-weight: 700; letter-spacing: .5px; color: var(--muted);
+  border-bottom: 1px solid var(--line); background: var(--bg-2); flex: 0 0 auto; }
+/* Ô icon rỗng ở header phải giữ đúng 16px (bằng icon ở các hàng) mới thẳng cột. */
+.sftp-head .sftp-ic { flex: 0 0 16px; width: 16px; }
+/* KHÔNG padding-top: sticky top:0 dính sát mép, không chừa khe cho hàng cuộn lọt lên trên header. */
+/* overflow-x: hidden → KHÔNG có scroll ngang khi panel hẹp (cột tên tự cắt ellipsis thay vì tràn). */
+.sftp-list { flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto; padding: 0 0 4px; }
+.sftp-row { display: flex; align-items: center; gap: 8px; padding: 3px 10px; cursor: default; }
+/* Cột tên phải co được xuống 0 (min-width:0) thì ellipsis mới ăn, không đẩy hàng rộng ra. */
+.sftp-row > .grow, .sftp-head > .grow { min-width: 0; }
+.sftp-row:hover { background: var(--bg-3); }
+.sftp-row.sel { background: var(--sel); }
+.sftp-row:focus-visible { outline: none; background: var(--sel); }
+.sftp-up { cursor: pointer; }
+.sftp-up .grow { color: var(--muted); font-weight: 600; }
+.sftp-ic { flex: 0 0 auto; font-size: 13px; width: 16px; text-align: center; }
+/* File Excel (.xls/.xlsx): chip vuông xanh, chữ X trắng — dễ nhận ra hơn biểu đồ. */
+.sftp-ic.xls { box-sizing: border-box; width: 16px; height: 13px; line-height: 13px; border-radius: 3px;
+  font-size: 9px; font-weight: 800; color: #fff; background: #217346; }
+/* File script (.sh…): chip `>_` kiểu cửa sổ terminal (giống Termius). */
+.sftp-ic.term { box-sizing: border-box; width: 16px; height: 13px; line-height: 11px; font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 8px; font-weight: 700; letter-spacing: -.5px; color: var(--ok, #2ea043);
+  background: color-mix(in srgb, var(--ok, #2ea043) 18%, transparent); border-radius: 3px; }
+.sftp-size { flex: 0 0 auto; width: 56px; text-align: right; }
+/* Cột "Last modified": gọn lại để panel hẹp không tràn (dùng gap thay padding-left). */
+.sftp-time { flex: 0 0 auto; width: 120px; padding-left: 8px; }
+.sftp-center .spinner { width: 18px; height: 18px; border-width: 2px; }
+.sftp-center { display: flex; flex: 1; align-items: center; justify-content: center; gap: 8px; color: var(--muted);
+  padding: 16px; text-align: center; }
+.sftp-center.col { flex-direction: column; }
+.sftp-busy { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-top: 1px solid var(--line);
+  color: var(--muted); font-size: 12px; }
+.sftp-preview { max-height: 70vh; overflow: auto; }
+.sftp-text { margin: 0; padding: 10px; white-space: pre; font-size: 12px; }
+.sftp-img { display: flex; justify-content: center; padding: 10px; }
+.sftp-img img { max-width: 100%; height: auto; }
+.ssh-host .dot, .ssh-tunnel .dot { margin-right: 0; }
+.side-search-row { display: flex; align-items: center; gap: 6px; padding: 2px 8px 6px; }
+.side-search-ic { opacity: .6; font-size: 11px; }
+.side-search {
+  flex: 1; min-width: 0; background: var(--bg-1); border: 1px solid var(--line);
+  border-radius: 3px; padding: 3px 8px; color: var(--fg); font-size: 12px;
+}
+.side-search:focus { border-color: var(--primary); outline: none; }
+.ssh-fields { display: flex; flex-direction: column; gap: 8px; padding-left: 10px; border-left: 2px solid var(--line); margin-left: 2px; }
+/* Sơ đồ đường đi của tunnel (local → server → đích). */
+.tun-flow { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 8px 10px;
+  background: var(--bg-2); border: 1px solid var(--line); border-radius: 0; font-size: 12px; }
+.tun-node { font-family: "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace; padding: 2px 7px; border-radius: 3px; white-space: nowrap; }
+.tun-node.you { background: color-mix(in srgb, var(--primary) 22%, transparent); color: var(--fg); }
+.tun-node.srv { background: var(--bg-3); color: var(--muted); }
+.tun-node.tgt { background: color-mix(in srgb, var(--ok, #2ea043) 22%, transparent); color: var(--fg); }
+.tun-arrow { color: var(--muted); font-weight: 700; }
+/* PROD: tô nền cảnh báo + nhãn PROD thay cho chấm đỏ (chấm đỏ dễ hiểu nhầm là mất kết nối). Dùng chung mọi app. */
+.side-item.prod { background: color-mix(in srgb, var(--danger) 14%, transparent); }
+.side-item.prod:hover { background: color-mix(in srgb, var(--danger) 22%, transparent); }
+/* Hàng đang chọn: luôn thắng nền PROD (nếu không, hàng PROD được chọn sẽ trông như không chọn). */
+.side-item.sel, .side-item.prod.sel { background: var(--sel); }
+.side-item.sel:hover, .side-item.prod.sel:hover { background: color-mix(in srgb, var(--primary) 26%, transparent); }
+.prod-tag, .env-tag {
+  flex: 0 0 auto; font-size: 9px; font-weight: 700; letter-spacing: .4px; line-height: 1.5;
+  border: 1px solid currentColor; border-radius: 3px; padding: 0 4px;
+}
+.prod-tag { color: var(--danger); }
+/* Nhãn môi trường cho kết nối DB/Redis: thay chấm màu dễ nhầm là mất kết nối. */
+.env-tag.dev { color: var(--ok); }
+.env-tag.staging { color: var(--warn); }
+.env-tag.prod { color: var(--danger); }
+.env-tag.use { color: var(--ok); font-size: 9px; }
+/* Picker "database đang chạy query" trên toolbar app DB. */
+.db-active { display: inline-flex; margin-left: 8px; }
+.tun-toggle { color: var(--ok); }
+.dot.tun-running { background: var(--ok); }
+.dot.tun-starting { background: var(--warn); }
+.dot.tun-error { background: var(--danger); }
+.dot.tun-stopped { background: var(--muted); }
 
 .welcome { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; }
 .welcome h1 { margin: 0 0 4px; font-weight: 600; }
 .keys { list-style: none; padding: 0; color: var(--muted); line-height: 2; }
-kbd { background: var(--bg-3); border: 1px solid var(--line); border-radius: 3px; padding: 0 5px; font-size: 11px; }
-
-/* ── Command palette ─────────────────────────── */
-.palette-backdrop { position: fixed; inset: 0; background: #0006; display: flex; justify-content: center; padding-top: 80px; }
-.palette {
-  width: 560px; max-height: 420px; display: flex; flex-direction: column;
-  background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 10px 40px #0008; overflow: hidden;
+kbd {
+  background: var(--bg-2); border: 1px solid var(--line); border-bottom-width: 2px;
+  border-radius: 3px; padding: 0 5px; font-size: 11px; font-family: inherit; color: var(--fg);
 }
-.palette input { border: none; border-bottom: 1px solid var(--line); border-radius: 0; padding: 12px 14px; font-size: 14px; outline: none; }
-.palette-list { overflow: auto; padding: 4px; }
-.palette-item { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-radius: 4px; cursor: pointer; }
-.palette-item.on { background: var(--accent); color: #fff; }
-.palette-item.on .muted { color: #fffc; }
+
+/* ── Launcher (màn hình chính + Ctrl+K) ────── */
+.home { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; padding-top: 12vh; gap: 6px; background: var(--bg); }
+.home h1 { margin: 0; font-weight: 600; }
+.launcher-backdrop { position: fixed; inset: 0; background: #010409b3; display: flex; justify-content: center; padding-top: 80px; z-index: 10; }
+.launcher {
+  width: 600px; max-height: 460px; display: flex; flex-direction: column; align-self: flex-start;
+  background: var(--bg-2); border: 1px solid var(--line); border-radius: 0;
+  box-shadow: 0 16px 48px #010409cc, 0 0 0 1px #30363d80; overflow: hidden;
+}
+/* Màn hình chính xếp dọc (flex column) → flex-start ở trên sẽ đẩy hộp sang trái; căn giữa lại. */
+.launcher.inline { margin: 12px 0; max-height: 60vh; align-self: center; width: min(600px, 90%); }
+.launcher input { border: none; border-bottom: 1px solid var(--line); border-radius: 0; padding: 12px 14px; font-size: 14px; outline: none; background: var(--bg-2); }
+.launcher input:focus { box-shadow: none; }
+.launcher-list { overflow: auto; padding: 4px; }
+.launcher-app, .launcher-cmd { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-radius: 0; cursor: pointer; }
+.launcher-app { padding: 8px 10px; }
+.launcher-icon { font-size: 22px; width: 32px; text-align: center; }
+.launcher-app.on, .launcher-cmd.on { background: var(--sel); color: var(--fg); }
+.launcher-app.on .muted, .launcher-cmd.on .muted { color: var(--muted); }
+.badge { font-size: 10px; padding: 1px 6px; border-radius: 2em; background: var(--bg-3); border: 1px solid var(--line); color: var(--muted); }
+.badge.live { color: var(--ok); }
+.on .badge { background: #1f6feb26; border-color: #1f6feb66; }
+
+/* ── Form chung ──────────────────────────────── */
+.form { display: flex; flex-direction: column; gap: 10px; max-width: 520px; padding: 8px; }
+.form h3 { margin: 0; font-weight: 600; }
+.form label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12px; font-weight: 600; }
+.form label input, .form label select { color: var(--fg); font-size: 13px; font-weight: 400; }
+.form label.check { flex-direction: row; align-items: center; gap: 6px; }
+.form-row { display: flex; gap: 8px; }
+
+/* ── App Database ────────────────────────────── */
+.db-session { display: flex; height: 100%; }
+.db-session > .view { flex: 1; min-width: 0; }
+.db-tables { width: 220px; display: flex; flex-direction: column; border-right: 1px solid var(--line); background: var(--bg-2); }
+.db-tables input { margin: 8px; }
+.db-table-list { flex: 1; overflow: auto; }
+.db-editor { flex: 0 0 150px; resize: vertical; padding: 8px; tab-size: 2; }
+.db-timeout { display: inline-flex; align-items: center; gap: 3px; font-size: 12px; color: var(--muted); }
+.db-timeout input { width: 44px; background: var(--bg-1); border: 1px solid var(--line); border-radius: 3px; padding: 2px 4px; color: var(--fg); font-size: 12px; }
+.db-timeout input:focus { border-color: var(--primary); outline: none; }
+/* Màn hình đang kết nối (ẩn form mật khẩu, chỉ spinner xoay kiểu Navicat). */
+.db-connecting { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; text-align: center; }
+.spinner {
+  width: 26px; height: 26px; border-radius: 50%;
+  border: 3px solid var(--line); border-top-color: var(--primary);
+  animation: spin .7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+/* Danh sách container Docker (modal trong app SSH). */
+.docker-list { display: flex; flex-direction: column; gap: 6px; max-height: 420px; overflow: auto; }
+.docker-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 0; background: var(--bg-2); cursor: default; }
+.docker-row:hover { border-color: var(--primary); }
+.docker-ic { font-size: 18px; flex: 0 0 auto; }
+.sql-preview {
+  margin: 0; padding: 8px; background: var(--bg); border: 1px solid var(--line); border-radius: 0;
+  font-size: 12px; white-space: pre-wrap; word-break: break-word; max-height: 120px; overflow: auto;
+}
+/* Popup gợi ý SQL (tên bảng/cột/database/từ khoá) — định vị theo con trỏ. */
+.sql-sug {
+  position: fixed; z-index: 200; min-width: 200px; max-width: 280px; max-height: 250px; overflow: auto;
+  background: var(--bg-2); border: 1px solid var(--line); border-radius: 0; padding: 4px;
+  box-shadow: 0 8px 24px #0008;
+}
+.sug-item { display: flex; align-items: center; gap: 6px; padding: 3px 6px; border-radius: 0; cursor: pointer; }
+.sug-item.on { background: var(--sel); }
+.sug-kind {
+  flex: 0 0 16px; text-align: center; font-size: 10px; font-weight: 700; color: var(--muted);
+}
+.sug-kind.table { color: var(--ok); }
+.sug-kind.col { color: var(--accent); }
+.sug-kind.db { color: var(--warn); }
+.grid-wrap { flex: 1; overflow: auto; min-height: 0; }
+/* Nhiều kết quả khi chạy nhiều câu lệnh (như Navicat): xếp dọc, cuộn chung. */
+.results-list { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 8px; }
+.results-list > .result-pane { flex: 0 0 auto; height: 260px; }
+.grid { border-collapse: collapse; font-size: 12px; white-space: nowrap; }
+.grid th, .grid td { border: 1px solid var(--line-muted); padding: 3px 8px; max-width: 360px; overflow: hidden; text-overflow: ellipsis; text-align: left; }
+/* Header bảng kết quả: cùng kiểu với header panel SFTP (chữ nhỏ, in hoa, xám). */
+.grid th { position: sticky; top: 0; z-index: 1; background: var(--bg-2); border-bottom-color: var(--line);
+  font-size: 10px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase; color: var(--muted); }
+.grid tbody tr:hover { background: var(--bg-3); }
+.grid td.null { color: var(--muted); font-style: italic; }
+
+/* ── App Git ─────────────────────────────────── */
+.hover-only { visibility: hidden; }
+.side-item:hover .hover-only { visibility: visible; }
+.error-box.pre { white-space: pre-wrap; font-family: "Cascadia Mono", "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", "Ubuntu Mono", monospace; font-size: 12px; max-height: 140px; overflow: auto; margin: 0; }
+.progress-text { max-width: 320px; }
+.pane.changes { display: flex; flex-direction: column; gap: 6px; }
+.file-lists { flex: 1; overflow: auto; min-height: 0; margin: 0 !important; }
+.file-group { display: flex; align-items: center; padding: 6px 10px 2px; font-size: 11px; font-weight: 600; color: var(--muted); }
+.file-row { display: flex; align-items: center; gap: 6px; padding: 2px 10px; cursor: pointer; border-radius: 0; }
+.file-check { flex: 0 0 auto; width: 14px; height: 14px; margin: 0 6px 0 0; cursor: pointer; accent-color: var(--primary); }
+.file-row:hover { background: var(--bg-3); }
+.file-row.on { background: var(--sel); }
+.row-actions { visibility: hidden; display: flex; }
+.file-row:hover .row-actions { visibility: visible; }
+.st { width: 14px; font-weight: 700; font-size: 11px; text-align: center; font-family: "Cascadia Mono", "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", "Ubuntu Mono", monospace; }
+.st-M { color: var(--warn); }
+.st-A, .st-U, .st-C { color: var(--ok); }
+.st-D { color: var(--danger); }
+.st-R, .st-T { color: var(--accent); }
+.st-\! { color: var(--danger); }
+.commit-msg { min-height: 70px; margin: 0 8px; }
+.pane.changes .check { flex-direction: row; display: flex; align-items: center; gap: 6px; color: var(--muted); }
+.diff { flex: 1; overflow: auto; font-size: 12px; padding: 4px 0; white-space: pre; tab-size: 4; }
+.diff > div { padding: 0 10px; min-height: 17px; }
+.diff .add { background: #3fb9501f; color: #7ee787; }
+.diff .del { background: #f851491a; color: #ffa198; }
+.diff .hunk { color: #79c0ff; background: #388bfd26; }
+.diff .meta { color: var(--muted); }
+.pane.history { flex: 0 0 200px; }
+.history-list { flex: 1; overflow: auto; }
+.history-row { display: flex; align-items: center; gap: 10px; padding: 3px 10px; cursor: pointer; border-radius: 0; }
+.history-row:hover { background: var(--bg-3); }
+.history-row.on { background: var(--sel); }
+.history-row .mono { color: #79c0ff; }
+.history-row .time { width: 70px; text-align: right; }
+.ref {
+  font-size: 10px; padding: 0 6px; margin-right: 5px; border-radius: 2em;
+  background: #1f6feb26; border: 1px solid #1f6feb66; color: #79c0ff; font-weight: 500;
+}
+.ref.remote { background: var(--bg-3); border-color: var(--line); color: var(--muted); }
+.ref.head { background: #23863626; border-color: #23863680; color: #7ee787; }
+.commit-actions { margin: 0 8px; }
+.commit-actions .primary { width: auto; }
+
+/* ── App Redis ───────────────────────────────── */
+.pane.rkeys { flex: 0 0 300px; }
+.rkey-list { flex: 1; overflow: auto; padding: 4px; }
+.rkey { padding: 2px 8px; border-radius: 0; cursor: pointer; display: flex; align-items: center; gap: 4px; }
+.rkey:hover { background: var(--bg-3); }
+.rkey.on { background: var(--sel); }
+/* Cây key: folder đậm hơn, có mũi tên gấp/mở + số key. */
+.rkey-folder { font-weight: 600; }
+.rkey-caret { flex: 0 0 10px; width: 10px; font-size: 9px; color: var(--muted); text-align: center; }
+.rkey-count { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+.rkey-more { display: block; width: calc(100% - 16px); margin: 6px 8px; }
+.kind-badge {
+  font-size: 10px; font-weight: 600; padding: 0 6px; border-radius: 2em;
+  border: 1px solid currentColor; opacity: .9;
+}
+.rstring { flex: 1; display: flex; flex-direction: column; min-height: 0; gap: 6px; padding: 6px 10px; }
+.rstring .toolbar { flex: 0 0 auto; }
+.rinfo { font-size: 12px; white-space: pre; }
+
+/* ── Picker: dropdown kiểu GitHub Desktop ───── */
+.picker { position: relative; display: inline-flex; min-width: 0; }
+.picker-btn { display: inline-flex; align-items: center; gap: 6px; max-width: 300px; }
+.picker-btn.open { background: var(--line); }
+.branch-glyph { color: var(--muted); }
+.caret { color: var(--muted); font-size: 10px; }
+.picker-menu {
+  /* Render qua portal (position: fixed, vị trí đặt bằng JS) để không bị khung overflow cắt. */
+  z-index: 210;
+  min-width: 280px; max-width: 420px; max-height: 420px; display: flex; flex-direction: column;
+  background: var(--bg-2); border: 1px solid var(--line); border-radius: 0;
+  box-shadow: 0 8px 24px #010409cc; overflow: hidden;
+}
+.picker-filter { margin: 6px; }
+.picker-list { overflow: auto; padding: 4px; }
+.picker-group { padding: 6px 8px 2px; font-size: 11px; font-weight: 600; color: var(--muted); }
+.picker-item { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-radius: 0; cursor: pointer; }
+.picker-item:hover { background: var(--bg-3); }
+.picker-item.on { background: var(--sel); }
+.picker-item.disabled { opacity: .45; cursor: default; }
+.picker-check { width: 12px; font-size: 11px; color: var(--ok); }
+/* Giãn theo nội dung: icon có thể rộng hơn 14px (vd. nhãn PROD) mà không đè lên tên. */
+.picker-icon { flex: 0 0 auto; min-width: 14px; text-align: center; display: inline-flex; align-items: center; }
+
+/* ── Menu chuột phải ────────────────────────── */
+.ctx {
+  /* Trên cả picker-menu (210) để menu chuột phải hiện đè lên dropdown đang mở, không bị khuất. */
+  position: fixed; z-index: 220; min-width: 230px; max-width: 340px; padding: 4px;
+  background: var(--bg-2); border: 1px solid var(--line); border-radius: 0;
+  box-shadow: 0 8px 24px #010409cc;
+}
+.ctx-item { display: flex; align-items: center; gap: 8px; padding: 5px 10px; border-radius: 0; cursor: pointer; }
+.ctx-icon { flex: 0 0 16px; width: 16px; text-align: center; font-size: 12px; opacity: .9; display: inline-flex; align-items: center; justify-content: center; }
+.ctx-item:hover { background: var(--accent); color: #fff; }
+.ctx-item.danger { color: var(--danger); }
+.ctx-item.danger:hover { background: var(--danger-bg); color: #fff; }
+.ctx-item.disabled { opacity: .4; cursor: default; }
+.ctx-item.disabled:hover { background: none; color: inherit; }
+.ctx-hint { max-width: 140px; font-size: 11px; color: var(--muted); }
+.ctx-item:hover .ctx-hint { color: #fffc; }
+.ctx-sep { height: 1px; margin: 4px 0; background: var(--line); }
+.repo-item.on { background: var(--sel); }
+
+/* Nhóm Fetch/Pull/Push tách khỏi phần còn lại của toolbar. */
+.remote-actions {
+  display: flex; gap: 6px; padding-left: 8px; margin-left: 2px; border-left: 1px solid var(--line);
+}
+
+/* ── Thanh kéo co giãn khối ─────────────────── */
+.splitter { flex: 0 0 5px; align-self: stretch; background: transparent; position: relative; touch-action: none; }
+.splitter.x { cursor: col-resize; }
+.splitter.y { flex: 0 0 5px; align-self: auto; cursor: row-resize; }
+.splitter:hover, .splitter:active { background: var(--accent); }
+.splitter::after {
+  /* Vùng bấm rộng hơn cho dễ nắm. */
+  content: ""; position: absolute; inset: 0 -3px;
+}
+.splitter.y::after { inset: -3px 0; }
+body.resizing { cursor: inherit; user-select: none; }
+
+/* ── Nút thu gọn sidebar trên thanh tab ─────── */
+.side-toggle {
+  border: none; background: none; border-radius: 0; padding: 0 10px; color: var(--muted);
+  align-self: stretch; font-size: 13px;
+}
+.side-toggle:hover { background: var(--bg-3); color: var(--fg); border: none; }
+.side-toggle.on { color: var(--fg); }
+
+/* Không cho nội dung rộng đẩy khung khi kéo giãn. */
+.pane, .pane-title, .split > .pane, .file-lists, .file-row, .history-row { min-width: 0; }
+.history-list { overflow-x: hidden; }
+.history-row .author { max-width: 170px; }
+.history-row .mono { flex: 0 0 auto; }
+.history-row .time { flex: 0 0 auto; }
+
+/* ── Repo switcher / clone / account ─────────── */
+.tb-sep { width: 1px; align-self: stretch; margin: 2px 2px; background: var(--line); }
+.picker-x { border: none; background: none; color: var(--muted); border-radius: 3px; padding: 0 4px; visibility: hidden; }
+.picker-item:hover .picker-x { visibility: visible; }
+.picker-x:hover { background: var(--danger-bg); color: #fff; border: none; }
+.form-sep { height: 1px; background: var(--line); margin: 6px 0; }
+button.link { background: none; border: none; color: var(--accent); padding: 0; text-decoration: underline; }
+button.link:hover { background: none; border: none; color: #79c0ff; }
+.git-empty .empty-repo-list { display: flex; flex-direction: column; gap: 4px; width: min(420px, 80vw); margin: 4px 0 12px; max-height: 40vh; overflow: auto; }
+.empty-repo { text-align: left; display: flex; padding: 7px 12px; }
+
+/* ── Tắt app đang chạy ──────────────────────── */
+.sb-close { padding: 0 6px; color: var(--muted); }
+.sb-close:hover { background: var(--danger-bg); color: #fff; border: none; }
+.sb-running:disabled { opacity: .6; }
+.launcher-close {
+  border: none; background: none; color: var(--muted); border-radius: 3px; padding: 0 6px; font-size: 15px; visibility: hidden;
+}
+.launcher-app:hover .launcher-close { visibility: visible; }
+.launcher-close:hover { background: var(--danger-bg); color: #fff; border: none; }
+
+/* Tự cập nhật: nút ở status bar + thanh tiến trình tải. */
+.statusbar .sb-update { color: #fff; background: var(--primary); padding: 0 8px; font-weight: 600; }
+.update-bar { height: 6px; background: var(--bg-3); overflow: hidden; margin-bottom: 4px; }
+.update-bar > div { height: 100%; background: var(--primary); transition: width .2s; }

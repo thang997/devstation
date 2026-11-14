@@ -1,7 +1,9 @@
 [package]
 name = "devstation"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
+license = "LicenseRef-Proprietary"
+publish = false
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -10,11 +12,47 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# App Database: rustls để khỏi phụ thuộc OpenSSL trên Windows; sqlite tự build kèm.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "mysql", "sqlite"] }
+futures-util = "0.3"
+# App Git: gọi git.exe bất đồng bộ, stream output.
+tokio = { version = "1", features = ["process", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
+# App Redis: client async, TLS qua rustls (không cần OpenSSL).
+redis = { version = "0.27", features = ["tokio-comp", "tokio-rustls-comp", "connection-manager"] }
+# App Database — Cassandra/ScyllaDB (CQL): sqlx không hỗ trợ nên dùng driver riêng (Rust thuần, không OpenSSL).
+scylla = "0.13"
+# App HTTP: client gửi request thật phía Rust (không dính CORS). rustls để khỏi phụ thuộc OpenSSL;
+# gzip/brotli/deflate để tự giải nén khi server nén (curl --compressed).
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "brotli", "deflate"] }
+# App SSH: chạy ssh.exe của hệ thống trong ConPTY (terminal thật) + tunnel bằng ssh -L/-R/-D.
+# Dùng lại key/known_hosts/config của máy — không tự cài đặt SSH riêng.
+portable-pty = "0.8"
+base64 = "0.22"
+# Lưu mật khẩu SSH an toàn vào kho của hệ điều hành (không ghi plaintext ra file).
+# keyring chọn backend theo từng nền tảng → khai báo riêng ở các [target...] bên dưới.
+# Hộp thoại chọn thư mục (thêm repo, chọn file SQLite).
+tauri-plugin-dialog = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 
 # Sẽ thêm theo từng giai đoạn:
-#   rusqlite (lưu workspace/history), keyring (mật khẩu/key),
-#   reqwest (HTTP client), russh + russh-sftp (SSH), git2 (đọc repo).
+#   rusqlite (lưu workspace/history),
+#   russh-sftp (SFTP), git2 (đọc repo).
+
+# keyring: mỗi nền tảng một backend (Windows Credential Manager / Secret Service / macOS Keychain).
+[target.'cfg(windows)'.dependencies]
+keyring = { version = "3", default-features = false, features = ["windows-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Secret Service qua D-Bus (GNOME Keyring/KWallet). crypto-rust để khỏi phụ thuộc OpenSSL.
+keyring = { version = "3", default-features = false, features = ["sync-secret-service", "crypto-rust"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", default-features = false, features = ["apple-native"] }
 
 [profile.release]
 strip = true
 lto = true
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
