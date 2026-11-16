@@ -161,6 +161,7 @@ bố cục kiểu IDE (VS Code / Termius). Giao tiếp với người dùng bằ
 - UI: `src/shell/updater.tsx` — Shell kiểm tra ngầm 3s sau khi mở (lỗi mạng im lặng; bỏ qua ở `app:dev`), có bản mới → nút **⬆ vX** ở status bar → modal (ghi chú, tiến trình tải, **Cập nhật & khởi động lại** qua `downloadAndInstall` + `relaunch` của `plugin-process`). Ctrl+K có lệnh **Kiểm tra cập nhật**. Windows cài kiểu `passive`.
 - **Hiển thị version**: `useAppVersion()` (đọc `getVersion()` từ binary, quyền có sẵn trong `core:default`) → `VersionLabel` ở status bar (bấm = kiểm tra cập nhật) + cạnh tiêu đề màn hình chính.
 - Capabilities: `updater:default`, `process:allow-restart`.
+- **Xuất / nhập cấu hình** (`src/shell/configTransfer.ts`, lệnh Ctrl+K "Xuất cấu hình ra file…" / "Nhập cấu hình từ file…"): dump TOÀN BỘ localStorage ra JSON (`{app:"DevStation",format:1,data}`) qua `write_text_file`; nhập đọc bằng `http_read_file`, confirm rồi ghi đè khoá trùng + `location.reload()`. Dùng để chuyển dữ liệu giữa bản dev (origin `localhost:1430`) và bản cài (`tauri.localhost`) — hai origin có localStorage riêng. Không chứa mật khẩu (keyring dùng chung). Kết quả/lỗi ghi ra panel Output.
 - Bản 0.1.0 không có updater → máy nào cài 0.1.0 phải cài tay ≥ 0.2.0 một lần.
 
 ## Đa nền tảng (Windows · Linux · macOS)

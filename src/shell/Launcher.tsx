@@ -4,6 +4,7 @@ import type { AppManifest, Command } from "../apps/types";
 import { useWorkbench } from "../store/workbench";
 import { useLang, useT } from "../store/lang";
 import { checkForUpdate, useAppVersion } from "./updater";
+import { exportConfig, importConfig } from "./configTransfer";
 
 /** Bỏ dấu tiếng Việt để gõ "tien ich" vẫn khớp "Tiện ích". */
 const fold = (s: string) =>
@@ -13,6 +14,17 @@ const matches = (hay: string, words: string[]) => {
   const h = fold(hay);
   return words.every((w) => h.includes(w));
 };
+
+/** Chạy xuất/nhập cấu hình, ghi kết quả/lỗi ra panel Output (lỗi hiển thị tại chỗ, không popup). */
+async function runTransfer(s: ReturnType<typeof useWorkbench.getState>, job: () => Promise<string | null | false | undefined>) {
+  try {
+    const msg = await job();
+    if (msg) { s.log(msg); if (!useWorkbench.getState().panelOpen) s.togglePanel(); }
+  } catch (e) {
+    s.log(`✗ ${e instanceof Error ? e.message : String(e)}`);
+    if (!useWorkbench.getState().panelOpen) s.togglePanel();
+  }
+}
 
 type Item = { kind: "app"; app: AppManifest } | { kind: "cmd"; cmd: Command };
 
@@ -38,6 +50,8 @@ export function Launcher({ inline = false }: { inline?: boolean }) {
       { id: "shell.home", group: tr("General", "Chung"), title: tr("Go home", "Về màn hình chính"), run: s.goHome },
       { id: "shell.panel", group: tr("General", "Chung"), title: tr("Toggle output panel", "Ẩn/hiện panel output"), hint: "Ctrl+`", run: s.togglePanel },
       { id: "shell.update", group: tr("General", "Chung"), title: tr("Check for updates", "Kiểm tra cập nhật"), run: () => void checkForUpdate(true) },
+      { id: "shell.exportConfig", group: tr("General", "Chung"), title: tr("Export config to file…", "Xuất cấu hình ra file…"), run: () => void runTransfer(s, () => exportConfig().then((p) => p && tr(`Exported config → ${p}`, `Đã xuất cấu hình → ${p}`))) },
+      { id: "shell.importConfig", group: tr("General", "Chung"), title: tr("Import config from file…", "Nhập cấu hình từ file…"), run: () => void runTransfer(s, () => importConfig().then(() => null)) },
       { id: "shell.sidebar", group: tr("General", "Chung"), title: tr("Toggle app sidebar", "Ẩn/hiện sidebar của app"), hint: "Ctrl+B", run: s.toggleSidebar },
       ...s.mounted.map((id) => {
         const a = APPS.find((x) => x.id === id)!;
