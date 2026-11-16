@@ -48,6 +48,8 @@ export async function checkForUpdate(manual = false) {
     return;
   }
   if (state.kind === "checking" || state.kind === "downloading") return;
+  // Đã biết có bản mới → kiểm tra định kỳ không cần gọi lại (tránh nút nhấp nháy); bấm tay thì vẫn mở modal.
+  if (state.kind === "available" && !manual) return;
   set({ kind: "checking" });
   try {
     const { check } = await import("@tauri-apps/plugin-updater");

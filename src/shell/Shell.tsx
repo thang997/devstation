@@ -28,8 +28,12 @@ export function Shell() {
   /** Menu "các app đang chạy" ở thanh trạng thái. */
   const [runMenu, setRunMenu] = useState<{ x: number; y: number } | null>(null);
 
-  // Kiểm tra bản mới 3s sau khi mở app (không chặn khởi động; lỗi mạng thì im lặng).
-  useEffect(() => { const t = setTimeout(() => void checkForUpdate(), 3000); return () => clearTimeout(t); }, []);
+  // Kiểm tra bản mới 3s sau khi mở app, rồi mỗi 30 phút (app mở cả ngày → không cần restart mới thấy bản mới).
+  useEffect(() => {
+    const t = setTimeout(() => void checkForUpdate(), 3000);
+    const iv = setInterval(() => void checkForUpdate(), 30 * 60 * 1000);
+    return () => { clearTimeout(t); clearInterval(iv); };
+  }, []);
 
   const closeAll = () => [...useWorkbench.getState().mounted].forEach((id) => useWorkbench.getState().unloadApp(id));
 

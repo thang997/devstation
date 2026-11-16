@@ -56,6 +56,9 @@ export async function importConfig(): Promise<boolean> {
   }
   const keys = Object.keys(file.data);
   const ok = await confirmDialog({
+    title: t("Import config", "Nhập cấu hình"),
+    confirmLabel: t("Import", "Nhập"),
+    danger: false,
     message: t(
       `Import ${keys.length} config entries (exported ${file.exportedAt.slice(0, 16).replace("T", " ")})?\nExisting entries with the same name are overwritten; the app reloads afterwards. Passwords are not included.`,
       `Nhập ${keys.length} mục cấu hình (xuất lúc ${file.exportedAt.slice(0, 16).replace("T", " ")})?\nMục trùng tên sẽ bị ghi đè, xong app tự tải lại. Mật khẩu không nằm trong file.`,
