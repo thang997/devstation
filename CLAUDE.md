@@ -159,6 +159,7 @@ bố cục kiểu IDE (VS Code / Termius). Giao tiếp với người dùng bằ
 - App đọc `https://github.com/thang997/devstation/releases/latest/download/latest.json` (repo public; updater KHÔNG đọc được repo private), so version, kiểm chữ ký bằng `plugins.updater.pubkey` trong `tauri.conf.json`. `bundle.createUpdaterArtifacts: true` sinh `*.sig` khi build có `TAURI_SIGNING_PRIVATE_KEY`.
 - **Private key ở `~/.tauri/devstation.key` (không mật khẩu), NGOÀI repo** — `*.key` đã gitignore. Mất khoá = các máy đã cài không nhận update được nữa → phải sao lưu.
 - UI: `src/shell/updater.tsx` — Shell kiểm tra ngầm 3s sau khi mở (lỗi mạng im lặng; bỏ qua ở `app:dev`), có bản mới → nút **⬆ vX** ở status bar → modal (ghi chú, tiến trình tải, **Cập nhật & khởi động lại** qua `downloadAndInstall` + `relaunch` của `plugin-process`). Ctrl+K có lệnh **Kiểm tra cập nhật**. Windows cài kiểu `passive`.
+- **Hiển thị version**: `useAppVersion()` (đọc `getVersion()` từ binary, quyền có sẵn trong `core:default`) → `VersionLabel` ở status bar (bấm = kiểm tra cập nhật) + cạnh tiêu đề màn hình chính.
 - Capabilities: `updater:default`, `process:allow-restart`.
 - Bản 0.1.0 không có updater → máy nào cài 0.1.0 phải cài tay ≥ 0.2.0 một lần.
 

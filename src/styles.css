@@ -714,3 +714,5 @@ button.link:hover { background: none; border: none; color: #79c0ff; }
 .statusbar .sb-update { color: #fff; background: var(--primary); padding: 0 8px; font-weight: 600; }
 .update-bar { height: 6px; background: var(--bg-3); overflow: hidden; margin-bottom: 4px; }
 .update-bar > div { height: 100%; background: var(--primary); transition: width .2s; }
+.statusbar .sb-version { color: var(--muted); font-size: 11px; }
+.home-version { margin-left: 10px; font-size: 13px; font-weight: 400; color: var(--muted); vertical-align: middle; }

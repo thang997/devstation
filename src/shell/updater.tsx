@@ -26,6 +26,16 @@ const set = (s: State) => { state = s; emit(); };
 const subscribe = (cb: () => void) => { subs.add(cb); return () => { subs.delete(cb); }; };
 
 export const useUpdateState = () => useSyncExternalStore(subscribe, () => state);
+
+/** Version đang chạy (đọc từ binary qua getVersion; ngoài Tauri thì rỗng). Nạp một lần. */
+let appVersion = "";
+if (isTauri()) {
+  void import("@tauri-apps/api/app")
+    .then((m) => m.getVersion())
+    .then((v) => { appVersion = v; emit(); })
+    .catch(() => {});
+}
+export const useAppVersion = () => useSyncExternalStore(subscribe, () => appVersion);
 const useModalOpen = () => useSyncExternalStore(subscribe, () => modalOpen);
 export const openUpdateModal = () => { modalOpen = true; emit(); };
 const closeUpdateModal = () => { modalOpen = false; emit(); };
@@ -69,6 +79,18 @@ async function installUpdate(update: Update) {
 }
 
 const mb = (n: number) => `${(n / 1048576).toFixed(1)} MB`;
+
+/** Version hiện tại ở status bar — bấm để kiểm tra cập nhật. */
+export function VersionLabel() {
+  const v = useAppVersion();
+  const tr = useT();
+  if (!v) return null;
+  return (
+    <button className="sb-version" onClick={() => void checkForUpdate(true)} title={tr("Current version — click to check for updates", "Phiên bản hiện tại — bấm để kiểm tra cập nhật")}>
+      v{v}
+    </button>
+  );
+}
 
 /** Nút ở status bar — chỉ hiện khi có bản mới / đang tải. */
 export function UpdateButton() {

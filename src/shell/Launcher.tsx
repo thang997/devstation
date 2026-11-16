@@ -3,7 +3,7 @@ import { APPS, appShortcut, loadApp, loadedApp } from "../apps/registry";
 import type { AppManifest, Command } from "../apps/types";
 import { useWorkbench } from "../store/workbench";
 import { useLang, useT } from "../store/lang";
-import { checkForUpdate } from "./updater";
+import { checkForUpdate, useAppVersion } from "./updater";
 
 /** Bỏ dấu tiếng Việt để gõ "tien ich" vẫn khớp "Tiện ích". */
 const fold = (s: string) =>
@@ -26,6 +26,7 @@ export function Launcher({ inline = false }: { inline?: boolean }) {
   const activeApp = useWorkbench((s) => s.activeApp);
   const lang = useLang();
   const tr = useT();
+  const version = useAppVersion();
   const [q, setQ] = useState("");
   const [sel, setSel] = useState(0);
   const appTitle = (a: AppManifest) => (lang === "vi" && a.titleVi ? a.titleVi : a.title);
@@ -137,7 +138,7 @@ export function Launcher({ inline = false }: { inline?: boolean }) {
   if (inline) {
     return (
       <div className="home">
-        <h1>DevStation</h1>
+        <h1>DevStation{version && <span className="home-version">v{version}</span>}</h1>
         <p className="muted">Chọn một app để bắt đầu — app chỉ được tải khi bạn vào.</p>
         {box}
         <p className="muted small">

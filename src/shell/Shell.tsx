@@ -7,7 +7,7 @@ import { AppHost } from "./AppHost";
 import { Launcher } from "./Launcher";
 import { ContextMenu, type CtxItem } from "./ContextMenu";
 import { ConfirmHost } from "./confirm";
-import { UpdateButton, UpdateHost, checkForUpdate } from "./updater";
+import { UpdateButton, UpdateHost, VersionLabel, checkForUpdate } from "./updater";
 
 /**
  * Mỗi mini app chiếm toàn bộ cửa sổ. Không có thanh chọn app cố định:
@@ -132,6 +132,7 @@ export function Shell() {
             />
           </svg>
         </button>
+        <VersionLabel />
         <button onClick={togglePanel}>Output {logs.length ? `(${logs.length})` : ""}</button>
       </footer>
 
