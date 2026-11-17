@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { t } from "../../store/lang";
 
 export type Driver = "postgres" | "mysql" | "sqlite" | "cassandra";
 
@@ -90,4 +91,4 @@ export const useConns = create<ConnStore>((set, get) => {
 export const sessionPasswords = new Map<string, string>();
 
 export const describe = (c: Conn) =>
-  c.driver === "sqlite" ? c.file.split(/[\\/]/).pop() || "(chưa chọn file)" : `${c.user}@${c.host}${c.port ? `:${c.port}` : ""}/${c.database}`;
+  c.driver === "sqlite" ? c.file.split(/[\\/]/).pop() || t("db.noFileSelected") : `${c.user}@${c.host}${c.port ? `:${c.port}` : ""}/${c.database}`;

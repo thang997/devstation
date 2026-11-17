@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from "react";
+import { t } from "../store/lang";
 
 /**
  * Kích thước một khối, nhớ trong localStorage. Kẹp trong [min, max].
@@ -39,13 +40,14 @@ export function Splitter({
   axis,
   onResize,
   onReset,
-  title = "Kéo để đổi kích thước · double-click để trả lại mặc định",
+  title,
 }: {
   axis: "x" | "y";
   onResize: (delta: number) => void;
   onReset?: () => void;
   title?: string;
 }) {
+  title ??= t("shell.dragToResizeDoubleClickTo");
   const last = useRef(0);
   const acc = useRef(0);
   const raf = useRef<number | null>(null);

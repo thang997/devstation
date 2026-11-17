@@ -20,7 +20,7 @@ const stamp = () => new Date().toISOString().slice(0, 10).replace(/-/g, "");
 
 /** Trả về đường dẫn đã lưu, hoặc null nếu huỷ. */
 export async function exportConfig(): Promise<string | null> {
-  if (!isTauri()) throw new Error(t("Only available inside the app.", "Chỉ dùng được trong app."));
+  if (!isTauri()) throw new Error(t("shell.onlyAvailableInsideTheApp"));
   const data: Record<string, string> = {};
   for (let i = 0; i < localStorage.length; i++) {
     const k = localStorage.key(i);
@@ -29,7 +29,7 @@ export async function exportConfig(): Promise<string | null> {
   const file: ConfigFile = { app: "DevStation", format: 1, exportedAt: new Date().toISOString(), data };
   const { save } = await import("@tauri-apps/plugin-dialog");
   const path = await save({
-    title: t("Export DevStation config", "Xuất cấu hình DevStation"),
+    title: t("shell.exportDevstationConfig"),
     defaultPath: `devstation-config-${stamp()}.json`,
     filters: [{ name: "JSON", extensions: ["json"] }],
   });
@@ -40,29 +40,26 @@ export async function exportConfig(): Promise<string | null> {
 
 /** Nhập file cấu hình → ghi đè các mục trùng khoá rồi tải lại app. Trả về false nếu huỷ. */
 export async function importConfig(): Promise<boolean> {
-  if (!isTauri()) throw new Error(t("Only available inside the app.", "Chỉ dùng được trong app."));
+  if (!isTauri()) throw new Error(t("shell.onlyAvailableInsideTheApp"));
   const { open } = await import("@tauri-apps/plugin-dialog");
   const path = await open({
-    title: t("Import DevStation config", "Nhập cấu hình DevStation"),
+    title: t("shell.importDevstationConfig"),
     multiple: false,
     filters: [{ name: "JSON", extensions: ["json"] }],
   });
   if (typeof path !== "string") return false;
   const text = await invoke<string>("http_read_file", { path });
   let file: ConfigFile;
-  try { file = JSON.parse(text); } catch { throw new Error(t("Not a valid JSON file.", "File không phải JSON hợp lệ.")); }
+  try { file = JSON.parse(text); } catch { throw new Error(t("shell.notAValidJsonFile")); }
   if (file?.app !== "DevStation" || typeof file.data !== "object" || !file.data) {
-    throw new Error(t("This is not a DevStation config file.", "Đây không phải file cấu hình DevStation."));
+    throw new Error(t("shell.thisIsNotADevstationConfig"));
   }
   const keys = Object.keys(file.data);
   const ok = await confirmDialog({
-    title: t("Import config", "Nhập cấu hình"),
-    confirmLabel: t("Import", "Nhập"),
+    title: t("shell.importConfig"),
+    confirmLabel: t("shell.import"),
     danger: false,
-    message: t(
-      `Import ${keys.length} config entries (exported ${file.exportedAt.slice(0, 16).replace("T", " ")})?\nExisting entries with the same name are overwritten; the app reloads afterwards. Passwords are not included.`,
-      `Nhập ${keys.length} mục cấu hình (xuất lúc ${file.exportedAt.slice(0, 16).replace("T", " ")})?\nMục trùng tên sẽ bị ghi đè, xong app tự tải lại. Mật khẩu không nằm trong file.`,
-    ),
+    message: t("shell.importConfigEntriesExportedExistingEntries", { keysLength: keys.length, p: file.exportedAt.slice(0, 16).replace("T", " ") }),
   });
   if (!ok) return false;
   for (const k of keys) localStorage.setItem(k, String(file.data[k]));

@@ -1,4 +1,5 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { t } from "../../store/lang";
 
 export interface FileChange {
   path: string;
@@ -43,7 +44,7 @@ export interface Branch {
 export type RemoteOp = "fetch" | "pull" | "push" | "push-upstream";
 
 function call<T>(cmd: string, args: Record<string, unknown>): Promise<T> {
-  if (!isTauri()) return Promise.reject(new Error("Cần chạy trong app (npm run app:dev) — trình duyệt không gọi được git."));
+  if (!isTauri()) return Promise.reject(new Error(t("git.needAppForGit")));
   return invoke<T>(cmd, args);
 }
 

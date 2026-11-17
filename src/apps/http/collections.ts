@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { t } from "../../store/lang";
 import type { Auth, Header } from "./api";
 
 /** Một request đã lưu trong collection (bản gốc; mở ra tab là bản làm việc). */
@@ -133,7 +134,7 @@ export function useTree(): TreeNode[] {
   );
 }
 
-export function addFolder(parentId: string | null, name = "Thư mục mới"): string {
+export function addFolder(parentId: string | null, name = t("http.newFolderName")): string {
   const node: FolderNode = { kind: "folder", id: uid("f"), name, open: true, children: [] };
   commit(insert(tree, parentId, node));
   return node.id;

@@ -11,7 +11,7 @@ export interface Tab {
   danger?: boolean;
 }
 
-export type AppId = "git" | "http" | "ssh" | "tools" | "db" | "redis";
+export type AppId = "git" | "http" | "ssh" | "tools" | "db" | "redis" | "registry";
 
 /** Một dòng trong launcher (Ctrl+K). */
 export interface Command {
@@ -35,12 +35,8 @@ export interface AppManifest {
   icon: string;
   /** Icon dạng React (SVG…) ưu tiên khi RENDER trực quan (launcher, status bar). Fallback `icon`. */
   iconNode?: ReactNode;
-  /** Tiêu đề tiếng Việt (nếu khác `title`). */
-  titleVi?: string;
   /** Mô tả ngắn hiện trong launcher (tiếng Anh — mặc định). */
   description: string;
-  /** Mô tả tiếng Việt. */
-  descriptionVi?: string;
   /** Từ khoá thêm cho ô tìm kiếm (không dấu, tiếng Anh...). */
   keywords?: string;
   /** Dynamic import → Vite tách mỗi app thành một chunk riêng. */

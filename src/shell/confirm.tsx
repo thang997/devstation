@@ -25,9 +25,9 @@ export function confirmDialog(opts: {
     // Nếu có hộp cũ chưa trả lời → coi như huỷ nó.
     current?.resolve(false);
     current = {
-      title: opts.title ?? t("Confirm", "Xác nhận"),
+      title: opts.title ?? t("shell.confirm"),
       message: opts.message,
-      confirmLabel: opts.confirmLabel ?? t("Delete", "Xoá"),
+      confirmLabel: opts.confirmLabel ?? t("shell.delete"),
       danger: opts.danger ?? true,
       resolve,
     };
@@ -53,7 +53,7 @@ export function ConfirmHost() {
         <div className="muted small" style={{ whiteSpace: "pre-line" }}>{req.message}</div>
         <div className="toolbar">
           <span className="grow" />
-          <button onClick={() => close(false)}>{tr("Cancel", "Huỷ")}</button>
+          <button onClick={() => close(false)}>{tr("shell.cancel")}</button>
           <button className={`primary ${req.danger ? "danger" : ""}`} autoFocus onClick={() => close(true)}>{req.confirmLabel}</button>
         </div>
       </div>

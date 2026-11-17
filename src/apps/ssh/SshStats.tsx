@@ -87,7 +87,7 @@ export function SshStats({ cfg }: { cfg: Omit<ConnectCfg, "cols" | "rows" | "com
 
   if (off) return null;
   if (!stat) {
-    return <div className="ssh-stats muted"><span className="spinner" /> {tr("Reading server stats…", "Đang đọc thông số server…")}</div>;
+    return <div className="ssh-stats muted"><span className="spinner" /> {tr("ssh.readingServerStats")}</div>;
   }
 
   const memPct = stat.memTotal ? Math.round((stat.memUsed / stat.memTotal) * 100) : 0;
@@ -104,13 +104,13 @@ export function SshStats({ cfg }: { cfg: Omit<ConnectCfg, "cols" | "rows" | "com
     <div className="ssh-stats">
       {bar(<IconCpu />, "CPU", stat.cpu, `CPU ${stat.cpu}% · load ${stat.load}`)}
       {bar(<IconRam />, "RAM", memPct, `RAM ${human(stat.memUsed)} / ${human(stat.memTotal)}`)}
-      {stat.diskTotal > 0 && bar(<IconDisk />, tr("Disk", "Đĩa"), diskPct, `Disk ${human(stat.diskUsed)} / ${human(stat.diskTotal)}`)}
-      <span className="stat-item net" title={tr("Network up / down speed", "Tốc độ mạng lên / xuống")}>
+      {stat.diskTotal > 0 && bar(<IconDisk />, tr("ssh.disk"), diskPct, `Disk ${human(stat.diskUsed)} / ${human(stat.diskTotal)}`)}
+      <span className="stat-item net" title={tr("ssh.networkUpDownSpeed")}>
         <span className="stat-val">↑{rate(stat.netTx)}</span>
         <span className="stat-val">↓{rate(stat.netRx)}</span>
       </span>
       {stat.uptime > 0 && (
-        <span className="stat-item" title={tr("Server uptime", "Thời gian server đã chạy")}>
+        <span className="stat-item" title={tr("ssh.serverUptime")}>
           <span className="stat-label"><IconClock /></span><span className="stat-val">{uptimeText(stat.uptime)}</span>
         </span>
       )}

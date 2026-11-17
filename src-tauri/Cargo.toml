@@ -1,6 +1,6 @@
 [package]
 name = "devstation"
-version = "0.2.3"
+version = "0.3.0"
 edition = "2021"
 license = "LicenseRef-Proprietary"
 publish = false
@@ -28,12 +28,16 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # Dùng lại key/known_hosts/config của máy — không tự cài đặt SSH riêng.
 portable-pty = "0.8"
 base64 = "0.22"
+# App Registry: kiểm sha256 layer + ráp file tar cho `docker load` (MIT/Apache).
+sha2 = "0.10"
+tar = "0.4"
 # Lưu mật khẩu SSH an toàn vào kho của hệ điều hành (không ghi plaintext ra file).
 # keyring chọn backend theo từng nền tảng → khai báo riêng ở các [target...] bên dưới.
 # Hộp thoại chọn thư mục (thêm repo, chọn file SQLite).
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+bytes = "1"
 
 # Sẽ thêm theo từng giai đoạn:
 #   rusqlite (lưu workspace/history),

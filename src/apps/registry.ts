@@ -3,7 +3,9 @@ import type { AppId, AppManifest, AppModule } from "./types";
 import { DbIcon } from "../shell/icons";
 
 /**
- * Thứ tự ở đây = thứ tự trong launcher = phím tắt Ctrl+1..9.
+ * Tên/mô tả hiển thị lấy từ src/locales/<lang>.json (khoá apps.<id>.title / .description);
+ * `title`/`description` ở đây là bản tiếng Anh dùng cho tìm kiếm và chỗ không có hook.
+ * Thứ tự ở đây = thứ tự MẶC ĐỊNH trong launcher; người dùng kéo-thả để sắp lại (`orderedApps`), phím tắt Ctrl+1..9 theo thứ tự đó.
  * Thêm app mới: tạo `src/apps/<id>/index.tsx` (export default AppModule) rồi khai báo ở đây.
  * KHÔNG import tĩnh app ở bất kỳ đâu khác, nếu không Vite sẽ gộp nó vào bundle chính.
  */
@@ -11,51 +13,54 @@ export const APPS: AppManifest[] = [
   {
     id: "git", title: "Git", icon: "🌿",
     description: "Status, diff, commit, pull/push across repos",
-    descriptionVi: "Status, diff, commit, pull/push nhiều repo",
     keywords: "repo branch commit",
     load: () => import("./git"),
   },
   {
     id: "http", title: "HTTP Client", icon: "⚡",
     description: "Send requests, collections, environment",
-    descriptionVi: "Gửi request, collections, environment",
     keywords: "api rest postman curl request",
     load: () => import("./http"),
   },
   {
     id: "ssh", title: "SSH", icon: "🖥",
     description: "Terminal, tunnel, host folders",
-    descriptionVi: "Terminal, tunnel, nhóm host theo thư mục",
     keywords: "terminal server host sftp",
     load: () => import("./ssh"),
   },
   {
-    id: "tools", title: "Tools", titleVi: "Tiện ích", icon: "🧰",
+    id: "tools", title: "Tools", icon: "🧰",
     description: "Base64, JSON, JWT and other small tools",
-    descriptionVi: "Base64, JSON, JWT và các tool nhỏ khác",
     keywords: "tien ich toolkit base64 json jwt",
     load: () => import("./tools"),
   },
   {
     id: "db", title: "Database", icon: "🗄", iconNode: createElement(DbIcon, { size: 24 }),
     description: "Connect PostgreSQL, MySQL, SQLite — run SQL, browse tables",
-    descriptionVi: "Kết nối PostgreSQL, MySQL, SQLite — chạy SQL, xem bảng",
     keywords: "sql postgres mysql mariadb sqlite query co so du lieu",
     load: () => import("./db"),
   },
   {
     id: "redis", title: "Redis", icon: "🔑",
     description: "Browse keys, view values, delete keys",
-    descriptionVi: "Duyệt key, xem giá trị, xoá key",
     keywords: "cache redis key value nosql kv",
     load: () => import("./redis"),
+  },
+  {
+    id: "registry", title: "Registry", icon: "📦",
+    description: "Browse Harbor, download images (.tar)",
+    keywords: "docker harbor image registry container tag pull",
+    load: () => import("./registry/index"), // "./registry" sẽ trỏ nhầm vào chính file registry.ts
   },
 ];
 
 export const appById = (id: AppId) => APPS.find((a) => a.id === id)!;
 
 /** Phím tắt vào app, vd. "Ctrl+1". */
-export const appShortcut = (id: AppId) => `Ctrl+${APPS.findIndex((a) => a.id === id) + 1}`;
+export const appShortcut = (id: AppId) => {
+  const i = orderedApps().findIndex((a) => a.id === id);
+  return i >= 0 && i < 9 ? `Ctrl+${i + 1}` : "";
+};
 
 const pending = new Map<AppId, Promise<AppModule>>();
 const ready = new Map<AppId, AppModule>();
@@ -81,3 +86,36 @@ export function loadApp(id: AppId): Promise<AppModule> {
 
 /** Module đã tải xong (hoặc undefined nếu chưa) — dùng cho launcher. */
 export const loadedApp = (id: AppId) => ready.get(id);
+
+/* ── Thứ tự app do người dùng sắp (kéo-thả trong launcher) ──
+ * Lưu localStorage; thứ tự này quyết định cả phím tắt Ctrl+1..9. App mới chưa có trong danh sách lưu
+ * thì nối vào cuối theo thứ tự khai báo ở APPS. Đồng bộ giữa các cửa sổ qua sự kiện `storage`. */
+const ORDER_KEY = "devstation.appOrder";
+const readOrder = (): AppManifest[] => {
+  let ids: string[] = [];
+  try { ids = JSON.parse(localStorage.getItem(ORDER_KEY) ?? "[]"); } catch { /* bỏ qua */ }
+  const known = ids.map((id) => APPS.find((a) => a.id === id)).filter((a): a is AppManifest => !!a);
+  return [...known, ...APPS.filter((a) => !known.includes(a))];
+};
+let order = readOrder();
+const orderSubs = new Set<() => void>();
+const emitOrder = () => orderSubs.forEach((f) => f());
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (e) => { if (e.key === ORDER_KEY) { order = readOrder(); emitOrder(); } });
+}
+/** Danh sách app theo thứ tự người dùng. */
+export const orderedApps = () => order;
+export const subscribeAppOrder = (cb: () => void) => { orderSubs.add(cb); return () => { orderSubs.delete(cb); }; };
+export function setAppOrder(ids: AppId[]) {
+  localStorage.setItem(ORDER_KEY, JSON.stringify(ids));
+  order = readOrder();
+  emitOrder();
+}
+/** Chuyển app `id` tới trước app `beforeId` (null = cuối danh sách). */
+export function moveApp(id: AppId, beforeId: AppId | null) {
+  const ids = order.map((a) => a.id).filter((x) => x !== id);
+  const i = beforeId ? ids.indexOf(beforeId) : -1;
+  ids.splice(i < 0 ? ids.length : i, 0, id);
+  setAppOrder(ids);
+}
+export const resetAppOrder = () => setAppOrder([]);

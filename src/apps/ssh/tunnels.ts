@@ -80,7 +80,7 @@ export function removeTunnel(id: string) {
 export async function startTunnel(id: string) {
   const t = tunnels.find((x) => x.id === id);
   if (!t) return;
-  setRuntime(id, { status: "starting", msg: tr("opening…", "đang mở…") });
+  setRuntime(id, { status: "starting", msg: tr("ssh.opening") });
   const cfg: TunnelCfg = {
     id: t.id, host: t.host, port: t.port, user: t.user, keyPath: t.keyPath,
     kind: t.kind, localPort: t.localPort, remoteHost: t.remoteHost, remotePort: t.remotePort,
@@ -92,6 +92,18 @@ export async function startTunnel(id: string) {
   } catch (e) {
     setRuntime(id, { status: "error", msg: errText(e) });
   }
+}
+
+/** Mỗi cửa sổ có state JS riêng → khi app SSH mở trong cửa sổ khác, hỏi Rust tunnel nào đang chạy
+ *  (vd. do cửa sổ chính autostart) để hiện đúng trạng thái thay vì "stopped". */
+export async function syncRunningTunnels() {
+  try {
+    const ids = await ssh.tunnelRunning();
+    for (const id of ids) {
+      const t = tunnels.find((x) => x.id === id);
+      if (t && runtime[id]?.status !== "running") setRuntime(id, { status: "running", msg: tunnelDesc(t) });
+    }
+  } catch { /* bỏ qua */ }
 }
 
 let autostarted = false;
@@ -119,7 +131,7 @@ export function onTunnelEvent(id: string, ev: { line?: string; closed?: boolean 
   if (!cur || cur.status === "stopped") return; // đã chủ động đóng
   if (ev.closed) {
     // ssh thoát trong khi ta tưởng đang chạy = lỗi (auth / cổng bận / mất kết nối).
-    setRuntime(id, { status: "error", msg: cur.msg && cur.status === "error" ? cur.msg : tr("ssh exited — check key/port", "ssh thoát — kiểm tra key/cổng") });
+    setRuntime(id, { status: "error", msg: cur.msg && cur.status === "error" ? cur.msg : tr("ssh.sshExitedCheckKeyPort") });
   } else if (ev.line) {
     const low = ev.line.toLowerCase();
     const bad = /denied|refused|failed|cannot|error|address already|timed out/.test(low);
@@ -134,6 +146,6 @@ export function tunnelDesc(t: SavedTunnel): string {
 }
 
 export const newTunnel = (): SavedTunnel => ({
-  id: uid("t"), name: tr("New tunnel", "Tunnel mới"), host: "", port: 22, user: "", keyPath: "",
+  id: uid("t"), name: tr("ssh.newTunnel"), host: "", port: 22, user: "", keyPath: "",
   kind: "L", localPort: 8080, remoteHost: "localhost", remotePort: 80,
 });

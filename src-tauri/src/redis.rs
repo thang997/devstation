@@ -70,7 +70,7 @@ fn get(state: &RedisState, id: &str) -> Result<ConnectionManager, String> {
 }
 
 #[tauri::command]
-pub async fn redis_connect(state: State<'_, RedisState>, cfg: RedisConfig) -> Result<String, String> {
+pub async fn redis_connect(app: tauri::AppHandle, window: tauri::Window, state: State<'_, RedisState>, cfg: RedisConfig) -> Result<String, String> {
     let client = redis::Client::open(url(&cfg)).map_err(|e| e.to_string())?;
     let mut conn = client.get_connection_manager().await.map_err(|e| e.to_string())?;
     // PING để biết sai mật khẩu / sai host ngay, thay vì lỗi mơ hồ ở lệnh đầu tiên.
@@ -81,6 +81,7 @@ pub async fn redis_connect(state: State<'_, RedisState>, cfg: RedisConfig) -> Re
         format!("r{}", *n)
     };
     state.conns.lock().unwrap().insert(id.clone(), conn);
+    crate::owners::track(&app, window.label(), crate::owners::Kind::Redis, &id);
     Ok(id)
 }
 

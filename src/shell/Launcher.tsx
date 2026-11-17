@@ -1,10 +1,11 @@
-import { useMemo, useState } from "react";
-import { APPS, appShortcut, loadApp, loadedApp } from "../apps/registry";
+import { useMemo, useState, useSyncExternalStore } from "react";
+import { APPS, appShortcut, loadApp, loadedApp, moveApp, orderedApps, resetAppOrder, subscribeAppOrder } from "../apps/registry";
 import type { AppManifest, Command } from "../apps/types";
 import { useWorkbench } from "../store/workbench";
-import { useLang, useT } from "../store/lang";
+import { tIn, useLang, useT, type TKey } from "../store/lang";
 import { checkForUpdate, useAppVersion } from "./updater";
 import { exportConfig, importConfig } from "./configTransfer";
+import { launchApp } from "./windows";
 
 /** Bỏ dấu tiếng Việt để gõ "tien ich" vẫn khớp "Tiện ích". */
 const fold = (s: string) =>
@@ -41,24 +42,28 @@ export function Launcher({ inline = false }: { inline?: boolean }) {
   const version = useAppVersion();
   const [q, setQ] = useState("");
   const [sel, setSel] = useState(0);
-  const appTitle = (a: AppManifest) => (lang === "vi" && a.titleVi ? a.titleVi : a.title);
-  const appDesc = (a: AppManifest) => (lang === "vi" && a.descriptionVi ? a.descriptionVi : a.description);
+  const appOrder = useSyncExternalStore(subscribeAppOrder, orderedApps);
+  /** Kéo-thả sắp thứ tự app: app đang kéo + hàng đang rê lên (chèn trước hàng đó; null = cuối). */
+  const [drag, setDrag] = useState<{ id: AppManifest["id"]; over: AppManifest["id"] | "end" | null } | null>(null);
+  const appTitle = (a: AppManifest) => tr(`apps.${a.id}.title` as TKey);
+  const appDesc = (a: AppManifest) => tr(`apps.${a.id}.description` as TKey);
 
   const commands = useMemo<Command[]>(() => {
     const s = useWorkbench.getState();
     const shell: Command[] = [
-      { id: "shell.home", group: tr("General", "Chung"), title: tr("Go home", "Về màn hình chính"), run: s.goHome },
-      { id: "shell.panel", group: tr("General", "Chung"), title: tr("Toggle output panel", "Ẩn/hiện panel output"), hint: "Ctrl+`", run: s.togglePanel },
-      { id: "shell.update", group: tr("General", "Chung"), title: tr("Check for updates", "Kiểm tra cập nhật"), run: () => void checkForUpdate(true) },
-      { id: "shell.exportConfig", group: tr("General", "Chung"), title: tr("Export config to file…", "Xuất cấu hình ra file…"), run: () => void runTransfer(s, () => exportConfig().then((p) => p && tr(`Exported config → ${p}`, `Đã xuất cấu hình → ${p}`))) },
-      { id: "shell.importConfig", group: tr("General", "Chung"), title: tr("Import config from file…", "Nhập cấu hình từ file…"), run: () => void runTransfer(s, () => importConfig().then(() => null)) },
-      { id: "shell.sidebar", group: tr("General", "Chung"), title: tr("Toggle app sidebar", "Ẩn/hiện sidebar của app"), hint: "Ctrl+B", run: s.toggleSidebar },
+      { id: "shell.home", group: tr("shell.general"), title: tr("shell.goHome"), run: s.goHome },
+      { id: "shell.panel", group: tr("shell.general"), title: tr("shell.toggleOutputPanel"), hint: "Ctrl+`", run: s.togglePanel },
+      { id: "shell.update", group: tr("shell.general"), title: tr("shell.checkForUpdates"), run: () => void checkForUpdate(true) },
+      { id: "shell.exportConfig", group: tr("shell.general"), title: tr("shell.exportConfigToFile"), run: () => void runTransfer(s, () => exportConfig().then((p) => p && tr("shell.exportedConfig", { p }))) },
+      { id: "shell.importConfig", group: tr("shell.general"), title: tr("shell.importConfigFromFile"), run: () => void runTransfer(s, () => importConfig().then(() => null)) },
+      { id: "shell.resetAppOrder", group: tr("shell.general"), title: tr("shell.resetAppOrder"), run: resetAppOrder },
+      { id: "shell.sidebar", group: tr("shell.general"), title: tr("shell.toggleAppSidebar"), hint: "Ctrl+B", run: s.toggleSidebar },
       ...s.mounted.map((id) => {
         const a = APPS.find((x) => x.id === id)!;
         return {
           id: `shell.unload.${id}`,
-          group: tr("General", "Chung"),
-          title: `${tr("Close app", "Đóng app")} ${a.icon} ${appTitle(a)} ${tr("(free memory, close all tabs)", "(giải phóng bộ nhớ, đóng mọi tab)")}`,
+          group: tr("shell.general"),
+          title: `${tr("shell.closeApp")} ${a.icon} ${appTitle(a)} ${tr("shell.freeMemoryCloseAllTabs")}`,
           run: () => s.unloadApp(id),
         };
       }),
@@ -70,8 +75,8 @@ export function Launcher({ inline = false }: { inline?: boolean }) {
 
   const items = useMemo<Item[]>(() => {
     const words = fold(q).split(/\s+/).filter(Boolean);
-    const apps: Item[] = APPS.filter((a) =>
-      matches(`${a.title} ${a.titleVi ?? ""} ${a.description} ${a.descriptionVi ?? ""} ${a.keywords ?? ""}`, words),
+    const apps: Item[] = appOrder.filter((a) =>
+      matches(`${a.title} ${a.description} ${tIn("vi", `apps.${a.id}.title` as TKey)} ${tIn("vi", `apps.${a.id}.description` as TKey)} ${a.keywords ?? ""}`, words),
     ).map((app) => ({ kind: "app", app }));
     // Chưa gõ gì thì chỉ hiện danh sách app cho gọn.
     if (!words.length) return apps;
@@ -79,12 +84,25 @@ export function Launcher({ inline = false }: { inline?: boolean }) {
       .filter((c) => matches(`${c.group} ${c.title}`, words))
       .map((cmd) => ({ kind: "cmd", cmd }));
     return [...apps, ...cmds];
-  }, [q, commands]);
+  }, [q, commands, appOrder]);
+  const canReorder = !q.trim();
+
+  /** Alt+↑/↓: dời app đang chọn lên/xuống một bậc. */
+  const nudge = (dir: -1 | 1) => {
+    const it = items[sel];
+    if (!canReorder || it?.kind !== "app") return;
+    const i = appOrder.findIndex((a) => a.id === it.app.id);
+    const j = i + dir;
+    if (j < 0 || j >= appOrder.length) return;
+    // Xuống: chèn trước app đứng sau app kế tiếp (hoặc về cuối).
+    moveApp(it.app.id, dir < 0 ? appOrder[j].id : (appOrder[j + 1]?.id ?? null));
+    setSel(j);
+  };
 
   const run = (it: Item | undefined) => {
     if (!it) return;
     const s = useWorkbench.getState();
-    if (it.kind === "app") s.openApp(it.app.id);
+    if (it.kind === "app") void launchApp(it.app.id);
     else { s.setLauncher(false); it.cmd.run(); }
   };
 
@@ -93,20 +111,31 @@ export function Launcher({ inline = false }: { inline?: boolean }) {
       <input
         autoFocus
         value={q}
-        placeholder={tr("Search apps or commands…  (↑↓ select, Enter open)", "Tìm app hoặc lệnh…  (↑↓ chọn, Enter mở)")}
+        placeholder={tr("shell.searchAppsOrCommandsSelectEnter")}
         onChange={(e) => { setQ(e.target.value); setSel(0); }}
         onKeyDown={(e) => {
-          if (e.key === "ArrowDown") { e.preventDefault(); setSel((s) => Math.min(s + 1, items.length - 1)); }
+          if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) { e.preventDefault(); nudge(e.key === "ArrowUp" ? -1 : 1); }
+          else if (e.key === "ArrowDown") { e.preventDefault(); setSel((s) => Math.min(s + 1, items.length - 1)); }
           else if (e.key === "ArrowUp") { e.preventDefault(); setSel((s) => Math.max(s - 1, 0)); }
           else if (e.key === "Enter") run(items[sel]);
         }}
       />
-      <div className="launcher-list">
+      <div
+        className={`launcher-list ${drag?.over === "end" ? "drop-end" : ""}`}
+        onDragOver={(e) => { if (!drag) return; e.preventDefault(); if (drag.over !== "end") setDrag({ ...drag, over: "end" }); }}
+        onDrop={(e) => { e.preventDefault(); if (drag) moveApp(drag.id, null); setDrag(null); }}
+      >
         {items.map((it, i) =>
           it.kind === "app" ? (
             <div
               key={`app.${it.app.id}`}
-              className={`launcher-app ${i === sel ? "on" : ""}`}
+              className={`launcher-app ${i === sel ? "on" : ""} ${drag?.id === it.app.id ? "dragging" : ""} ${drag && drag.over === it.app.id && drag.id !== it.app.id ? "drop-before" : ""}`}
+              draggable={canReorder}
+              title={canReorder ? tr("shell.dragToReorderApps") : undefined}
+              onDragStart={(e) => { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", it.app.id); setDrag({ id: it.app.id, over: null }); }}
+              onDragOver={(e) => { if (!drag) return; e.preventDefault(); e.stopPropagation(); if (drag.over !== it.app.id) setDrag({ ...drag, over: it.app.id }); }}
+              onDrop={(e) => { e.preventDefault(); e.stopPropagation(); if (drag && drag.id !== it.app.id) moveApp(drag.id, it.app.id); setDrag(null); }}
+              onDragEnd={() => setDrag(null)}
               onMouseEnter={() => { setSel(i); void loadApp(it.app.id).catch(() => {}); }}
               onClick={() => run(it)}
             >
@@ -116,20 +145,20 @@ export function Launcher({ inline = false }: { inline?: boolean }) {
                 <div className="muted small">{appDesc(it.app)}</div>
               </span>
               {it.app.id === activeApp ? (
-                <span className="badge">{tr("viewing", "đang xem")}</span>
+                <span className="badge">{tr("shell.viewing")}</span>
               ) : mounted.includes(it.app.id) ? (
-                <span className="badge live">{tr("running", "đang chạy")}</span>
+                <span className="badge live">{tr("shell.running")}</span>
               ) : null}
               {mounted.includes(it.app.id) && (
                 <button
                   className="launcher-close"
-                  title={tr("Close this app (free memory, close all tabs)", "Tắt app này (giải phóng bộ nhớ, đóng mọi tab)")}
+                  title={tr("shell.closeThisAppFreeMemoryClose")}
                   onClick={(e) => { e.stopPropagation(); useWorkbench.getState().unloadApp(it.app.id); }}
                 >
                   ×
                 </button>
               )}
-              <kbd>{appShortcut(it.app.id)}</kbd>
+              {appShortcut(it.app.id) && <kbd>{appShortcut(it.app.id)}</kbd>}
             </div>
           ) : (
             <div
@@ -144,7 +173,7 @@ export function Launcher({ inline = false }: { inline?: boolean }) {
             </div>
           ),
         )}
-        {!items.length && <div className="muted pad">Không có app hay lệnh nào khớp</div>}
+        {!items.length && <div className="muted pad">{tr("shell.noMatchingAppsOrCommands")}</div>}
       </div>
     </div>
   );
@@ -153,10 +182,10 @@ export function Launcher({ inline = false }: { inline?: boolean }) {
     return (
       <div className="home">
         <h1>DevStation{version && <span className="home-version">v{version}</span>}</h1>
-        <p className="muted">Chọn một app để bắt đầu — app chỉ được tải khi bạn vào.</p>
+        <p className="muted">{tr("shell.pickAnAppToStartApps")}</p>
         {box}
         <p className="muted small">
-          <kbd>Ctrl</kbd>+<kbd>K</kbd> mở danh sách app bất cứ lúc nào · <kbd>Ctrl</kbd>+<kbd>1</kbd>…<kbd>9</kbd> vào thẳng app
+          <kbd>Ctrl</kbd>+<kbd>K</kbd> {tr("shell.opensTheAppListAnytime")} · <kbd>Ctrl</kbd>+<kbd>1</kbd>…<kbd>9</kbd> {tr("shell.jumpsStraightToAnApp")}
         </p>
       </div>
     );

@@ -18,7 +18,7 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize}
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::ssh::{handle_output, keyring_get, next_session_id, prepared_key, PwState, SharedWriter};
+use crate::ssh::{add_jump, handle_output, next_session_id, prepared_key, pw_state_for, JumpCfg, PwState, SharedWriter};
 
 /// Bộ đệm output của phiên sftp (tích luỹ tới khi thấy dấu nhắc `sftp> `).
 struct SftpBuf {
@@ -50,6 +50,8 @@ pub struct SftpCfg {
     port: u16,
     user: String,
     key_path: Option<String>,
+    /// Jump host (bastion) — giống phiên terminal.
+    jump: Option<JumpCfg>,
 }
 
 #[derive(Serialize)]
@@ -260,6 +262,7 @@ fn open_blocking(cfg: SftpCfg) -> Result<Arc<SftpSession>, String> {
         cmd.arg("-i");
         cmd.arg(prepared_key(k)?);
     }
+    add_jump(&mut cmd, cfg.jump.as_ref())?;
     cmd.arg(format!("{}@{}", cfg.user, cfg.host));
     cmd.env("TERM", "xterm-256color");
 
@@ -272,8 +275,7 @@ fn open_blocking(cfg: SftpCfg) -> Result<Arc<SftpSession>, String> {
     let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer: SharedWriter = Arc::new(Mutex::new(pair.master.take_writer().map_err(|e| e.to_string())?));
 
-    let key = format!("{}@{}:{}", cfg.user, cfg.host, cfg.port);
-    let pw = Arc::new(Mutex::new(PwState::new(key, keyring_get(&format!("{}@{}:{}", cfg.user, cfg.host, cfg.port)))));
+    let pw: Arc<Mutex<PwState>> = Arc::new(Mutex::new(pw_state_for(&cfg.user, &cfg.host, cfg.port, cfg.jump.as_ref())));
 
     let buf = Arc::new((Mutex::new(SftpBuf { text: String::new(), closed: false }), Condvar::new()));
 
@@ -333,13 +335,21 @@ fn open_blocking(cfg: SftpCfg) -> Result<Arc<SftpSession>, String> {
 }
 
 #[tauri::command]
-pub async fn sftp_open(state: State<'_, SftpState>, cfg: SftpCfg) -> Result<String, String> {
+pub async fn sftp_open(app: tauri::AppHandle, window: tauri::Window, state: State<'_, SftpState>, cfg: SftpCfg) -> Result<String, String> {
     let session = tauri::async_runtime::spawn_blocking(move || open_blocking(cfg))
         .await
         .map_err(|e| e.to_string())??;
     let id = next_session_id("f");
     state.sessions.lock().unwrap().insert(id.clone(), session);
+    crate::owners::track(&app, window.label(), crate::owners::Kind::Sftp, &id);
     Ok(id)
+}
+
+/// Tắt app: kill mọi tiến trình sftp con (Windows không tự kill khi app thoát).
+pub fn kill_all(state: &SftpState) {
+    for (_, s) in state.sessions.lock().unwrap().drain() {
+        let _ = s.child.lock().unwrap().kill();
+    }
 }
 
 /// Đóng phiên SFTP.

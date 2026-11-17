@@ -146,6 +146,19 @@ export function SftpPanel({
   const [mkFileDir, setMkFileDir] = useState<string | null>(null);
   const [mkFileName, setMkFileName] = useState("");
   const [busy, setBusy] = useState(false);
+  /** Vừa copy nội dung preview (hiện ✓ một lúc). */
+  const [copied, setCopied] = useState(false);
+  /** Copy nội dung file text đang xem (đang bôi đen một đoạn trong khung thì chỉ copy đoạn đó). */
+  const copyPreview = async (all: string) => {
+    const s = window.getSelection();
+    const inPreview = !!s?.anchorNode && !!(s.anchorNode.parentElement?.closest(".sftp-text"));
+    const sel = inPreview ? s!.toString() : "";
+    try {
+      await navigator.clipboard.writeText(sel || all);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch { /* clipboard bị chặn */ }
+  };
   const homeRef = useRef("/");
   const cwdRef = useRef("/");
   cwdRef.current = cwd;
@@ -268,7 +281,7 @@ export function SftpPanel({
     if (!sid) return;
     const isDir = e.kind === "dir";
     const local = isDir
-      ? await openDialog({ directory: true, title: tr(`Download folder “${e.name}” into…`, `Tải thư mục “${e.name}” vào…`) })
+      ? await openDialog({ directory: true, title: tr("ssh.downloadFolderInto", { name: e.name }) })
       : await saveDialog({ defaultPath: e.name });
     if (typeof local !== "string") return;
     setBusy(true);
@@ -300,8 +313,8 @@ export function SftpPanel({
     if (!sid) return;
     const ok = await confirmDialog({
       message: e.kind === "dir"
-        ? tr(`Delete folder “${e.name}”? (must be empty)`, `Xoá thư mục “${e.name}”? (phải rỗng)`)
-        : tr(`Delete “${e.name}”? This cannot be undone.`, `Xoá “${e.name}”? Không hoàn tác được.`),
+        ? tr("ssh.deleteFolderMustBeEmpty", { name: e.name })
+        : tr("ssh.deleteThisCannotBeUndone", { name: e.name }),
     });
     if (!ok) return;
     setBusy(true);
@@ -368,27 +381,27 @@ export function SftpPanel({
   const entryMenu = (e: SftpEntry): CtxItem[] => [
     ...(e.kind !== "dir"
       ? [
-          { id: "preview", icon: "👁", label: tr("Preview", "Xem trước"), action: () => void doPreview(e) },
-          { id: "dl", icon: "⬇", label: tr("Download…", "Tải về…"), action: () => void download(e) },
+          { id: "preview", icon: "👁", label: tr("ssh.preview"), action: () => void doPreview(e) },
+          { id: "dl", icon: "⬇", label: tr("ssh.download"), action: () => void download(e) },
         ]
       : [
-          { id: "open", icon: "📂", label: tr("Open", "Mở"), action: () => openEntry(e) },
-          { id: "newfile", icon: "📄", label: tr("New file here…", "Tạo file trong đây…"), action: () => { setMkFileDir(joinPath(cwd, e.name)); setMkFileName(""); } },
-          { id: "dl", icon: "⬇", label: tr("Download folder (recursive)…", "Tải thư mục (đệ quy)…"), action: () => void download(e) },
+          { id: "open", icon: "📂", label: tr("ssh.open"), action: () => openEntry(e) },
+          { id: "newfile", icon: "📄", label: tr("ssh.newFileHere"), action: () => { setMkFileDir(joinPath(cwd, e.name)); setMkFileName(""); } },
+          { id: "dl", icon: "⬇", label: tr("ssh.downloadFolderRecursive"), action: () => void download(e) },
         ]),
-    { id: "rename", icon: "✎", label: tr("Rename (F2)", "Đổi tên (F2)"), action: () => setRenaming(e.name) },
-    { id: "copy", icon: "⧉", label: tr("Copy path", "Copy đường dẫn"), action: () => void navigator.clipboard.writeText(joinPath(cwd, e.name)) },
+    { id: "rename", icon: "✎", label: tr("ssh.renameF2"), action: () => setRenaming(e.name) },
+    { id: "copy", icon: "⧉", label: tr("ssh.copyPath"), action: () => void navigator.clipboard.writeText(joinPath(cwd, e.name)) },
     { id: "s1", sep: true },
-    { id: "del", icon: "🗑", label: tr("Delete", "Xoá"), danger: true, action: () => void del(e) },
+    { id: "del", icon: "🗑", label: tr("ssh.delete"), danger: true, action: () => void del(e) },
   ];
 
   /** Menu chuột phải vùng trống (không trúng file/folder): thao tác trên thư mục hiện tại. */
   const emptyMenu = (): CtxItem[] => [
-    { id: "newfile", icon: "📄", label: tr("New file…", "Tạo file…"), action: () => { setMkFileDir(cwd); setMkFileName(""); } },
-    { id: "newdir", icon: "🗂", label: tr("New folder…", "Tạo thư mục…"), action: () => { setMkName(""); setMkOpen(true); } },
-    { id: "reload", icon: "↻", label: tr("Reload", "Tải lại"), action: () => sid && void load(sid, cwd) },
+    { id: "newfile", icon: "📄", label: tr("ssh.newFile"), action: () => { setMkFileDir(cwd); setMkFileName(""); } },
+    { id: "newdir", icon: "🗂", label: tr("ssh.newFolder2"), action: () => { setMkName(""); setMkOpen(true); } },
+    { id: "reload", icon: "↻", label: tr("ssh.reload"), action: () => sid && void load(sid, cwd) },
     ...(!noUpload
-      ? [{ id: "upload", icon: "⬆", label: tr("Upload to current folder…", "Tải file lên thư mục này…"), action: () => void upload() }]
+      ? [{ id: "upload", icon: "⬆", label: tr("ssh.uploadToCurrentFolder"), action: () => void upload() }]
       : []),
   ];
 
@@ -399,7 +412,7 @@ export function SftpPanel({
     return (
       <div className="sftp-panel">
         <div className="sftp-center">
-          <span className="spinner" /> {tr("Connecting SFTP…", "Đang kết nối SFTP…")}
+          <span className="spinner" /> {tr("ssh.connectingSftp")}
         </div>
       </div>
     );
@@ -409,7 +422,7 @@ export function SftpPanel({
       <div className="sftp-panel">
         <div className="sftp-center col">
           <div className="error-box pre">⚠ {openErr}</div>
-          <button className="primary" onClick={openSession}>{tr("Retry", "Thử lại")}</button>
+          <button className="primary" onClick={openSession}>{tr("ssh.retry")}</button>
         </div>
       </div>
     );
@@ -418,23 +431,23 @@ export function SftpPanel({
   return (
     <div className="sftp-panel">
       <div className="sftp-bar">
-        <span className="sftp-title ellipsis">{title ?? tr("Files", "File")}</span>
+        <span className="sftp-title ellipsis">{title ?? tr("ssh.files")}</span>
         <span className="grow" />
-        <button className="icon-btn" title={tr("Up", "Lên thư mục")} disabled={cwd === "/"} onClick={() => go(parentPath(cwd))}>↑</button>
-        <button className="icon-btn" title={tr("Refresh", "Làm mới")} onClick={() => sid && void load(sid, cwd)}>↻</button>
-        <button className="icon-btn" title={tr("New folder", "Thư mục mới")} onClick={() => { setMkName(""); setMkOpen(true); }}>＋</button>
-        <button className="icon-btn" title={tr("New file", "File mới")} onClick={() => { setMkFileDir(cwd); setMkFileName(""); }}>📄</button>
+        <button className="icon-btn" title={tr("ssh.up")} disabled={cwd === "/"} onClick={() => go(parentPath(cwd))}>↑</button>
+        <button className="icon-btn" title={tr("ssh.refresh2")} onClick={() => sid && void load(sid, cwd)}>↻</button>
+        <button className="icon-btn" title={tr("ssh.newFolder")} onClick={() => { setMkName(""); setMkOpen(true); }}>＋</button>
+        <button className="icon-btn" title={tr("ssh.newFile2")} onClick={() => { setMkFileDir(cwd); setMkFileName(""); }}>📄</button>
         <button
           className="icon-btn"
           title={selEntry?.kind === "dir"
-            ? tr("Download selected folder (recursive)", "Tải thư mục đang chọn (đệ quy)")
-            : tr("Download selected file…", "Tải file đang chọn về…")}
+            ? tr("ssh.downloadSelectedFolderRecursive")
+            : tr("ssh.downloadSelectedFile")}
           disabled={!selEntry || busy}
           onClick={() => selEntry && void download(selEntry)}
         >
           ⬇
         </button>
-        {!noUpload && <button className="icon-btn" title={tr("Upload file…", "Tải file lên…")} onClick={() => void upload()}>⬆</button>}
+        {!noUpload && <button className="icon-btn" title={tr("ssh.uploadFile")} onClick={() => void upload()}>⬆</button>}
       </div>
 
       <form
@@ -447,7 +460,7 @@ export function SftpPanel({
       {err && <div className="error-box pre sftp-err">⚠ {err}</div>}
 
       {loading ? (
-        <div className="sftp-center"><span className="spinner" /> {tr("Loading…", "Đang tải…")}</div>
+        <div className="sftp-center"><span className="spinner" /> {tr("ssh.loading")}</div>
       ) : (
       <div
         className="sftp-list"
@@ -457,15 +470,15 @@ export function SftpPanel({
         <div className="sftp-sticky">
           <div className="sftp-head">
             <span className="sftp-ic" />
-            <span className="grow">{tr("NAME", "TÊN")}</span>
-            <span className="sftp-size">{tr("SIZE", "KÍCH THƯỚC")}</span>
-            <span className="sftp-time">{tr("LAST MODIFIED", "SỬA ĐỔI")}</span>
+            <span className="grow">{tr("ssh.name2")}</span>
+            <span className="sftp-size">{tr("ssh.size")}</span>
+            <span className="sftp-time">{tr("ssh.lastModified")}</span>
           </div>
           {/* Hàng ".." quay lại thư mục cha (ẩn khi ở gốc). Click/double-click đều lên. */}
           {cwd !== "/" && (
             <div
               className="sftp-row sftp-up"
-              title={tr("Parent folder", "Thư mục cha")}
+              title={tr("ssh.parentFolder")}
               onClick={() => go(parentPath(cwd))}
               onDoubleClick={() => go(parentPath(cwd))}
             >
@@ -474,7 +487,7 @@ export function SftpPanel({
             </div>
           )}
         </div>
-        {!entries.length && <div className="muted small pad">{tr("Empty folder", "Thư mục trống")}</div>}
+        {!entries.length && <div className="muted small pad">{tr("ssh.emptyFolder")}</div>}
         {entries.map((e) =>
           renaming === e.name ? (
             <div key={e.name} className="sftp-row" onClick={(ev) => ev.stopPropagation()}>
@@ -512,14 +525,14 @@ export function SftpPanel({
       </div>
       )}
 
-      {busy && <div className="sftp-busy"><span className="spinner" /> {tr("Working…", "Đang xử lý…")}</div>}
+      {busy && <div className="sftp-busy"><span className="spinner" /> {tr("ssh.working")}</div>}
 
       {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}
 
       {mkOpen && (
-        <Modal title={tr("New folder", "Thư mục mới")} width={420} onClose={() => setMkOpen(false)}>
+        <Modal title={tr("ssh.newFolder")} width={420} onClose={() => setMkOpen(false)}>
           <div className="form account-form">
-            <label>{tr("Folder name", "Tên thư mục")}
+            <label>{tr("ssh.folderName")}
               <input
                 autoFocus
                 value={mkName}
@@ -529,18 +542,18 @@ export function SftpPanel({
             </label>
             <div className="toolbar">
               <span className="grow" />
-              <button onClick={() => setMkOpen(false)}>{tr("Cancel", "Huỷ")}</button>
-              <button className="primary" disabled={!mkName.trim()} onClick={() => void doMkdir()}>{tr("Create", "Tạo")}</button>
+              <button onClick={() => setMkOpen(false)}>{tr("ssh.cancel")}</button>
+              <button className="primary" disabled={!mkName.trim()} onClick={() => void doMkdir()}>{tr("ssh.create")}</button>
             </div>
           </div>
         </Modal>
       )}
 
       {mkFileDir !== null && (
-        <Modal title={tr("New file", "File mới")} width={460} onClose={() => setMkFileDir(null)}>
+        <Modal title={tr("ssh.newFile2")} width={460} onClose={() => setMkFileDir(null)}>
           <div className="form account-form">
-            <div className="muted small ellipsis">{tr("In", "Trong")} <span className="mono">{mkFileDir}</span></div>
-            <label>{tr("File name", "Tên file")}
+            <div className="muted small ellipsis">{tr("ssh.in2")} <span className="mono">{mkFileDir}</span></div>
+            <label>{tr("ssh.fileName")}
               <input
                 autoFocus
                 value={mkFileName}
@@ -550,8 +563,8 @@ export function SftpPanel({
             </label>
             <div className="toolbar">
               <span className="grow" />
-              <button onClick={() => setMkFileDir(null)}>{tr("Cancel", "Huỷ")}</button>
-              <button className="primary" disabled={!mkFileName.trim()} onClick={() => void doMkFile()}>{tr("Create", "Tạo")}</button>
+              <button onClick={() => setMkFileDir(null)}>{tr("ssh.cancel")}</button>
+              <button className="primary" disabled={!mkFileName.trim()} onClick={() => void doMkFile()}>{tr("ssh.create")}</button>
             </div>
           </div>
         </Modal>
@@ -565,17 +578,22 @@ export function SftpPanel({
               <div className="sftp-img"><img src={`data:${preview.p.mime};base64,${preview.p.data}`} alt={preview.e.name} /></div>
             )}
             {preview.p.kind === "binary" && (
-              <div className="muted pad">{tr("Binary file — can't preview.", "File nhị phân — không xem trước được.")} ({human(preview.p.size)})</div>
+              <div className="muted pad">{tr("ssh.binaryFileCanTPreview")} ({human(preview.p.size)})</div>
             )}
             {preview.p.kind === "toolarge" && (
-              <div className="muted pad">{tr("File too large to preview", "File quá lớn để xem trước")} ({human(preview.p.size)}).</div>
+              <div className="muted pad">{tr("ssh.fileTooLargeToPreview")} ({human(preview.p.size)}).</div>
             )}
           </div>
           <div className="toolbar">
             <span className="muted small">{human(preview.p.size)}</span>
             <span className="grow" />
-            <button onClick={() => setPreview(null)}>{tr("Close", "Đóng")}</button>
-            <button className="primary" disabled={busy} onClick={() => void download(preview.e)}>⬇ {tr("Download", "Tải về")}</button>
+            {preview.p.kind === "text" && (
+              <button onClick={() => void copyPreview(preview.p.data)} title={tr("ssh.copyContentHint")}>
+                {copied ? `✓ ${tr("ssh.copied")}` : `⧉ ${tr("ssh.copyContent")}`}
+              </button>
+            )}
+            <button onClick={() => setPreview(null)}>{tr("ssh.close")}</button>
+            <button className="primary" disabled={busy} onClick={() => void download(preview.e)}>⬇ {tr("ssh.download2")}</button>
           </div>
         </Modal>
       )}

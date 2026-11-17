@@ -31,6 +31,15 @@ function apply(t: Theme) {
 /** Gọi một lần lúc khởi động để áp theme đã lưu trước khi render. */
 export function initTheme() {
   apply(theme);
+  // Mỗi app một cửa sổ: đổi theme ở cửa sổ khác (localStorage dùng chung) → cửa sổ này đổi theo.
+  window.addEventListener("storage", (e) => {
+    if (e.key !== KEY) return;
+    const t: Theme = e.newValue === "light" ? "light" : "dark";
+    if (t === theme) return;
+    theme = t;
+    apply(t);
+    subs.forEach((f) => f());
+  });
 }
 
 export function setTheme(t: Theme) {

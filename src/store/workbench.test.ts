@@ -22,6 +22,19 @@ describe("workbench: mini app", () => {
     expect(wb().launcherOpen).toBe(false);
   });
 
+  it("thứ tự tab app ổn định; đóng tab đang xem thì sang tab bên cạnh", () => {
+    wb().openApp("git");
+    wb().openApp("ssh");
+    wb().openApp("db");
+    wb().openApp("git"); // mở lại app đã có: KHÔNG đẩy xuống cuối
+    expect(wb().mounted).toEqual(["git", "ssh", "db"]);
+    wb().openApp("ssh");
+    wb().unloadApp("ssh"); // đang xem ssh → sang tab bên phải (db)
+    expect(wb().activeApp).toBe("db");
+    wb().unloadApp("db"); // hết bên phải → bên trái (git)
+    expect(wb().activeApp).toBe("git");
+  });
+
   it("về màn hình chính không gỡ app đang chạy", () => {
     wb().openApp("git");
     wb().goHome();

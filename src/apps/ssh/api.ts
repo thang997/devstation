@@ -1,10 +1,20 @@
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
+import { t } from "../../store/lang";
+
+/** Jump host (bastion) — đi qua máy trung gian (OpenSSH ProxyJump). */
+export interface JumpCfg {
+  host: string;
+  port: number;
+  user: string;
+  keyPath: string;
+}
 
 export interface ConnectCfg {
   host: string;
   port: number;
   user: string;
   keyPath: string;
+  jump?: JumpCfg;
   cols?: number;
   rows?: number;
   command?: string;
@@ -33,15 +43,24 @@ export interface TunnelCfg {
   remotePort: number;
 }
 
-const needApp = () => Promise.reject(new Error("Cần chạy trong app (npm run app:dev) — trình duyệt không mở được SSH."));
+const needApp = () => Promise.reject(new Error(t("ssh.needAppForSsh")));
 
 export const ssh = {
-  connect: (cfg: ConnectCfg) => (isTauri() ? invoke<string>("ssh_connect", { cfg }) : needApp()),
+  /** Mở phiên terminal; output (byte thô) đổ vào `onData` qua Channel riêng của phiên — không base64/JSON,
+      không phát tới mọi cửa sổ như event toàn cục. Nhận cả dữ liệu đến TRƯỚC khi lệnh trả về id (banner, dấu nhắc mật khẩu). */
+  connect: (cfg: ConnectCfg, onData: (bytes: Uint8Array) => void) => {
+    if (!isTauri()) return needApp();
+    const ch = new Channel<ArrayBuffer | number[]>();
+    ch.onmessage = (m) => onData(m instanceof ArrayBuffer ? new Uint8Array(m) : new Uint8Array(m));
+    return invoke<string>("ssh_connect", { cfg, onData: ch });
+  },
   send: (id: string, data: string) => invoke<void>("ssh_send", { id, data }),
   resize: (id: string, cols: number, rows: number) => invoke<void>("ssh_resize", { id, cols, rows }),
   disconnect: (id: string) => invoke<void>("ssh_disconnect", { id }),
   tunnelOpen: (cfg: TunnelCfg) => (isTauri() ? invoke<void>("ssh_tunnel_open", { cfg }) : needApp()),
   tunnelClose: (id: string) => invoke<void>("ssh_tunnel_close", { id }),
+  /** Id các tunnel đang chạy phía Rust (dùng chung mọi cửa sổ). */
+  tunnelRunning: () => (isTauri() ? invoke<string[]>("ssh_tunnel_running") : Promise.resolve([] as string[])),
   /** Host đã có mật khẩu lưu trong Windows Credential Manager chưa. */
   hasPassword: (user: string, host: string, port: number) =>
     isTauri() ? invoke<boolean>("ssh_has_password", { user, host, port }) : Promise.resolve(false),
@@ -95,6 +114,7 @@ export interface SftpCfg {
   port: number;
   user: string;
   keyPath: string;
+  jump?: JumpCfg;
 }
 
 /** SFTP chạy sftp.exe của máy trong ConPTY (panel duyệt file kiểu MobaXterm). */
@@ -159,7 +179,7 @@ export function dockerFs(cfg: ConnectCfg, container: string): FsDriver {
     list: (_id, path) => invoke<SftpEntry[]>("docker_fs_list", { ...C, path, tz }),
     read: (_id, path, max) => invoke<SftpPreview>("docker_fs_read", { ...C, path, max }),
     get: (_id, remote, local) => invoke<void>("docker_fs_get", { ...C, remote, local }),
-    put: async () => Promise.reject(new Error("Upload vào container chưa hỗ trợ (dùng terminal + docker cp).")),
+    put: async () => Promise.reject(new Error(t("ssh.containerUploadUnsupported"))),
     mkdir: (_id, path) => invoke<void>("docker_fs_mkdir", { ...C, path }),
     touch: (_id, path) => invoke<void>("docker_fs_touch", { ...C, path }),
     rm: (_id, path) => invoke<void>("docker_fs_rm", { ...C, path }),

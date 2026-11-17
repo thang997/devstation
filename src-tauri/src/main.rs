@@ -1,10 +1,14 @@
 // Ẩn cửa sổ console khi chạy bản release trên Windows.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use tauri::Manager;
+
 mod db;
 mod git;
 mod http;
+mod owners;
 mod redis;
+mod registry;
 mod sftp;
 mod ssh;
 
@@ -34,6 +38,19 @@ fn main() {
         .manage(ssh::SshState::default())
         .manage(sftp::SftpState::default())
         .manage(redis::RedisState::default())
+        .manage(owners::Owners::default())
+        .manage(registry::RegistryState::default())
+        // Đóng cửa sổ app (nút X) / tải lại trang: React không kịp dọn → Rust đóng mọi phiên của cửa sổ đó.
+        .on_window_event(|window, ev| {
+            if let tauri::WindowEvent::Destroyed = ev {
+                owners::cleanup(window.app_handle(), window.label());
+            }
+        })
+        .on_page_load(|webview, payload| {
+            if payload.event() == tauri::webview::PageLoadEvent::Started {
+                owners::cleanup(webview.app_handle(), webview.label());
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             app_info,
             write_text_file,
@@ -98,6 +115,7 @@ fn main() {
             ssh::ssh_has_password,
             ssh::ssh_tunnel_open,
             ssh::ssh_tunnel_close,
+            ssh::ssh_tunnel_running,
             ssh::ssh_stat_start,
             ssh::ssh_stat_stop,
             ssh::ssh_docker_ps,
@@ -137,7 +155,23 @@ fn main() {
             redis::redis_save_password,
             redis::redis_get_password,
             redis::redis_forget_password,
+            registry::registry_login,
+            registry::registry_projects,
+            registry::registry_repos,
+            registry::registry_artifacts,
+            registry::registry_pull,
+            registry::registry_cancel,
+            registry::registry_save_password,
+            registry::registry_get_password,
+            registry::registry_forget_password,
         ])
-        .run(tauri::generate_context!())
-        .expect("không khởi động được DevStation");
+        .build(tauri::generate_context!())
+        .expect("không khởi động được DevStation")
+        .run(|app, ev| {
+            // Tắt app: kill tiến trình ssh/sftp con (Windows không tự kill con → tunnel mồ côi giữ kết nối server).
+            if let tauri::RunEvent::Exit = ev {
+                ssh::kill_all(&app.state::<ssh::SshState>());
+                sftp::kill_all(&app.state::<sftp::SftpState>());
+            }
+        });
 }

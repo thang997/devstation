@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { AppModule, Tab } from "../types";
@@ -10,16 +10,26 @@ import { ContextMenu, type CtxItem } from "../../shell/ContextMenu";
 import { confirmDialog } from "../../shell/confirm";
 import { t, useT } from "../../store/lang";
 import { Splitter, useSplitSize } from "../../shell/Resizable";
-import { SshTerminal } from "./Terminal";
 import { SftpPanel } from "./SftpPanel";
 import { SshStats } from "./SshStats";
 import { ssh, dockerFs, errText, type ConnectCfg, type DockerContainer } from "./api";
-import { removeHost, saveHost, setHosts, uid, useHosts, type SavedHost } from "./hosts";
+import { jumpCfgFor, removeHost, saveHost, setHosts, uid, useHosts, type SavedHost } from "./hosts";
 import { addFolder, removeFolder, renameFolder, toggleFolder, useFolders } from "./folders";
 import {
-  newTunnel, onTunnelEvent, removeTunnel, saveTunnel, startTunnel, stopTunnel,
+  newTunnel, onTunnelEvent, removeTunnel, saveTunnel, startTunnel, stopTunnel, syncRunningTunnels,
   tunnelDesc, useTunnelRuntime, useTunnels, type SavedTunnel,
 } from "./tunnels";
+
+// xterm (~280 KB) chỉ cần khi mở tab terminal → tải lười; nạp sẵn lúc rảnh để lần kết nối đầu không phải chờ.
+const loadTerminal = () => import("./Terminal");
+const SshTerminal = lazy(() => loadTerminal().then((m) => ({ default: m.SshTerminal })));
+if (typeof window !== "undefined") {
+  const idle = (window as Window & { requestIdleCallback?: (cb: () => void) => void }).requestIdleCallback ?? ((cb: () => void) => setTimeout(cb, 1500));
+  idle(() => void loadTerminal().catch(() => {}));
+}
+
+// Mỗi cửa sổ có state riêng → hỏi Rust tunnel nào đang chạy (cửa sổ chính có thể đã autostart).
+void syncRunningTunnels();
 
 const newHost = (folderId = ""): SavedHost => ({ id: uid("h"), name: "", host: "", port: 22, user: "", keyPath: "", prod: false, folderId });
 
@@ -41,7 +51,9 @@ function connect(h: SavedHost) {
 interface ExecBase { hostId: string; host: string; port: number; user: string; keyPath: string; name: string; prod: boolean; }
 
 /** Lệnh mở shell tương tác trong container: ưu tiên bash, không có thì sh. */
-const dockerExecCmd = (c: string) => `docker exec -it ${c} sh -lc 'command -v bash >/dev/null 2>&1 && exec bash || exec sh'`;
+// User không thuộc nhóm docker mà có sudo → chạy qua sudo (mật khẩu sudo gõ ngay trong terminal).
+const DOCKER_SUDO_PRE = `if ! command docker ps -q >/dev/null 2>&1 && command -v sudo >/dev/null 2>&1; then docker() { sudo docker "$@"; }; fi; `;
+const dockerExecCmd = (c: string) => `${DOCKER_SUDO_PRE}docker exec -it ${c} sh -lc 'command -v bash >/dev/null 2>&1 && exec bash || exec sh'`;
 
 /** Mở một tab terminal exec thẳng vào container Docker (ssh -tt → docker exec -it). */
 function connectExec(base: ExecBase, container: string) {
@@ -114,19 +126,19 @@ function Sidebar() {
     setMenu({ x: e.clientX, y: e.clientY, items });
   };
   const folderMenu = (f: { id: string; name: string }): CtxItem[] => [
-    { id: "add", icon: "＋", label: tr("Add host to folder…", "Thêm host vào thư mục…"), action: () => openHostForm(newHost(f.id)) },
-    { id: "rename", icon: "✎", label: tr("Rename folder…", "Đổi tên thư mục…"), action: () => setEditingFolder(f.id) },
+    { id: "add", icon: "＋", label: tr("ssh.addHostToFolder"), action: () => openHostForm(newHost(f.id)) },
+    { id: "rename", icon: "✎", label: tr("ssh.renameFolder"), action: () => setEditingFolder(f.id) },
     { id: "s1", sep: true },
-    { id: "del", icon: "🗑", label: tr("Delete folder (hosts move out)", "Xoá thư mục (host chuyển ra ngoài)"), danger: true, action: () => void confirmDialog({ message: tr(`Delete folder “${f.name}”? Hosts inside move out.`, `Xoá thư mục “${f.name}”? Host bên trong sẽ chuyển ra ngoài.`) }).then((ok) => ok && removeFolder(f.id)) },
+    { id: "del", icon: "🗑", label: tr("ssh.deleteFolderHostsMoveOut"), danger: true, action: () => void confirmDialog({ message: tr("ssh.deleteFolderHostsInsideMoveOut", { name: f.name }) }).then((ok) => ok && removeFolder(f.id)) },
   ];
   const hostMenu = (h: SavedHost): CtxItem[] => [
-    { id: "conn", icon: "🖥", label: tr("Connect", "Kết nối"), action: () => connect(h) },
-    { id: "rename", icon: "✎", label: tr("Rename (F2)", "Đổi tên (F2)"), action: () => setRenaming(h.id) },
-    { id: "edit", icon: "⚙", label: tr("Edit host…", "Sửa host…"), action: () => openHostForm(h) },
-    { id: "dup", icon: "⧉", label: tr("Duplicate host…", "Nhân bản host…"), action: () => openHostForm({ ...h, id: uid("h"), name: `${h.name || h.host} (copy)` }) },
+    { id: "conn", icon: "🖥", label: tr("ssh.connect"), action: () => connect(h) },
+    { id: "rename", icon: "✎", label: tr("ssh.renameF2"), action: () => setRenaming(h.id) },
+    { id: "edit", icon: "⚙", label: tr("ssh.editHost"), action: () => openHostForm(h) },
+    { id: "dup", icon: "⧉", label: tr("ssh.duplicateHost"), action: () => openHostForm({ ...h, id: uid("h"), name: `${h.name || h.host} (copy)` }) },
     { id: "s1", sep: true },
-    { id: "forget", icon: "🔑", label: tr("Forget saved password", "Quên mật khẩu đã lưu"), action: () => void ssh.forgetPassword(h.user, h.host, h.port) },
-    { id: "del", icon: "🗑", label: tr("Delete host", "Xoá host"), danger: true, action: () => void confirmDialog({ message: tr(`Delete host “${h.name || h.host}”?`, `Xoá host “${h.name || h.host}”?`) }).then((ok) => ok && removeHost(h.id)) },
+    { id: "forget", icon: "🔑", label: tr("ssh.forgetSavedPassword"), action: () => void ssh.forgetPassword(h.user, h.host, h.port) },
+    { id: "del", icon: "🗑", label: tr("ssh.deleteHost"), danger: true, action: () => void confirmDialog({ message: tr("ssh.deleteHost2", { p: h.name || h.host }) }).then((ok) => ok && removeHost(h.id)) },
   ];
 
   const hostRow = (h: SavedHost, inFolder: boolean) =>
@@ -158,15 +170,16 @@ function Sidebar() {
       onDoubleClick={() => connect(h)}
       onKeyDown={(e) => { if (e.key === "F2") { e.preventDefault(); setRenaming(h.id); } }}
       onContextMenu={(e) => { setSel(h.id); openMenu(e, hostMenu(h)); }}
-      title={`${tr("Double-click to connect", "Double-click để kết nối")} ${h.user}@${h.host}${h.prod ? " (PROD)" : ""} · ${tr("F2 to rename", "F2 đổi tên")}`}
+      title={`${tr("ssh.doubleClickToConnect")} ${h.user}@${h.host}${h.prod ? " (PROD)" : ""} · ${tr("ssh.f2ToRename")}`}
     >
       <span className="dot green" />
       <span className="grow ellipsis">{h.name || h.host}</span>
+      {h.jumpHostId && (() => { const j = hosts.find((x) => x.id === h.jumpHostId); return j ? <span className="muted small" title={tr("ssh.viaJump", { name: j.name || j.host })}>↪</span> : null; })()}
       {h.prod && <span className="prod-tag">PROD</span>}
       <span className="muted small ellipsis">{h.user}@{h.host}</span>
       <span className="row-actions" onClick={(e) => e.stopPropagation()}>
-        <button className="icon-btn" title={tr("Edit", "Sửa")} onClick={() => openHostForm(h)}>✎</button>
-        <button className="icon-btn" title={tr("Delete", "Xoá")} onClick={() => void confirmDialog({ message: tr(`Delete host “${h.name || h.host}”?`, `Xoá host “${h.name || h.host}”?`) }).then((ok) => ok && removeHost(h.id))}>×</button>
+        <button className="icon-btn" title={tr("ssh.edit")} onClick={() => openHostForm(h)}>✎</button>
+        <button className="icon-btn danger" title={tr("ssh.delete")} onClick={() => void confirmDialog({ message: tr("ssh.deleteHost2", { p: h.name || h.host }) }).then((ok) => ok && removeHost(h.id))}>×</button>
       </span>
     </div>
   );
@@ -182,25 +195,25 @@ function Sidebar() {
       <div className="side-head">
         <span>HOSTS</span>
         <span className="side-actions">
-          <button className="icon-btn" title={tr("Add host", "Thêm host")} onClick={() => openHostForm(newHost())}>＋</button>
-          <button className="icon-btn" title={tr("New folder", "Thư mục mới")} onClick={() => setEditingFolder(addFolder())}>🗂</button>
+          <button className="icon-btn" title={tr("ssh.addHost")} onClick={() => openHostForm(newHost())}>＋</button>
+          <button className="icon-btn" title={tr("ssh.newFolder")} onClick={() => setEditingFolder(addFolder())}>🗂</button>
         </span>
       </div>
       {hosts.length > 0 && (
         <div className="side-search-row">
           <span className="side-search-ic">🔍</span>
-          <input className="side-search" placeholder={tr("Search host (name / IP / user)…", "Tìm host (tên / IP / user)…")} value={q} onChange={(e) => setQ(e.target.value)} />
-          {q && <button className="icon-btn" title={tr("Clear search", "Xoá tìm")} onClick={() => setQ("")}>×</button>}
+          <input className="side-search" placeholder={tr("ssh.searchHostNameIpUser")} value={q} onChange={(e) => setQ(e.target.value)} />
+          {q && <button className="icon-btn" title={tr("ssh.clearSearch")} onClick={() => setQ("")}>×</button>}
         </div>
       )}
-      {hosts.length === 0 && folders.length === 0 && <div className="muted small pad">{tr("No hosts. Click ＋ to add.", "Chưa có host. Bấm ＋ để thêm.")}</div>}
+      {hosts.length === 0 && folders.length === 0 && <div className="muted small pad">{tr("ssh.noHostsClickToAdd")}</div>}
 
       {/* Đang tìm: hiện phẳng mọi host khớp (bỏ qua nhóm/thu gọn). Không tìm: giữ cây thư mục. */}
       {searching ? (
         hosts.filter(matchHost).length ? (
           hosts.filter(matchHost).map((h) => hostRow(h, false))
         ) : (
-          <div className="muted small pad">Không có host khớp “{q}”.</div>
+          <div className="muted small pad">{t("ssh.noHostMatches", { q })}</div>
         )
       ) : (
         <>
@@ -232,9 +245,9 @@ function Sidebar() {
                   <span className="grow ellipsis">{f.name}</span>
                 )}
                 <span className="row-actions" onClick={(e) => e.stopPropagation()}>
-                  <button className="icon-btn" title={tr("Add host to folder", "Thêm host vào thư mục")} onClick={() => openHostForm(newHost(f.id))}>＋</button>
-                  <button className="icon-btn" title={tr("Rename", "Đổi tên")} onClick={() => setEditingFolder(f.id)}>✎</button>
-                  <button className="icon-btn" title={tr("Delete folder (hosts move out)", "Xoá thư mục (host chuyển ra ngoài)")} onClick={() => void confirmDialog({ message: tr(`Delete folder “${f.name}”? Hosts inside move out.`, `Xoá thư mục “${f.name}”? Host bên trong sẽ chuyển ra ngoài.`) }).then((ok) => ok && removeFolder(f.id))}>×</button>
+                  <button className="icon-btn" title={tr("ssh.addHostToFolder2")} onClick={() => openHostForm(newHost(f.id))}>＋</button>
+                  <button className="icon-btn" title={tr("ssh.rename")} onClick={() => setEditingFolder(f.id)}>✎</button>
+                  <button className="icon-btn danger" title={tr("ssh.deleteFolderHostsMoveOut")} onClick={() => void confirmDialog({ message: tr("ssh.deleteFolderHostsInsideMoveOut", { name: f.name }) }).then((ok) => ok && removeFolder(f.id))}>×</button>
                 </span>
               </div>
               {f.open && hosts.filter((h) => h.folderId === f.id).map((h) => hostRow(h, true))}
@@ -246,9 +259,9 @@ function Sidebar() {
 
       <div className="side-head">
         <span>TUNNELS</span>
-        <button className="icon-btn" title={tr("Add tunnel", "Thêm tunnel")} onClick={() => setTunModal(newTunnel())}>＋</button>
+        <button className="icon-btn" title={tr("ssh.addTunnel")} onClick={() => setTunModal(newTunnel())}>＋</button>
       </div>
-      {tunnels.length === 0 && <div className="muted small pad">{tr("No tunnels (port forward).", "Chưa có tunnel (port forward).")}</div>}
+      {tunnels.length === 0 && <div className="muted small pad">{tr("ssh.noTunnelsPortForward")}</div>}
       {tunnels.map((tn) => {
         const st = runtime[tn.id]?.status ?? "stopped";
         const on = st === "running" || st === "starting";
@@ -256,18 +269,18 @@ function Sidebar() {
           <div key={tn.id} className="side-item ssh-tunnel" title={runtime[tn.id]?.msg || tunnelDesc(tn)}>
             <button
               className="icon-btn tun-toggle"
-              title={on ? tr("Stop tunnel", "Dừng tunnel") : tr("Open tunnel", "Mở tunnel")}
+              title={on ? tr("ssh.stopTunnel") : tr("ssh.openTunnel")}
               onClick={() => (on ? void stopTunnel(tn.id) : void startTunnel(tn.id))}
             >
               {on ? "⏹" : "▶"}
             </button>
             <span className={`dot tun-${st}`} />
             <span className="grow ellipsis">{tn.name}</span>
-            {tn.autostart && <span title={tr("Auto-start on app launch", "Tự chạy khi mở app")} style={{ opacity: 0.7 }}>⚡</span>}
+            {tn.autostart && <span title={tr("ssh.autoStartOnAppLaunch")} style={{ opacity: 0.7 }}>⚡</span>}
             <span className="muted small ellipsis">{tunnelDesc(tn)}</span>
             <span className="row-actions">
-              <button className="icon-btn" title={tr("Edit", "Sửa")} onClick={() => setTunModal(tn)}>✎</button>
-              <button className="icon-btn" title={tr("Delete", "Xoá")} onClick={() => void confirmDialog({ message: tr(`Delete tunnel “${tn.name}”?`, `Xoá tunnel “${tn.name}”?`) }).then((ok) => ok && removeTunnel(tn.id))}>×</button>
+              <button className="icon-btn" title={tr("ssh.edit")} onClick={() => setTunModal(tn)}>✎</button>
+              <button className="icon-btn danger" title={tr("ssh.delete")} onClick={() => void confirmDialog({ message: tr("ssh.deleteTunnel", { name: tn.name }) }).then((ok) => ok && removeTunnel(tn.id))}>×</button>
             </span>
           </div>
         );
@@ -282,7 +295,7 @@ function Sidebar() {
 /* ── Chọn file key ── */
 
 async function pickKey(set: (p: string) => void) {
-  const f = await openDialog({ multiple: false, title: t("Choose private key", "Chọn private key") });
+  const f = await openDialog({ multiple: false, title: t("ssh.choosePrivateKey") });
   if (typeof f === "string") set(f);
 }
 
@@ -292,6 +305,9 @@ function HostModal({ host, onClose }: { host: SavedHost; onClose: () => void }) 
   const tr = useT();
   const [h, setH] = useState<SavedHost>(host);
   const folders = useFolders();
+  const allHosts = useHosts();
+  const jumpChoices = allHosts.filter((x) => x.id !== h.id);
+  const jumpHost = allHosts.find((x) => x.id === h.jumpHostId && x.id !== h.id);
   const [hasPw, setHasPw] = useState(false);
   const set = (p: Partial<SavedHost>) => setH((x) => ({ ...x, ...p }));
   // Host này đã lưu mật khẩu trong Windows Credential Manager chưa (để hiện trạng thái / nút quên).
@@ -309,45 +325,60 @@ function HostModal({ host, onClose }: { host: SavedHost; onClose: () => void }) 
     onClose();
   };
   return (
-    <Modal title={tr("🖥 SSH Host", "🖥 Host SSH")} width={560} onClose={onClose}>
+    <Modal title={tr("ssh.sshHost")} width={560} onClose={onClose}>
       <div className="form account-form">
-        <label>{tr("Display name", "Tên gợi nhớ")}<input autoFocus value={h.name} placeholder="vd. prod-web" onChange={(e) => set({ name: e.target.value })} /></label>
+        <label>{tr("ssh.displayName")}<input autoFocus value={h.name} placeholder="vd. prod-web" onChange={(e) => set({ name: e.target.value })} /></label>
         <div className="form-row">
           <label className="grow">Host / IP<input className="mono" value={h.host} placeholder="10.0.0.5" onChange={(e) => set({ host: e.target.value })} /></label>
           <label style={{ width: 90 }}>Port<input className="mono" type="number" value={h.port} onChange={(e) => set({ port: Number(e.target.value) || 22 })} /></label>
         </div>
         <label>User<input value={h.user} placeholder="ubuntu" onChange={(e) => set({ user: e.target.value })} /></label>
-        <label>{tr("Private key (optional)", "Private key (tuỳ chọn)")}
+        <label>{tr("ssh.privateKeyOptional")}
           <div className="form-row">
-            <input className="grow mono" value={h.keyPath} placeholder={tr("empty = default key / ssh-agent", "để trống = key mặc định / ssh-agent")} onChange={(e) => set({ keyPath: e.target.value })} />
-            <button onClick={() => void pickKey((p) => set({ keyPath: p }))}>{tr("Browse…", "Chọn…")}</button>
+            <input className="grow mono" value={h.keyPath} placeholder={tr("ssh.emptyDefaultKeySshAgent")} onChange={(e) => set({ keyPath: e.target.value })} />
+            <button onClick={() => void pickKey((p) => set({ keyPath: p }))}>{tr("ssh.browse")}</button>
           </div>
         </label>
         <div className="field">
-          <span className="field-cap">{tr("Folder", "Thư mục")}</span>
+          <span className="field-cap">{tr("ssh.jumpHost")}</span>
           <div className="picker-field">
             <Picker
-              label={<span className="ellipsis">{folders.find((f) => f.id === h.folderId)?.name ?? tr("(No folder)", "(Ngoài thư mục)")}</span>}
-              items={[{ id: "", label: tr("(No folder)", "(Ngoài thư mục)"), selected: !h.folderId }, ...folders.map((f) => ({ id: f.id, label: f.name, selected: h.folderId === f.id }))]}
+              label={<span className="ellipsis">{jumpHost ? `↪ ${jumpHost.name || jumpHost.host} (${jumpHost.user}@${jumpHost.host}:${jumpHost.port})` : tr("ssh.jumpNone")}</span>}
+              items={[
+                { id: "", label: tr("ssh.jumpNone"), selected: !jumpHost },
+                ...jumpChoices.map((x) => ({ id: x.id, label: x.name || x.host, hint: `${x.user}@${x.host}:${x.port}`, selected: x.id === h.jumpHostId })),
+              ]}
+              onPick={(id) => set({ jumpHostId: id || undefined })}
+              filterPlaceholder={tr("ssh.searchHostNameIpUser")}
+            />
+          </div>
+          <span className="muted small">{tr("ssh.jumpHint")}</span>
+        </div>
+        <div className="field">
+          <span className="field-cap">{tr("ssh.folder")}</span>
+          <div className="picker-field">
+            <Picker
+              label={<span className="ellipsis">{folders.find((f) => f.id === h.folderId)?.name ?? tr("ssh.noFolder")}</span>}
+              items={[{ id: "", label: tr("ssh.noFolder"), selected: !h.folderId }, ...folders.map((f) => ({ id: f.id, label: f.name, selected: h.folderId === f.id }))]}
               onPick={(id) => set({ folderId: id })}
             />
           </div>
         </div>
-        <label className="check"><input type="checkbox" checked={h.prod} onChange={(e) => set({ prod: e.target.checked })} /> {tr("Mark PROD (red border, be careful)", "Đánh dấu PROD (viền đỏ, cẩn thận)")}</label>
+        <label className="check"><input type="checkbox" checked={h.prod} onChange={(e) => set({ prod: e.target.checked })} /> {tr("ssh.markProdRedBorderBeCareful")}</label>
         {hasPw ? (
           <div className="form-row" style={{ alignItems: "center" }}>
-            <span className="muted small grow">{tr("🔑 Password saved for this host — auto login next time.", "🔑 Đã lưu mật khẩu cho host này — lần sau tự đăng nhập.")}</span>
-            <button onClick={forget}>{tr("Forget password", "Quên mật khẩu")}</button>
+            <span className="muted small grow">{tr("ssh.passwordSavedForThisHostAuto")}</span>
+            <button onClick={forget}>{tr("ssh.forgetPassword")}</button>
           </div>
         ) : (
           <div className="muted small">
-            {tr("🔒 No saved password. Type it correctly the first time → saved securely to Windows Credential Manager, no need to type again (MobaXterm-style).", "🔒 Mật khẩu chưa lưu. Gõ đúng mật khẩu lần đầu → tự lưu an toàn vào Windows Credential Manager, lần sau khỏi nhập (kiểu MobaXterm).")}
+            {tr("ssh.noSavedPasswordTypeItCorrectly")}
           </div>
         )}
         <div className="toolbar">
           <span className="grow" />
-          <button onClick={onClose}>{tr("Cancel", "Huỷ")}</button>
-          <button className="primary" disabled={!h.host.trim() || !h.user.trim()} onClick={save}>{tr("Save", "Lưu")}</button>
+          <button onClick={onClose}>{tr("ssh.cancel")}</button>
+          <button className="primary" disabled={!h.host.trim() || !h.user.trim()} onClick={save}>{tr("ssh.save")}</button>
         </div>
       </div>
     </Modal>
@@ -361,8 +392,8 @@ function TunnelModal({ tunnel, onClose }: { tunnel: SavedTunnel; onClose: () => 
   const [t, setT] = useState<SavedTunnel>(tunnel);
   const set = (p: Partial<SavedTunnel>) => setT((x) => ({ ...x, ...p }));
   const KIND_LABEL: Record<SavedTunnel["kind"], string> = {
-    L: tr("Local  (-L): local port → target via server", "Local  (-L): cổng máy → đích qua server"),
-    R: tr("Remote (-R): server port → target via local", "Remote (-R): cổng server → đích qua máy"),
+    L: tr("ssh.localLLocalPortTargetVia"),
+    R: tr("ssh.remoteRServerPortTargetVia"),
     D: "Dynamic (-D): SOCKS proxy",
   };
   const save = () => {
@@ -371,11 +402,11 @@ function TunnelModal({ tunnel, onClose }: { tunnel: SavedTunnel; onClose: () => 
     onClose();
   };
   return (
-    <Modal title={tr("🔀 Tunnel (port forward)", "🔀 Tunnel (port forward)")} width={620} onClose={onClose}>
+    <Modal title={tr("ssh.tunnelPortForward")} width={620} onClose={onClose}>
       <div className="form account-form">
-        <label>{tr("Name", "Tên")}<input autoFocus value={t.name} onChange={(e) => set({ name: e.target.value })} /></label>
+        <label>{tr("ssh.name")}<input autoFocus value={t.name} onChange={(e) => set({ name: e.target.value })} /></label>
         <div className="field">
-          <span className="field-cap">{tr("Kind", "Kiểu")}</span>
+          <span className="field-cap">{tr("ssh.kind")}</span>
           <div className="picker-field">
             <Picker
               label={<span className="ellipsis">{KIND_LABEL[t.kind]}</span>}
@@ -389,22 +420,22 @@ function TunnelModal({ tunnel, onClose }: { tunnel: SavedTunnel; onClose: () => 
           <label style={{ width: 90 }}>Port<input className="mono" type="number" value={t.port} onChange={(e) => set({ port: Number(e.target.value) || 22 })} /></label>
           <label className="grow">User<input value={t.user} onChange={(e) => set({ user: e.target.value })} /></label>
         </div>
-        <label>{tr("Private key (optional — tunnels should use a key)", "Private key (tuỳ chọn — tunnel nên dùng key)")}
+        <label>{tr("ssh.privateKeyOptionalTunnelsShouldUse")}
           <div className="form-row">
-            <input className="grow mono" value={t.keyPath} placeholder={tr("empty = default key / ssh-agent", "để trống = key mặc định / ssh-agent")} onChange={(e) => set({ keyPath: e.target.value })} />
-            <button onClick={() => void pickKey((p) => set({ keyPath: p }))}>{tr("Browse…", "Chọn…")}</button>
+            <input className="grow mono" value={t.keyPath} placeholder={tr("ssh.emptyDefaultKeySshAgent")} onChange={(e) => set({ keyPath: e.target.value })} />
+            <button onClick={() => void pickKey((p) => set({ keyPath: p }))}>{tr("ssh.browse")}</button>
           </div>
         </label>
         <div className="form-row">
-          <label style={{ width: 150 }}>{t.kind === "D" ? tr("SOCKS port", "Cổng SOCKS") : tr("Local port", "Cổng mở ở máy")}<input className="mono" type="number" value={t.localPort} onChange={(e) => set({ localPort: Number(e.target.value) || 0 })} /></label>
+          <label style={{ width: 150 }}>{t.kind === "D" ? tr("ssh.socksPort") : tr("ssh.localPort")}<input className="mono" type="number" value={t.localPort} onChange={(e) => set({ localPort: Number(e.target.value) || 0 })} /></label>
           {t.kind !== "D" && (
             <>
-              <label className="grow">{tr("Target host", "Đích host")}<input className="mono" value={t.remoteHost} placeholder="localhost" onChange={(e) => set({ remoteHost: e.target.value })} /></label>
-              <label style={{ width: 120 }}>{tr("Target port", "Đích port")}<input className="mono" type="number" value={t.remotePort} onChange={(e) => set({ remotePort: Number(e.target.value) || 0 })} /></label>
+              <label className="grow">{tr("ssh.targetHost")}<input className="mono" value={t.remoteHost} placeholder="localhost" onChange={(e) => set({ remoteHost: e.target.value })} /></label>
+              <label style={{ width: 120 }}>{tr("ssh.targetPort")}<input className="mono" type="number" value={t.remotePort} onChange={(e) => set({ remotePort: Number(e.target.value) || 0 })} /></label>
             </>
           )}
         </div>
-        <label className="check"><input type="checkbox" checked={!!t.autostart} onChange={(e) => set({ autostart: e.target.checked })} /> {tr("Auto-start this tunnel on app launch", "Tự chạy tunnel này khi mở app")}</label>
+        <label className="check"><input type="checkbox" checked={!!t.autostart} onChange={(e) => set({ autostart: e.target.checked })} /> {tr("ssh.autoStartThisTunnelOnApp")}</label>
 
         {/* Sơ đồ đường đi: hiện rõ cổng LOCAL và luồng dữ liệu theo từng kiểu. */}
         <div className="tun-flow">
@@ -418,7 +449,7 @@ function TunnelModal({ tunnel, onClose }: { tunnel: SavedTunnel; onClose: () => 
           {t.kind === "R" && (<>
             <span className="tun-node srv">{t.host || "server"}:{t.localPort}</span>
             <span className="tun-arrow">→</span>
-            <span className="tun-node you">🖥 {tr("your machine", "máy bạn")}</span>
+            <span className="tun-node you">🖥 {tr("ssh.yourMachine")}</span>
             <span className="tun-arrow">→</span>
             <span className="tun-node tgt">🎯 {t.remoteHost || "localhost"}:{t.remotePort}</span>
           </>)}
@@ -427,25 +458,19 @@ function TunnelModal({ tunnel, onClose }: { tunnel: SavedTunnel; onClose: () => 
             <span className="tun-arrow">→</span>
             <span className="tun-node srv">{t.host || "server"}:{t.port}</span>
             <span className="tun-arrow">→</span>
-            <span className="tun-node tgt">{tr("any destination", "mọi đích")}</span>
+            <span className="tun-node tgt">{tr("ssh.anyDestination")}</span>
           </>)}
         </div>
         <div className="muted small">
-          {t.kind === "L" && tr(
-            `Connect to 127.0.0.1:${t.localPort} on your machine → reaches ${t.remoteHost || "localhost"}:${t.remotePort} via the server.`,
-            `Kết nối tới 127.0.0.1:${t.localPort} trên MÁY BẠN → chạm ${t.remoteHost || "localhost"}:${t.remotePort} qua server.`)}
-          {t.kind === "R" && tr(
-            `On the server, 127.0.0.1:${t.localPort} → reaches ${t.remoteHost || "localhost"}:${t.remotePort} on your side.`,
-            `Trên SERVER, 127.0.0.1:${t.localPort} → chạm ${t.remoteHost || "localhost"}:${t.remotePort} ở phía máy bạn.`)}
-          {t.kind === "D" && tr(
-            `Set SOCKS5 proxy 127.0.0.1:${t.localPort} in your apps to route out through the server.`,
-            `Đặt proxy SOCKS5 127.0.0.1:${t.localPort} cho app để đi ra qua server.`)}
+          {t.kind === "L" && tr("ssh.connectTo127001", { localPort: t.localPort, p: t.remoteHost || "localhost", remotePort: t.remotePort })}
+          {t.kind === "R" && tr("ssh.onTheServer12700", { localPort: t.localPort, p: t.remoteHost || "localhost", remotePort: t.remotePort })}
+          {t.kind === "D" && tr("ssh.setSocks5Proxy12700", { localPort: t.localPort })}
         </div>
-        <div className="muted small">{tr("Tunnel runs with", "Tunnel chạy bằng")} <span className="mono">ssh -N {t.kind === "D" ? "-D" : t.kind === "L" ? "-L" : "-R"}</span> {tr("in BatchMode (needs key/agent, no password prompt).", "ở chế độ BatchMode (cần key/agent, không hỏi mật khẩu).")}</div>
+        <div className="muted small">{tr("ssh.tunnelRunsWith")} <span className="mono">ssh -N {t.kind === "D" ? "-D" : t.kind === "L" ? "-L" : "-R"}</span> {tr("ssh.inBatchmodeNeedsKeyAgentNo")}</div>
         <div className="toolbar">
           <span className="grow" />
-          <button onClick={onClose}>{tr("Cancel", "Huỷ")}</button>
-          <button className="primary" disabled={!t.host.trim() || !t.user.trim()} onClick={save}>{tr("Save", "Lưu")}</button>
+          <button onClick={onClose}>{tr("ssh.cancel")}</button>
+          <button className="primary" disabled={!t.host.trim() || !t.user.trim()} onClick={save}>{tr("ssh.save")}</button>
         </div>
       </div>
     </Modal>
@@ -473,27 +498,27 @@ function DockerModal({ cfg, base, onClose }: { cfg: ConnectCfg; base: ExecBase; 
   useEffect(() => { load(); }, []);
   const exec = (c: DockerContainer) => { connectExec(base, c.name || c.id); onClose(); };
   const rowMenu = (c: DockerContainer): CtxItem[] => [
-    { id: "exec", icon: "▶", label: tr("Exec (shell into container)", "Exec (vào shell container)"), action: () => exec(c) },
+    { id: "exec", icon: "▶", label: tr("ssh.execShellIntoContainer"), action: () => exec(c) },
     { id: "s1", sep: true },
-    { id: "copy", icon: "⧉", label: tr("Copy name", "Copy tên"), action: () => void navigator.clipboard.writeText(c.name || c.id) },
-    { id: "copyid", icon: "#", label: tr("Copy ID", "Copy ID"), action: () => void navigator.clipboard.writeText(c.id) },
-    { id: "copyimg", icon: "🖼", label: tr("Copy image", "Copy image"), action: () => void navigator.clipboard.writeText(c.image) },
+    { id: "copy", icon: "⧉", label: tr("ssh.copyName"), action: () => void navigator.clipboard.writeText(c.name || c.id) },
+    { id: "copyid", icon: "#", label: tr("ssh.copyId"), action: () => void navigator.clipboard.writeText(c.id) },
+    { id: "copyimg", icon: "🖼", label: tr("ssh.copyImage"), action: () => void navigator.clipboard.writeText(c.image) },
   ];
   return (
-    <Modal title={tr("🐳 Docker containers", "🐳 Container Docker")} width={760} onClose={onClose}>
+    <Modal title={tr("ssh.dockerContainers")} width={760} onClose={onClose}>
       {/* minHeight cố định để khi Refresh (list → spinner) modal không bị co lại. */}
-      <div className="form" style={{ maxWidth: "none", minHeight: 480 }}>
+      <div className="form" style={{ minHeight: 480 }}>
         <div className="toolbar">
           <span className="mono muted small grow ellipsis">{base.name || cfg.host} · {cfg.user}@{cfg.host}:{cfg.port}</span>
           {base.prod ? <span className="prod-tag">PROD</span> : null}
-          <button onClick={load} disabled={loading}>{loading ? tr("Loading…", "Đang tải…") : tr("↻ Refresh", "↻ Làm mới")}</button>
+          <button onClick={load} disabled={loading}>{loading ? tr("ssh.loading") : tr("ssh.refresh")}</button>
         </div>
         {loading && (
-          <div className="db-connecting"><span className="spinner" /> {tr("Reading", "Đang đọc")} <span className="mono">docker ps</span>…</div>
+          <div className="db-connecting"><span className="spinner" /> {tr("ssh.reading")} <span className="mono">docker ps</span>…</div>
         )}
         {!loading && err && <div className="error-box pre">{err}</div>}
         {!loading && !err && list && list.length === 0 && (
-          <div className="muted pad">{tr("No running containers (docker ps empty).", "Không có container nào đang chạy (docker ps rỗng).")}</div>
+          <div className="muted pad">{tr("ssh.noRunningContainersDockerPsEmpty")}</div>
         )}
         {!loading && !err && list && list.length > 0 && (() => {
           const ql = q.trim().toLowerCase();
@@ -507,15 +532,15 @@ function DockerModal({ cfg, base, onClose }: { cfg: ConnectCfg; base: ExecBase; 
             <input
               autoFocus
               className="side-search"
-              placeholder={tr("Filter by name / image / port…", "Lọc theo tên / image / cổng…")}
+              placeholder={tr("ssh.filterByNameImagePort")}
               value={q}
               onChange={(e) => setQ(e.target.value)}
             />
-            {q && <button className="icon-btn" title={tr("Clear", "Xoá")} onClick={() => setQ("")}>×</button>}
+            {q && <button className="icon-btn" title={tr("ssh.clear")} onClick={() => setQ("")}>×</button>}
             <span className="muted small" style={{ whiteSpace: "nowrap" }}>{shown.length}/{list.length}</span>
           </div>
           {shown.length === 0 ? (
-            <div className="muted pad">{tr("No container matches", "Không có container khớp")} “{q}”.</div>
+            <div className="muted pad">{tr("ssh.noContainerMatches")} “{q}”.</div>
           ) : (
           <div className="docker-list">
             {shown.map((c) => (
@@ -524,14 +549,14 @@ function DockerModal({ cfg, base, onClose }: { cfg: ConnectCfg; base: ExecBase; 
                 className="docker-row"
                 onDoubleClick={() => exec(c)}
                 onContextMenu={(e) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, items: rowMenu(c) }); }}
-                title={tr("Double-click to exec into this container", "Double-click để exec vào container này")}
+                title={tr("ssh.doubleClickToExecIntoThis")}
               >
                 <span className="docker-ic">🐳</span>
                 <div className="grow" style={{ minWidth: 0 }}>
                   <div className="ellipsis"><b>{c.name || c.id.slice(0, 12)}</b> <span className="muted small">{c.image}</span></div>
                   <div className="muted small ellipsis">{c.status}{c.ports ? ` · ${c.ports}` : ""}</div>
                 </div>
-                <button className="primary" onClick={() => exec(c)} title={tr("Open a shell inside this container", "Mở shell trong container này")}>Exec</button>
+                <button className="primary" onClick={() => exec(c)} title={tr("ssh.openAShellInsideThisContainer")}>Exec</button>
               </div>
             ))}
           </div>
@@ -540,7 +565,7 @@ function DockerModal({ cfg, base, onClose }: { cfg: ConnectCfg; base: ExecBase; 
           );
         })()}
         <div className="muted small">
-          {tr("Exec opens a terminal tab running", "Exec mở một tab terminal chạy")} <span className="mono">ssh -tt → docker exec -it &lt;name&gt; bash/sh</span>.
+          {tr("ssh.execOpensATerminalTabRunning")} <span className="mono">ssh -tt → docker exec -it &lt;name&gt; bash/sh</span>.
         </div>
       </div>
       {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}
@@ -562,10 +587,10 @@ function TabView({ tab }: { tab: Tab }) {
   // Mã trạng thái từ terminal: connecting | connected | closed | error.
   const [status, setStatus] = useState("connecting");
   const statusText =
-    status === "connected" ? tr("connected", "đã kết nối")
-    : status === "connecting" ? tr("connecting…", "đang kết nối…")
-    : status === "closed" ? tr("closed", "đã đóng")
-    : status === "error" ? tr("error", "lỗi")
+    status === "connected" ? tr("ssh.connected")
+    : status === "connecting" ? tr("ssh.connecting")
+    : status === "closed" ? tr("ssh.closed")
+    : status === "error" ? tr("ssh.error")
     : status;
   const statusDot = status === "connected" ? "green" : status === "error" ? "red" : status === "connecting" ? "yellow" : "grey";
   // SFTP mở sẵn mỗi khi vào phiên (bên trái terminal).
@@ -574,9 +599,10 @@ function TabView({ tab }: { tab: Tab }) {
   const [cd, setCd] = useState<{ arg: string; seq: number } | null>(null);
   const [dockerOpen, setDockerOpen] = useState(false);
   const cdSeq = useRef(0);
-  const cfg = { host: String(p.host), port: Number(p.port) || 22, user: String(p.user), keyPath: String(p.keyPath ?? "") };
   const hostId = String(p.hostId ?? "");
   const curHost = hosts.find((h) => h.id === hostId);
+  // Jump host tra theo host đã lưu lúc mở tab (sửa jump host thì mở lại tab để áp dụng).
+  const cfg: ConnectCfg = { host: String(p.host), port: Number(p.port) || 22, user: String(p.user), keyPath: String(p.keyPath ?? ""), jump: jumpCfgFor(curHost, hosts) };
   // Tab exec vào container: chạy `docker exec -it` qua ssh -tt. Giao diện tối giản (chỉ terminal).
   const isExec = !!p.exec;
   const execCfg: ConnectCfg = isExec ? { ...cfg, command: String(p.command ?? ""), tty: p.tty !== false } : cfg;
@@ -591,8 +617,8 @@ function TabView({ tab }: { tab: Tab }) {
       selected: h.id === hostId,
       icon: h.prod ? <span className="prod-tag">PROD</span> : undefined,
     })),
-    { id: "\u0000new", label: tr("＋ New host…", "＋ Host mới…") },
-    { id: "\u0000list", label: tr("Show full host list", "Hiện danh sách host đầy đủ"), icon: "☰" },
+    { id: "\u0000new", label: tr("ssh.newHost") },
+    { id: "\u0000list", label: tr("ssh.showFullHostList"), icon: "☰" },
   ];
   const onPickHost = (id: string) => {
     if (id === "\u0000new") return openHostForm(newHost(curHost?.folderId ?? ""));
@@ -609,14 +635,14 @@ function TabView({ tab }: { tab: Tab }) {
         <div className="toolbar">
           <button
             className={`icon-btn ${filesOpen ? "on" : ""}`}
-            title={tr("Toggle container files", "Bật/tắt file trong container")}
+            title={tr("ssh.toggleContainerFiles")}
             onClick={() => setFilesOpen((v) => !v)}
           >
             📁
           </button>
           <span className="branch-glyph">🐳</span>
           <b>{container}</b>
-          <span className="mono muted small">{tr("in", "trong")} {base.name || cfg.host}</span>
+          <span className="mono muted small">{tr("ssh.in")} {base.name || cfg.host}</span>
           {p.prod ? <span className="prod-tag">PROD</span> : null}
           <span className="muted small">· {statusText}</span>
           <span className={`dot status-dot ${statusDot}`} />
@@ -633,7 +659,7 @@ function TabView({ tab }: { tab: Tab }) {
             <Splitter axis="x" onResize={(d) => setFilesW((w) => w + d)} onReset={() => setFilesW(FILES_DEFAULT)} />
           )}
           <div className="ssh-term-wrap">
-            <SshTerminal cfg={execCfg} onStatus={setStatus} />
+            <Suspense fallback={null}><SshTerminal cfg={execCfg} onStatus={setStatus} /></Suspense>
           </div>
         </div>
       </div>
@@ -646,14 +672,14 @@ function TabView({ tab }: { tab: Tab }) {
         {/* Nút bật/tắt SFTP đặt sát mép trái cho khớp vị trí panel file. */}
         <button
           className={`icon-btn ${filesOpen ? "on" : ""}`}
-          title={tr("Toggle file browser (SFTP)", "Bật/tắt trình duyệt file (SFTP)")}
+          title={tr("ssh.toggleFileBrowserSftp")}
           onClick={() => setFilesOpen((v) => !v)}
         >
           📁
         </button>
         <button
           className="icon-btn"
-          title={tr("Docker containers (exec into a service)", "Container Docker (exec vào service)")}
+          title={tr("ssh.dockerContainersExecIntoAService")}
           onClick={() => setDockerOpen(true)}
         >
           🐳
@@ -662,8 +688,8 @@ function TabView({ tab }: { tab: Tab }) {
           label={<><span className="branch-glyph">🖥</span> {curHost ? curHost.name || curHost.host : cfg.host}</>}
           items={hostItems}
           onPick={onPickHost}
-          title={tr("Switch host", "Đổi host")}
-          filterPlaceholder={tr("Filter hosts…", "Lọc host…")}
+          title={tr("ssh.switchHost")}
+          filterPlaceholder={tr("ssh.filterHosts")}
         />
         <span className="mono muted small">{cfg.user}@{cfg.host}:{cfg.port}</span>
         {p.prod ? <span className="prod-tag">PROD</span> : null}
@@ -683,11 +709,13 @@ function TabView({ tab }: { tab: Tab }) {
           <Splitter axis="x" onResize={(d) => setFilesW((w) => w + d)} onReset={() => setFilesW(FILES_DEFAULT)} />
         )}
         <div className="ssh-term-wrap">
-          <SshTerminal
-            cfg={cfg}
-            onStatus={setStatus}
-            onCd={(arg) => { cdSeq.current += 1; setCd({ arg, seq: cdSeq.current }); }}
-          />
+          <Suspense fallback={null}>
+            <SshTerminal
+              cfg={cfg}
+              onStatus={setStatus}
+              onCd={(arg) => { cdSeq.current += 1; setCd({ arg, seq: cdSeq.current }); }}
+            />
+          </Suspense>
           <SshStats cfg={cfg} />
         </div>
       </div>
@@ -728,7 +756,7 @@ function SshEmpty() {
   return (
     <div className="welcome">
       <h1>🖥 SSH</h1>
-      <p className="muted">{tr("Add a host to open a real terminal (via the machine's ssh.exe), create MobaXterm-style tunnels (-L/-R/-D).", "Thêm host để mở terminal thật (qua ssh.exe của máy), tạo tunnel kiểu MobaXterm (-L/-R/-D).")}</p>
+      <p className="muted">{tr("ssh.addAHostToOpenA")}</p>
     </div>
   );
 }

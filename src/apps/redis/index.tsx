@@ -24,7 +24,7 @@ interface KeyDetail {
 }
 
 async function call<T>(cmd: string, args: Record<string, unknown>): Promise<T> {
-  if (!isTauri()) throw new Error(t("Must run inside the app (npm run app:dev) — the browser can't connect to Redis.", "Cần chạy trong app (npm run app:dev) — trình duyệt không kết nối Redis được."));
+  if (!isTauri()) throw new Error(t("redis.mustRunInsideTheAppNpm"));
   return invoke<T>(cmd, args);
 }
 
@@ -33,7 +33,7 @@ const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const SCAN_COUNT = 500;
 
 async function pickRedisKey(set: (p: string) => void) {
-  const f = await openDialog({ multiple: false, title: t("Choose SSH private key", "Chọn private key cho SSH") });
+  const f = await openDialog({ multiple: false, title: t("redis.chooseSshPrivateKey") });
   if (typeof f === "string") set(f);
 }
 
@@ -158,18 +158,18 @@ function Sidebar() {
   return (
     <div className="side-list">
       <div className="side-head">
-        <span>{tr("REDIS CONNECTIONS", "KẾT NỐI REDIS")}</span>
-        <button className="icon-btn" title={tr("New connection", "Kết nối mới")} onClick={() => openForm()}>＋</button>
+        <span>{tr("redis.redisConnections")}</span>
+        <button className="icon-btn" title={tr("redis.newConnection")} onClick={() => openForm()}>＋</button>
       </div>
       {conns.map((c) => (
-        <div key={c.id} className={`side-item ${c.env === "prod" ? "prod" : ""} ${sel === c.id ? "sel" : ""}`} onClick={() => setSel(c.id)} onDoubleClick={() => openSession(c)} title={`${tr("Double-click to open", "Double-click để mở")} · ${describe(c)}`}>
+        <div key={c.id} className={`side-item ${c.env === "prod" ? "prod" : ""} ${sel === c.id ? "sel" : ""}`} onClick={() => setSel(c.id)} onDoubleClick={() => openSession(c)} title={`${tr("redis.doubleClickToOpen")} · ${describe(c)}`}>
           <span className="grow ellipsis">{c.name}</span>
           <span className={`env-tag ${c.env}`}>{c.env.toUpperCase()}</span>
           <span className="muted small">{c.port}</span>
-          <button className="icon-btn small" title={tr("Edit", "Sửa")} onClick={(e) => { e.stopPropagation(); openForm(c.id); }}>✏</button>
+          <button className="icon-btn small" title={tr("redis.edit")} onClick={(e) => { e.stopPropagation(); openForm(c.id); }}>✏</button>
         </div>
       ))}
-      {!conns.length && <div className="muted small pad">{tr("No connections yet — click ＋ to add.", "Chưa có kết nối nào — bấm ＋ để thêm.")}</div>}
+      {!conns.length && <div className="muted small pad">{tr("redis.noConnectionsYetClickToAdd")}</div>}
     </div>
   );
 }
@@ -186,20 +186,20 @@ function ConnForm({ connId, onClose }: { connId?: string; onClose: () => void })
   const set = (patch: Partial<Conn>) => setC((x) => ({ ...x, ...patch }));
 
   const test = async () => {
-    setStatus({ ok: true, text: c.ssh?.enabled ? tr("Opening SSH tunnel & testing…", "Đang mở SSH tunnel & thử kết nối…") : tr("Testing connection…", "Đang thử kết nối…") });
+    setStatus({ ok: true, text: c.ssh?.enabled ? tr("redis.openingSshTunnelTesting") : tr("redis.testingConnection") });
     try {
       const { id, tunnelId } = await redisConnectMaybeTunnel(c, password);
       const info = await call<string>("redis_info", { id, section: "server" });
       await call("redis_disconnect", { id });
       if (tunnelId) await invoke("ssh_tunnel_close", { id: tunnelId }).catch(() => {});
       const ver = /redis_version:(\S+)/.exec(info)?.[1];
-      setStatus({ ok: true, text: `${tr("✓ Connected successfully", "✓ Kết nối thành công")}${ver ? ` — Redis ${ver}` : ""}` });
+      setStatus({ ok: true, text: `${tr("redis.connectedSuccessfully")}${ver ? ` — Redis ${ver}` : ""}` });
     } catch (e) {
       setStatus({ ok: false, text: errText(e) });
     }
   };
   const submit = () => {
-    if (!c.name.trim()) return setStatus({ ok: false, text: tr("Enter a connection name", "Nhập tên kết nối") });
+    if (!c.name.trim()) return setStatus({ ok: false, text: tr("redis.enterAConnectionName") });
     save({ ...c, name: c.name.trim() });
     if (password) sessionPasswords.set(c.id, password);
     // Lưu mật khẩu NGAY lúc tạo: tick → keyring (lần sau tự nối); bỏ tick → xoá (lần sau mở modal hỏi).
@@ -210,15 +210,15 @@ function ConnForm({ connId, onClose }: { connId?: string; onClose: () => void })
   };
 
   return (
-    <Modal title={editing ? tr("✏ Edit Redis connection", "✏ Sửa kết nối Redis") : tr("＋ New Redis connection", "＋ Kết nối Redis mới")} width={560} onClose={onClose}>
+    <Modal title={editing ? tr("redis.editRedisConnection") : tr("redis.newRedisConnection")} width={560} onClose={onClose}>
       <div className="form account-form">
-        <label>{tr("Name", "Tên")}<input value={c.name} onChange={(e) => set({ name: e.target.value })} placeholder="vd. Cache HRM staging" autoFocus /></label>
+        <label>{tr("redis.name")}<input value={c.name} onChange={(e) => set({ name: e.target.value })} placeholder="vd. Cache HRM staging" autoFocus /></label>
         <div className="form-row">
           <label className="grow">Host<input className="mono" value={c.host} onChange={(e) => set({ host: e.target.value })} /></label>
           <label style={{ width: 100 }}>Port<input type="number" value={c.port} onChange={(e) => set({ port: Number(e.target.value) || 6379 })} /></label>
         </div>
         <div className="form-row">
-          <label className="grow">{tr("Password", "Mật khẩu")}
+          <label className="grow">{tr("redis.password")}
             <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
           </label>
           <label style={{ width: 120 }}>Database
@@ -227,21 +227,21 @@ function ConnForm({ connId, onClose }: { connId?: string; onClose: () => void })
         </div>
         <label className="check">
           <input type="checkbox" checked={c.tls} onChange={(e) => set({ tls: e.target.checked })} />
-          {tr("Use TLS (rediss://)", "Dùng TLS (rediss://)")}
+          {tr("redis.useTlsRediss")}
         </label>
         <label className="check">
           <input type="checkbox" checked={c.savePw !== false} onChange={(e) => set({ savePw: e.target.checked })} />
-          {tr("Save password", "Lưu mật khẩu")}
+          {tr("redis.savePassword")}
         </label>
         <div className="field">
-          <span className="field-cap">{tr("Environment", "Môi trường")}</span>
+          <span className="field-cap">{tr("redis.environment")}</span>
           <div className="picker-field">
             <Picker
               label={<span className="ellipsis">{c.env}</span>}
               items={[
                 { id: "dev", label: "dev", selected: c.env === "dev" },
                 { id: "staging", label: "staging", selected: c.env === "staging" },
-                { id: "prod", label: tr("prod (red border, confirm before delete/write)", "prod (viền đỏ, hỏi trước khi xoá/ghi)"), selected: c.env === "prod" },
+                { id: "prod", label: tr("redis.prodRedBorderConfirmBeforeDelete"), selected: c.env === "prod" },
               ]}
               onPick={(id) => set({ env: id as Conn["env"] })}
             />
@@ -252,7 +252,7 @@ function ConnForm({ connId, onClose }: { connId?: string; onClose: () => void })
             type="checkbox"
             checked={!!c.ssh?.enabled}
             onChange={(e) => set({ ssh: { host: "", port: 22, user: "", keyPath: "", ...c.ssh, enabled: e.target.checked } })}
-          /> {tr("Connect via SSH tunnel", "Kết nối qua SSH tunnel")}
+          /> {tr("redis.connectViaSshTunnel")}
         </label>
         {c.ssh?.enabled && (
           <div className="ssh-fields">
@@ -261,20 +261,20 @@ function ConnForm({ connId, onClose }: { connId?: string; onClose: () => void })
               <label style={{ width: 90 }}>Port<input className="mono" type="number" value={c.ssh.port} onChange={(e) => set({ ssh: { ...c.ssh!, port: Number(e.target.value) || 22 } })} /></label>
               <label className="grow">SSH User<input value={c.ssh.user} onChange={(e) => set({ ssh: { ...c.ssh!, user: e.target.value } })} placeholder="ubuntu" /></label>
             </div>
-            <label>{tr("Private key (BatchMode — needs key/agent, no password prompt)", "Private key (BatchMode — cần key/agent, không hỏi mật khẩu)")}
+            <label>{tr("redis.privateKeyBatchmodeNeedsKeyAgent")}
               <div className="form-row">
-                <input className="grow mono" value={c.ssh.keyPath} onChange={(e) => set({ ssh: { ...c.ssh!, keyPath: e.target.value } })} placeholder={tr("empty = default key / ssh-agent", "để trống = key mặc định / ssh-agent")} />
-                <button onClick={() => void pickRedisKey((p) => set({ ssh: { ...c.ssh!, keyPath: p } }))}>{tr("Browse…", "Chọn…")}</button>
+                <input className="grow mono" value={c.ssh.keyPath} onChange={(e) => set({ ssh: { ...c.ssh!, keyPath: e.target.value } })} placeholder={tr("redis.emptyDefaultKeySshAgent")} />
+                <button onClick={() => void pickRedisKey((p) => set({ ssh: { ...c.ssh!, keyPath: p } }))}>{tr("redis.browse")}</button>
               </div>
             </label>
-            <div className="muted small">{tr("Redis connects: 127.0.0.1 → (ssh -L) →", "Redis sẽ nối: 127.0.0.1 → (ssh -L) →")} <span className="mono">{c.host || "host"}:{c.port || 6379}</span> {tr("via the SSH server above.", "qua SSH server trên.")}</div>
+            <div className="muted small">{tr("redis.redisConnects127001")} <span className="mono">{c.host || "host"}:{c.port || 6379}</span> {tr("redis.viaTheSshServerAbove")}</div>
           </div>
         )}
         <div className="toolbar">
-          <button onClick={test}>{tr("Test connection", "Thử kết nối")}</button>
+          <button onClick={test}>{tr("redis.testConnection")}</button>
           <span className="grow" />
-          {editing && <button onClick={() => void confirmDialog({ message: tr(`Delete connection “${c.name || "this"}”?`, `Xoá kết nối “${c.name || "này"}”?`) }).then((ok) => { if (!ok) return; remove(c.id); onClose(); })}>{tr("Delete", "Xoá")}</button>}
-          <button className="primary" onClick={submit}>{tr("Save & open", "Lưu & mở")}</button>
+          {editing && <button className="danger" onClick={() => void confirmDialog({ message: tr("redis.deleteConnectionNamed", { name: c.name || tr("redis.thisFallback") }) }).then((ok) => { if (!ok) return; remove(c.id); onClose(); })}>{tr("redis.delete")}</button>}
+          <button className="primary" onClick={submit}>{tr("redis.saveOpen")}</button>
         </div>
         {status && <div className={status.ok ? "muted" : "error-box"}>{status.text}</div>}
       </div>
@@ -292,7 +292,7 @@ function ConnFormHost() {
 /* ── Phiên làm việc ────────────────────────────── */
 
 function fmtTtl(ttl: number) {
-  if (ttl === -1) return t("no expiry", "không hết hạn");
+  if (ttl === -1) return t("redis.noExpiry");
   if (ttl < 0) return "—";
   const d = Math.floor(ttl / 86400), h = Math.floor((ttl % 86400) / 3600), m = Math.floor((ttl % 3600) / 60);
   if (d) return `${d}d ${h}h`;
@@ -347,7 +347,7 @@ function Session({ tab }: { tab: Tab }) {
     if (tunnelIdRef.current) void invoke("ssh_tunnel_close", { id: tunnelIdRef.current }).catch(() => {});
   }, []);
 
-  if (!conn) return <div className="empty">{tr("This connection was deleted.", "Kết nối này đã bị xoá.")}</div>;
+  if (!conn) return <div className="empty">{tr("redis.thisConnectionWasDeleted")}</div>;
 
   const loadKeys = useCallback(async (id: string, pat: string, from = 0) => {
     setLoadingKeys(true);
@@ -380,7 +380,7 @@ function Session({ tab }: { tab: Tab }) {
       ]);
       setDbs(Array.from({ length: count }, (_, i) => i));
       setDbsize(size);
-      log(`redis: đã kết nối ${conn.name} (${describe(conn)})`);
+      log(t("redis.logConnected", { name: conn.name, desc: describe(conn) }));
       await loadKeys(id, "*");
     } catch (e) {
       setError(errText(e));
@@ -440,7 +440,7 @@ function Session({ tab }: { tab: Tab }) {
     setConfirmDel(false);
     try {
       const n = await call<number>("redis_del", { id: dbId, keys: [selected] });
-      log(`redis: xoá ${selected} (${n} key)`);
+      log(t("redis.logDeleted", { selected, n }));
       setKeys((ks) => ks.filter((k) => k !== selected));
       setSelected(null); setDetail(null);
       setDbsize((s) => (s === null ? s : Math.max(0, s - n)));
@@ -455,7 +455,7 @@ function Session({ tab }: { tab: Tab }) {
       await call("redis_set_string", { id: dbId, key: detail.key, value: editValue });
       setDetail({ ...detail, text: editValue, size: new Blob([editValue]).size });
       setEditValue(null);
-      log(`redis: đã ghi ${detail.key}`);
+      log(t("redis.logSaved", { key: detail.key }));
     } catch (e) {
       setError(errText(e));
     }
@@ -477,7 +477,7 @@ function Session({ tab }: { tab: Tab }) {
       <div className="view">
         <div className="db-connecting">
           <span className="spinner" />
-          <div>{tr("Connecting to", "Đang kết nối")} <b>{conn.name}</b>…</div>
+          <div>{tr("redis.connectingTo")} <b>{conn.name}</b>…</div>
           <div className="muted small">Redis · {describe(conn)}</div>
         </div>
       </div>
@@ -486,23 +486,23 @@ function Session({ tab }: { tab: Tab }) {
     return (
       <>
         {connectingScreen}
-        <Modal title={tr("🔑 Enter password", "🔑 Nhập mật khẩu")} width={480} onClose={() => useWorkbench.getState().closeTab(tab.id)}>
+        <Modal title={tr("redis.enterPassword")} width={480} onClose={() => useWorkbench.getState().closeTab(tab.id)}>
           <div className="form account-form">
             <div className="muted small">{conn.name} — Redis · {describe(conn)}</div>
-            <label>{tr("Password", "Mật khẩu")}
+            <label>{tr("redis.password")}
               <input type="password" autoFocus value={password} onChange={(e) => setPassword(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && connect()} placeholder={tr("leave empty if not needed", "để trống nếu không cần")} />
+                onKeyDown={(e) => e.key === "Enter" && connect()} placeholder={tr("redis.leaveEmptyIfNotNeeded")} />
             </label>
             <label className="check">
               <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
-              {tr("Save password", "Lưu mật khẩu")}
+              {tr("redis.savePassword")}
             </label>
             {error && <div className="error-box">⚠ {error}</div>}
             <div className="toolbar">
-              <button onClick={() => openForm(conn.id)}>{tr("Edit config", "Sửa cấu hình")}</button>
+              <button onClick={() => openForm(conn.id)}>{tr("redis.editConfig")}</button>
               <span className="grow" />
-              <button onClick={() => useWorkbench.getState().closeTab(tab.id)}>{tr("Cancel", "Huỷ")}</button>
-              <button className="primary" disabled={connecting} onClick={() => connect()}>{connecting ? tr("Connecting…", "Đang kết nối…") : tr("Connect", "Kết nối")}</button>
+              <button onClick={() => useWorkbench.getState().closeTab(tab.id)}>{tr("redis.cancel")}</button>
+              <button className="primary" disabled={connecting} onClick={() => connect()}>{connecting ? tr("redis.connecting") : tr("redis.connect")}</button>
             </div>
           </div>
         </Modal>
@@ -518,26 +518,26 @@ function Session({ tab }: { tab: Tab }) {
       <div className="toolbar">
         <span className="dot green" />
         <Picker
-          title={tr("Pick database", "Chọn database")}
+          title={tr("redis.pickDatabase")}
           label={<span className="ellipsis">db{db}</span>}
           items={dbs.map((n) => ({ id: String(n), label: `db${n}`, selected: n === db }))}
           onPick={(id) => void switchDb(Number(id))}
         />
-        <span className="muted small">{dbsize ?? "…"} {tr("keys", "key")}</span>
+        <span className="muted small">{dbsize ?? "…"} {tr("redis.keys")}</span>
         <input
           className="grow mono"
           value={pattern}
-          placeholder={tr("Key pattern, e.g. user:*  (Enter to search)", "Mẫu key, vd. user:*  (Enter để tìm)")}
+          placeholder={tr("redis.keyPatternEGUserEnter")}
           onChange={(e) => setPattern(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") { setKeys([]); setCursor(0); void loadKeys(dbId, pattern); } }}
         />
-        <button disabled={loadingKeys} onClick={() => { setKeys([]); setCursor(0); void loadKeys(dbId, pattern); }}>↻ {tr("Search", "Tìm")}</button>
+        <button disabled={loadingKeys} onClick={() => { setKeys([]); setCursor(0); void loadKeys(dbId, pattern); }}>↻ {tr("redis.search")}</button>
         <button onClick={() => void showInfo()} className={info !== null ? "primary" : ""}>INFO</button>
         <button onClick={() => {
           if (dbIdRef.current) void call("redis_disconnect", { id: dbIdRef.current }).catch(() => {});
           if (tunnelIdRef.current) void invoke("ssh_tunnel_close", { id: tunnelIdRef.current }).catch(() => {});
           dbIdRef.current = null; tunnelIdRef.current = null; setDbId(null); setDetail(null); setKeys([]);
-        }}>{tr("Disconnect", "Ngắt")}</button>
+        }}>{tr("redis.disconnect")}</button>
       </div>
 
       {error && <div className="error-box pre">⚠ {error}</div>}
@@ -545,10 +545,10 @@ function Session({ tab }: { tab: Tab }) {
       <div className="split">
         <div className="pane rkeys" style={{ width: keysW, flex: "0 0 auto" }}>
           <div className="pane-title">
-            <span className="grow">{tr("Keys", "Danh sách key")} ({keys.length}{loadingKeys ? "…" : ""})</span>
+            <span className="grow">{tr("redis.keys2")} ({keys.length}{loadingKeys ? "…" : ""})</span>
             <button
               className={`icon-btn ${treeView ? "on" : ""}`}
-              title={treeView ? tr("Tree view (fold by “:”) — click for flat list", "Dạng cây (gấp theo “:”) — bấm để xem phẳng") : tr("Flat list — click for tree", "Danh sách phẳng — bấm để xem cây")}
+              title={treeView ? tr("redis.treeViewFoldByClickFor") : tr("redis.flatListClickForTree")}
               onClick={() => { const v = !treeView; setTreeView(v); localStorage.setItem("redis.treeView", v ? "1" : "0"); }}
             >{treeView ? "🗂" : "☰"}</button>
           </div>
@@ -578,10 +578,10 @@ function Session({ tab }: { tab: Tab }) {
                     <span className="mono ellipsis grow">{k}</span>
                   </div>
                 ))}
-            {loadingKeys && <div className="muted small pad">{tr("Loading…", "Đang tải…")}</div>}
-            {!keys.length && !loadingKeys && <div className="muted small pad">{tr(`No keys match pattern “${pattern}”.`, `Không có key nào khớp mẫu “${pattern}”.`)}</div>}
+            {loadingKeys && <div className="muted small pad">{tr("redis.loading")}</div>}
+            {!keys.length && !loadingKeys && <div className="muted small pad">{tr("redis.noKeysMatchPattern", { pattern })}</div>}
             {!loadingKeys && cursor !== 0 && (
-              <button className="rkey-more" onClick={() => void loadKeys(dbId, pattern, cursor)}>{tr("Load more…", "Tải thêm…")}</button>
+              <button className="rkey-more" onClick={() => void loadKeys(dbId, pattern, cursor)}>{tr("redis.loadMore")}</button>
             )}
           </div>
         </div>
@@ -593,22 +593,22 @@ function Session({ tab }: { tab: Tab }) {
               <>
                 <span className="mono">{detail.key}</span>
                 <span className="kind-badge" style={{ color: KIND_COLOR[kind] ?? undefined, borderColor: KIND_COLOR[kind] ?? undefined }}>{kind}</span>
-                <span className="muted small">TTL {fmtTtl(detail.ttl)} · {detail.size} {tr("elements", "phần tử")}</span>
+                <span className="muted small">TTL {fmtTtl(detail.ttl)} · {detail.size} {tr("redis.elements")}</span>
                 <span className="grow" />
-                <button className="icon-btn" title={tr("Reload", "Đọc lại")} onClick={() => void openKey(detail.key)}>↻</button>
-                <button className="icon-btn" title={tr("Copy key name", "Copy tên key")} onClick={() => void navigator.clipboard.writeText(detail.key)}>⧉</button>
-                <button className="icon-btn" title={tr("Delete key", "Xoá key")} onClick={() => setConfirmDel(true)}>🗑</button>
+                <button className="icon-btn" title={tr("redis.reload")} onClick={() => void openKey(detail.key)}>↻</button>
+                <button className="icon-btn" title={tr("redis.copyKeyName")} onClick={() => void navigator.clipboard.writeText(detail.key)}>⧉</button>
+                <button className="icon-btn danger" title={tr("redis.deleteKey")} onClick={() => setConfirmDel(true)}>🗑</button>
               </>
-            ) : tr("Value", "Giá trị")}
+            ) : tr("redis.value")}
           </div>
 
           {confirmDel && detail && (
             <div className="error-box">
-              {isProd ? tr("⚠ This is a PROD connection. ", "⚠ Đây là kết nối PROD. ") : ""}{tr("Permanently delete key", "Xoá vĩnh viễn key")} <b className="mono">{detail.key}</b>?
+              {isProd ? tr("redis.thisIsAProdConnection") : ""}{tr("redis.permanentlyDeleteKey")} <b className="mono">{detail.key}</b>?
               <div className="toolbar">
                 <span className="grow" />
-                <button onClick={() => setConfirmDel(false)}>{tr("Cancel", "Huỷ")}</button>
-                <button className="primary danger" onClick={() => void del()}>{tr("Delete key", "Xoá key")}</button>
+                <button onClick={() => setConfirmDel(false)}>{tr("redis.cancel")}</button>
+                <button className="primary danger" onClick={() => void del()}>{tr("redis.deleteKey")}</button>
               </div>
             </div>
           )}
@@ -616,19 +616,19 @@ function Session({ tab }: { tab: Tab }) {
           {info !== null ? (
             <pre className="io mono rinfo">{info}</pre>
           ) : loadingKey ? (
-            <div className="empty">{tr("Reading…", "Đang đọc…")}</div>
+            <div className="empty">{tr("redis.reading")}</div>
           ) : !detail ? (
-            <div className="empty">{tr("Pick a key on the left, or click INFO for server info.", "Chọn một key ở bên trái, hoặc bấm INFO để xem thông tin server.")}</div>
+            <div className="empty">{tr("redis.pickAKeyOnTheLeft")}</div>
           ) : detail.kind === "string" ? (
             <div className="rstring">
               <div className="toolbar">
                 {editValue === null ? (
-                  <button onClick={() => setEditValue(detail.text ?? "")}>{tr("Edit value", "Sửa giá trị")}</button>
+                  <button onClick={() => setEditValue(detail.text ?? "")}>{tr("redis.editValue")}</button>
                 ) : (
                   <>
-                    <button className="primary" onClick={() => void saveValue()}>{tr("Save (SET, keep TTL)", "Lưu (SET, giữ TTL)")}</button>
-                    <button onClick={() => setEditValue(null)}>{tr("Cancel", "Huỷ")}</button>
-                    {isProd && <span className="muted small">{tr("PROD connection — double-check before saving", "kết nối PROD — kiểm tra kỹ trước khi lưu")}</span>}
+                    <button className="primary" onClick={() => void saveValue()}>{tr("redis.saveSetKeepTtl")}</button>
+                    <button onClick={() => setEditValue(null)}>{tr("redis.cancel")}</button>
+                    {isProd && <span className="muted small">{tr("redis.prodConnectionDoubleCheckBeforeSaving")}</span>}
                   </>
                 )}
               </div>
@@ -654,7 +654,7 @@ function Session({ tab }: { tab: Tab }) {
           ) : detail.text ? (
             <pre className="io mono">{detail.text}</pre>
           ) : (
-            <div className="empty">{tr("No data.", "Không có dữ liệu.")}</div>
+            <div className="empty">{tr("redis.noData")}</div>
           )}
         </div>
       </div>
@@ -676,8 +676,8 @@ const redisApp: AppModule = {
         empty={
           <div className="welcome">
             <h1>🔑 Redis</h1>
-            <p className="muted">{t("Browse keys, view values, delete keys, view INFO.", "Duyệt key, xem giá trị, xoá key, xem INFO.")}</p>
-            <button className="primary" onClick={() => openForm()}>＋ {t("New connection", "Kết nối mới")}</button>
+            <p className="muted">{t("redis.browseKeysViewValuesDeleteKeys")}</p>
+            <button className="primary" onClick={() => openForm()}>＋ {t("redis.newConnection")}</button>
           </div>
         }
       />
@@ -685,11 +685,11 @@ const redisApp: AppModule = {
     </>
   ),
   commands: () => [
-    { id: "redis.new", group: "Redis", title: t("New Redis connection", "Kết nối Redis mới"), run: () => openForm() },
+    { id: "redis.new", group: "Redis", title: t("redis.newRedisConnection2"), run: () => openForm() },
     ...useConns.getState().conns.map((c) => ({
       id: `redis.open.${c.id}`,
       group: "Redis",
-      title: `${t("Open Redis connection:", "Mở kết nối Redis:")} ${c.name}`,
+      title: `${t("redis.openRedisConnection")} ${c.name}`,
       run: () => openSession(c),
     })),
   ],

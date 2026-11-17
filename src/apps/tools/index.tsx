@@ -21,13 +21,13 @@ const TOOLS: Record<ToolId, { name: string; run: (s: string) => string }> = {
     name: "JWT Decode",
     run: (s) => {
       const parts = s.trim().split(".");
-      if (parts.length < 2) throw new Error(t("Token must have at least 2 dot-separated parts", "Token phải có ít nhất 2 phần ngăn bởi dấu chấm"));
+      if (parts.length < 2) throw new Error(t("tools.tokenMustHaveAtLeast2"));
       const dec = (p: string) =>
         JSON.parse(TOOLS["base64-decode"].run(p.replace(/-/g, "+").replace(/_/g, "/")));
       const header = dec(parts[0]);
       const payload = dec(parts[1]);
       const exp = typeof payload.exp === "number" ? new Date(payload.exp * 1000) : null;
-      const status = exp ? (exp.getTime() > Date.now() ? t(`Valid until ${exp.toLocaleString()}`, `Còn hạn đến ${exp.toLocaleString()}`) : t(`EXPIRED since ${exp.toLocaleString()}`, `HẾT HẠN từ ${exp.toLocaleString()}`)) : t("No exp", "Không có exp");
+      const status = exp ? (exp.getTime() > Date.now() ? t("tools.validUntil", { p: exp.toLocaleString() }) : t("tools.expiredSince", { p: exp.toLocaleString() })) : t("tools.noExp");
       return `// ${status}\n\n// header\n${JSON.stringify(header, null, 2)}\n\n// payload\n${JSON.stringify(payload, null, 2)}`;
     },
   },
@@ -46,7 +46,7 @@ function Sidebar() {
   const tr = useT();
   return (
     <div className="side-list">
-      <div className="side-head"><span>{tr("TOOLS", "TIỆN ÍCH")}</span></div>
+      <div className="side-head"><span>{tr("tools.tools")}</span></div>
       {(Object.keys(TOOLS) as ToolId[]).map((id) => (
         <div key={id} className="side-item" onClick={() => openTool(id)}>{TOOLS[id].name}</div>
       ))}
@@ -71,12 +71,12 @@ function TabView({ tab }: { tab: Tab }) {
     <div className="view">
       <div className="split">
         <div className="pane">
-          <div className="pane-title">{tr("Input", "Đầu vào")}</div>
-          <textarea className="io mono" value={input} onChange={(e) => setInput(e.target.value)} placeholder={tr("Paste here…", "Dán vào đây…")} />
+          <div className="pane-title">{tr("tools.input")}</div>
+          <textarea className="io mono" value={input} onChange={(e) => setInput(e.target.value)} placeholder={tr("tools.pasteHere")} />
         </div>
         <div className="pane">
           <div className="pane-title">
-            {tr("Result", "Kết quả")} <span className="grow" />
+            {tr("tools.result")} <span className="grow" />
             {output && <button onClick={() => navigator.clipboard.writeText(output)}>Copy</button>}
           </div>
           {error ? <div className="error-box">⚠ {error}</div> : <pre className="io mono">{output}</pre>}
@@ -91,7 +91,7 @@ const toolsApp: AppModule = {
   commands: () =>
     (Object.keys(TOOLS) as ToolId[]).map((id) => ({
       id: `tools.${id}`,
-      group: t("Tools", "Tiện ích"),
+      group: t("tools.tools2"),
       title: TOOLS[id].name,
       run: () => openTool(id),
     })),

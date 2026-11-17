@@ -1,4 +1,4 @@
-import { useState, type ComponentType, type ReactNode } from "react";
+import { memo, useState, type ComponentType, type ReactNode } from "react";
 import type { AppId, Tab } from "../apps/types";
 import { useWorkbench } from "../store/workbench";
 import { Splitter, useSplitSize } from "./Resizable";
@@ -13,6 +13,12 @@ const SIDEBAR_MAX = 520;
  * Bố cục dựng sẵn cho app: (sidebar tuỳ chọn) | thanh tab + nội dung tab.
  * App không bắt buộc dùng — app nào cần giao diện khác thì tự vẽ trong `View`.
  */
+/** Một tab: memo → chuyển tab KHÔNG vẽ lại nội dung các tab (focusTab chỉ đổi activeTabId, object tab giữ nguyên).
+ *  Trước đây mỗi lần chuyển tab mọi phiên (vd. DB MariaDB + Cassandra) đều dựng lại cây bảng → khựng. */
+const TabSlot = memo(function TabSlot({ tab, TabView }: { tab: Tab; TabView: ComponentType<{ tab: Tab }> }) {
+  return <TabView tab={tab} />;
+});
+
 export function TabbedLayout({
   appId,
   Sidebar,
@@ -42,11 +48,11 @@ export function TabbedLayout({
     openTab({ ...t, id: `${t.id}~${uid}` });
   };
   const tabMenuItems = (t: Tab): CtxItem[] => [
-    { id: "dup", icon: "⧉", label: tr("Duplicate", "Nhân đôi"), action: () => duplicateTab(t) },
+    { id: "dup", icon: "⧉", label: tr("shell.duplicate"), action: () => duplicateTab(t) },
     { id: "s1", sep: true },
-    { id: "close", icon: "✕", label: tr("Close tab", "Đóng tab"), action: () => closeTab(t.id) },
-    { id: "others", icon: "⊘", label: tr("Close others", "Đóng tab khác"), disabled: app.tabs.length < 2, action: () => closeOtherTabs(t.id) },
-    { id: "all", icon: "⨉", label: tr("Close all", "Đóng tất cả"), danger: true, action: () => closeAllTabs(appId) },
+    { id: "close", icon: "✕", label: tr("shell.closeTab"), action: () => closeTab(t.id) },
+    { id: "others", icon: "⊘", label: tr("shell.closeOthers"), disabled: app.tabs.length < 2, action: () => closeOtherTabs(t.id) },
+    { id: "all", icon: "⨉", label: tr("shell.closeAll"), danger: true, action: () => closeAllTabs(appId) },
   ];
 
   return (
@@ -64,7 +70,7 @@ export function TabbedLayout({
           {Sidebar && (
             <button
               className={`side-toggle ${app.sidebarOpen ? "on" : ""}`}
-              title={`${app.sidebarOpen ? "Ẩn" : "Hiện"} danh sách (Ctrl+B)`}
+              title={`${app.sidebarOpen ? tr("shell.hide") : tr("shell.show")} ${tr("shell.list")} (Ctrl+B)`}
               onClick={toggleSidebar}
             >
               ☰
@@ -89,10 +95,10 @@ export function TabbedLayout({
               và form request không mất trạng thái khi chuyển tab. */}
           {app.tabs.map((t) => (
             <div key={t.id} className="tab-host" hidden={t.id !== app.activeTabId}>
-              <TabView tab={t} />
+              <TabSlot tab={t} TabView={TabView} />
             </div>
           ))}
-          {!app.tabs.length && (empty ?? <div className="empty">Chọn một mục ở sidebar để mở tab.</div>)}
+          {!app.tabs.length && (empty ?? <div className="empty">{tr("shell.pickAnItemInTheSidebar")}</div>)}
         </section>
       </main>
     </div>

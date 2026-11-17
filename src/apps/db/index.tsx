@@ -13,10 +13,12 @@ import { Splitter, useSplitSize } from "../../shell/Resizable";
 import { DRIVERS, describe, newConn, sessionPasswords, useConns, type Conn, type Driver } from "./connections";
 import { addDbFolder, removeDbFolder, renameDbFolder, toggleDbFolder, useDbFolders } from "./folders";
 import { removeQuery, renameQuery, saveQuery, useSavedQueries } from "./queries";
-import { getLang, t, useT } from "../../store/lang";
+import { assembleSync, planMysqlSync, type SyncItem, type SyncKind, type SyncPlan, type SyncTable } from "./mysqlSync";
+import { buildUpdates, countSql, isPageable, pagedSql, parseSourceTable, quoteIdent, stripSql, type GridDriver, type GridEdits } from "./gridEdit";
+import { t, useT } from "../../store/lang";
 
 async function pickDbKey(set: (p: string) => void) {
-  const f = await openDialog({ multiple: false, title: t("Choose SSH private key", "Chọn private key cho SSH") });
+  const f = await openDialog({ multiple: false, title: t("db.chooseSshPrivateKey") });
   if (typeof f === "string") set(f);
 }
 
@@ -59,6 +61,26 @@ interface QueryOut {
   rowsAffected: number;
   elapsedMs: number;
   truncated: boolean;
+  /** Câu lệnh đã sinh ra kết quả này (gắn phía UI) — để sửa dữ liệu trên lưới biết bảng nguồn. */
+  sql?: string;
+  /** Kết quả phân trang phía server (SELECT không tự có LIMIT): câu gốc, trang (từ 0), cỡ trang, còn trang sau.
+   *  Cassandra: `cass.states[k]` = paging state (token driver) để lấy trang k (trang 0 = null). */
+  paging?: { base: string; page: number; size: number; hasNext: boolean; cass?: { states: (string | null)[] } };
+  /** Cassandra: token để lấy trang kế (backend trả về); null/undefined = hết dữ liệu. */
+  pagingState?: string | null;
+}
+
+/** Cassandra: gắn thông tin trang từ paging state của driver (chỉ đi tới/lùi theo token đã biết). */
+function withCassPaging(out: QueryOut, base: string, page: number, size: number, states: (string | null)[]): QueryOut {
+  const ns = states.slice(0, page + 1);
+  if (out.pagingState) ns[page + 1] = out.pagingState;
+  return { ...out, truncated: false, sql: base, paging: { base, page, size, hasNext: !!out.pagingState && out.rows.length > 0, cass: { states: ns } } };
+}
+
+/** Kết quả lấy dư 1 dòng (size+1) → cắt về size + đánh dấu còn trang sau. */
+function withPaging(out: QueryOut, base: string, page: number, size: number): QueryOut {
+  const hasNext = out.rows.length > size;
+  return { ...out, rows: hasNext ? out.rows.slice(0, size) : out.rows, truncated: false, sql: base, paging: { base, page, size, hasNext } };
 }
 interface TableInfo { schema: string; name: string; kind: string }
 
@@ -119,6 +141,13 @@ function splitStatements(text: string): string[] {
 
 type Sug = { label: string; kind: "kw" | "db" | "table" | "col"; hint?: string };
 
+/** Tô đậm đoạn khớp (không phân biệt hoa thường) trong nhãn gợi ý. */
+function hlMatch(label: string, q: string) {
+  const at = q ? label.toLowerCase().indexOf(q) : -1;
+  if (at < 0) return label;
+  return <>{label.slice(0, at)}<b className="sug-hl">{label.slice(at, at + q.length)}</b>{label.slice(at + q.length)}</>;
+}
+
 const SQL_WORDS = [
   "SELECT", "FROM", "WHERE", "INSERT", "INTO", "VALUES", "UPDATE", "SET", "DELETE", "JOIN",
   "LEFT", "RIGHT", "INNER", "OUTER", "ON", "GROUP", "BY", "ORDER", "HAVING", "LIMIT", "OFFSET",
@@ -162,7 +191,7 @@ function caretXY(ta: HTMLTextAreaElement, pos: number): { x: number; y: number }
 const ROW_LIMIT = 1000;
 
 async function call<T>(cmd: string, args: Record<string, unknown>): Promise<T> {
-  if (!isTauri()) throw new Error(t("Must run inside the app (npm run app:dev) — the browser can't connect to a DB.", "Cần chạy trong app (npm run app:dev) — trình duyệt không kết nối DB được."));
+  if (!isTauri()) throw new Error(t("db.mustRunInsideTheAppNpm"));
   return invoke<T>(cmd, args);
 }
 
@@ -228,23 +257,31 @@ function Sidebar() {
   const folders = useDbFolders();
   const [menu, setMenu] = useState<{ x: number; y: number; items: CtxItem[] } | null>(null);
   const [editingFolder, setEditingFolder] = useState<string | null>(null);
+  /** Kết nối đang đổi tên tại chỗ (F2 / menu chuột phải). */
+  const [editingConn, setEditingConn] = useState<string | null>(null);
+  const renameConn = (c: Conn, name: string) => {
+    const n = name.trim();
+    if (n && n !== c.name) useConns.getState().save({ ...c, name: n });
+    setEditingConn(null);
+  };
   const [sel, setSel] = useState<string | null>(null);
 
   const move = (c: Conn, folderId: string) => useConns.getState().save({ ...c, folderId });
 
   const connMenu = (c: Conn): CtxItem[] => [
-    { id: "open", label: tr("Open / connect", "Mở / kết nối"), action: () => openSession(c) },
-    { id: "edit", label: tr("Edit config…", "Sửa cấu hình…"), action: () => openForm(c.id) },
+    { id: "open", label: tr("db.openConnect"), action: () => openSession(c) },
+    { id: "edit", label: tr("db.editConfig"), action: () => openForm(c.id) },
+    { id: "rename", label: tr("db.renameF2"), action: () => setEditingConn(c.id) },
     ...(c.driver === "mysql" || c.driver === "postgres"
       ? [{
           id: "newdb",
-          label: c.driver === "postgres" ? tr("New schema (run SQL)…", "Schema mới (chạy SQL)…") : tr("New database (run SQL)…", "Database mới (chạy SQL)…"),
+          label: c.driver === "postgres" ? tr("db.newSchemaRunSql") : tr("db.newDatabaseRunSql"),
           action: () => { openSession(c); requestNewDb(c.id); },
         }]
       : []),
     {
       id: "dup",
-      label: tr("Duplicate connection…", "Nhân bản kết nối…"),
+      label: tr("db.duplicateConnection"),
       action: () => {
         const copy: Conn = { ...c, id: `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`, name: `${c.name} (copy)` };
         useConns.getState().save(copy);
@@ -253,15 +290,15 @@ function Sidebar() {
     },
     { id: "s1", sep: true },
     // Chuyển vào thư mục.
-    ...folders.filter((f) => f.id !== c.folderId).map((f) => ({ id: `mv-${f.id}`, label: `${tr("Move to", "Chuyển vào")} 🗂 ${f.name}`, action: () => move(c, f.id) })),
-    ...(c.folderId ? [{ id: "mv-root", label: tr("Move out of folder", "Đưa ra ngoài thư mục"), action: () => move(c, "") }] : []),
+    ...folders.filter((f) => f.id !== c.folderId).map((f) => ({ id: `mv-${f.id}`, label: `${tr("db.moveTo")} 🗂 ${f.name}`, action: () => move(c, f.id) })),
+    ...(c.folderId ? [{ id: "mv-root", label: tr("db.moveOutOfFolder"), action: () => move(c, "") }] : []),
     { id: "s2", sep: true },
-    { id: "forget", label: tr("Forget saved password", "Quên mật khẩu đã lưu"), action: () => void call("db_forget_password", { id: c.id }).catch(() => {}) },
+    { id: "forget", label: tr("db.forgetSavedPassword"), action: () => void call("db_forget_password", { id: c.id }).catch(() => {}) },
     {
       id: "del",
-      label: tr("Delete connection", "Xoá kết nối"),
+      label: tr("db.deleteConnection"),
       danger: true,
-      action: () => void confirmDialog({ message: tr(`Delete connection “${c.name}”? The saved password is also removed.`, `Xoá kết nối “${c.name}”? Mật khẩu đã lưu cũng bị xoá.`) }).then((ok) => {
+      action: () => void confirmDialog({ message: tr("db.deleteConnectionTheSavedPasswordIs", { name: c.name }) }).then((ok) => {
         if (!ok) return;
         void call("db_forget_password", { id: c.id }).catch(() => {});
         useConns.getState().remove(c.id);
@@ -270,10 +307,10 @@ function Sidebar() {
   ];
 
   const folderMenu = (f: { id: string; name: string }): CtxItem[] => [
-    { id: "add", label: tr("New connection in folder…", "Kết nối mới trong thư mục…"), action: () => openForm(undefined, f.id) },
-    { id: "rename", label: tr("Rename folder…", "Đổi tên thư mục…"), action: () => setEditingFolder(f.id) },
+    { id: "add", label: tr("db.newConnectionInFolder"), action: () => openForm(undefined, f.id) },
+    { id: "rename", label: tr("db.renameFolder"), action: () => setEditingFolder(f.id) },
     { id: "s1", sep: true },
-    { id: "del", label: tr("Delete folder (connections move out)", "Xoá thư mục (kết nối chuyển ra ngoài)"), danger: true, action: () => void confirmDialog({ message: tr(`Delete folder “${f.name}”? Connections inside move out.`, `Xoá thư mục “${f.name}”? Kết nối bên trong sẽ chuyển ra ngoài.`) }).then((ok) => ok && removeDbFolder(f.id)) },
+    { id: "del", label: tr("db.deleteFolderConnectionsMoveOut"), danger: true, action: () => void confirmDialog({ message: tr("db.deleteFolderConnectionsInsideMoveOut", { name: f.name }) }).then((ok) => ok && removeDbFolder(f.id)) },
   ];
 
   const connRow = (c: Conn, inFolder: boolean) => (
@@ -281,7 +318,13 @@ function Sidebar() {
       key={c.id}
       className={`side-item ${c.env === "prod" ? "prod" : ""} ${sel === c.id ? "sel" : ""} ${dragId === c.id ? "dragging" : ""}`}
       style={inFolder ? { paddingLeft: 24 } : undefined}
-      draggable
+      draggable={editingConn !== c.id}
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return; // phím gõ trong ô đổi tên
+        if (e.key === "F2") { e.preventDefault(); setEditingConn(c.id); }
+        else if (e.key === "Enter") { e.preventDefault(); openSession(c); }
+      }}
       onDragStart={(e) => { setDragId(c.id); e.dataTransfer.effectAllowed = "move"; }}
       onDragEnd={() => setDragId(null)}
       onDragOver={(e) => { if (dragId) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; if (dragId !== c.id) e.currentTarget.classList.add("drop-before"); } }}
@@ -290,12 +333,28 @@ function Sidebar() {
       onClick={() => setSel(c.id)}
       onDoubleClick={() => openSession(c)}
       onContextMenu={(e) => { e.preventDefault(); setSel(c.id); setMenu({ x: e.clientX, y: e.clientY, items: connMenu(c) }); }}
-      title={`${tr("Double-click to open", "Double-click để mở")} · ${describe(c)}`}
+      title={`${tr("db.doubleClickToOpen")} · ${describe(c)}`}
     >
-      <span className="grow ellipsis">{c.name}</span>
+      {editingConn === c.id ? (
+        <input
+          autoFocus
+          className="tree-rename grow"
+          defaultValue={c.name}
+          onFocus={(e) => e.currentTarget.select()}
+          onClick={(e) => e.stopPropagation()}
+          onDoubleClick={(e) => e.stopPropagation()}
+          onBlur={(e) => renameConn(c, e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") e.currentTarget.blur();
+            if (e.key === "Escape") { e.preventDefault(); setEditingConn(null); }
+          }}
+        />
+      ) : (
+        <span className="grow ellipsis">{c.name}</span>
+      )}
       <span className={`env-tag ${c.env}`}>{c.env.toUpperCase()}</span>
       <span className="muted small">{DRIVERS[c.driver].name.split(" ")[0]}</span>
-      <button className="icon-btn small" title={tr("Edit", "Sửa")} onClick={(e) => { e.stopPropagation(); openForm(c.id); }}>✏</button>
+      <button className="icon-btn small" title={tr("db.edit")} onClick={(e) => { e.stopPropagation(); openForm(c.id); }}>✏</button>
     </div>
   );
 
@@ -303,15 +362,28 @@ function Sidebar() {
 
   return (
     <div
-      className="side-list"
+      className="side-list fill"
       onDragOver={(e) => { if (dragId) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; } }}
       onDrop={(e) => { if (dragId) { e.preventDefault(); dropOn(null, ""); } }}
+      onContextMenu={(e) => {
+        // Chỉ khi chuột phải vào CHỖ TRỐNG (hàng kết nối/thư mục có menu riêng).
+        if ((e.target as HTMLElement).closest(".side-item, .tree-row, input, button")) return;
+        e.preventDefault();
+        setMenu({
+          x: e.clientX,
+          y: e.clientY,
+          items: [
+            { id: "newConn", label: tr("db.newConnection"), action: () => openForm() },
+            { id: "newFolder", label: tr("db.newFolder"), action: () => setEditingFolder(addDbFolder()) },
+          ],
+        });
+      }}
     >
       <div className="side-head">
-        <span>{tr("CONNECTIONS", "KẾT NỐI")}</span>
+        <span>{tr("db.connections")}</span>
         <span className="side-actions">
-          <button className="icon-btn" title={tr("New connection", "Kết nối mới")} onClick={() => openForm()}>＋</button>
-          <button className="icon-btn" title={tr("New folder", "Thư mục mới")} onClick={() => setEditingFolder(addDbFolder())}>🗂</button>
+          <button className="icon-btn" title={tr("db.newConnection")} onClick={() => openForm()}>＋</button>
+          <button className="icon-btn" title={tr("db.newFolder")} onClick={() => setEditingFolder(addDbFolder())}>🗂</button>
         </span>
       </div>
 
@@ -343,9 +415,9 @@ function Sidebar() {
               <span className="grow ellipsis">{f.name}</span>
             )}
             <span className="row-actions" onClick={(e) => e.stopPropagation()}>
-              <button className="icon-btn" title={tr("New connection in folder", "Kết nối mới vào thư mục")} onClick={() => openForm(undefined, f.id)}>＋</button>
-              <button className="icon-btn" title={tr("Rename", "Đổi tên")} onClick={() => setEditingFolder(f.id)}>✎</button>
-              <button className="icon-btn" title={tr("Delete folder", "Xoá thư mục")} onClick={() => void confirmDialog({ message: tr(`Delete folder “${f.name}”? Connections inside move out.`, `Xoá thư mục “${f.name}”? Kết nối bên trong sẽ chuyển ra ngoài.`) }).then((ok) => ok && removeDbFolder(f.id))}>×</button>
+              <button className="icon-btn" title={tr("db.newConnectionInFolder2")} onClick={() => openForm(undefined, f.id)}>＋</button>
+              <button className="icon-btn" title={tr("db.rename")} onClick={() => setEditingFolder(f.id)}>✎</button>
+              <button className="icon-btn danger" title={tr("db.deleteFolder")} onClick={() => void confirmDialog({ message: tr("db.deleteFolderConnectionsInsideMoveOut", { name: f.name }) }).then((ok) => ok && removeDbFolder(f.id))}>×</button>
             </span>
           </div>
           {f.open && conns.filter((c) => c.folderId === f.id).map((c) => connRow(c, true))}
@@ -353,7 +425,7 @@ function Sidebar() {
       ))}
       {rootConns.map((c) => connRow(c, false))}
 
-      {!conns.length && !folders.length && <div className="muted small pad">{tr("No connections yet — click ＋ to add.", "Chưa có kết nối nào — bấm ＋ để thêm.")}</div>}
+      {!conns.length && !folders.length && <div className="muted small pad">{tr("db.noConnectionsYetClickToAdd")}</div>}
       {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}
     </div>
   );
@@ -373,18 +445,18 @@ function ConnForm({ connId, folderId, onClose }: { connId?: string; folderId?: s
   const isFile = c.driver === "sqlite";
 
   const test = async () => {
-    setStatus({ ok: true, text: c.ssh?.enabled ? tr("Opening SSH tunnel & testing…", "Đang mở SSH tunnel & thử kết nối…") : tr("Testing connection…", "Đang thử kết nối…") });
+    setStatus({ ok: true, text: c.ssh?.enabled ? tr("db.openingSshTunnelTesting") : tr("db.testingConnection") });
     try {
       const { id, tunnelId } = await dbConnectMaybeTunnel(c, password);
       await call("db_disconnect", { id });
       if (tunnelId) await invoke("ssh_tunnel_close", { id: tunnelId }).catch(() => {});
-      setStatus({ ok: true, text: tr("✓ Connected successfully", "✓ Kết nối thành công") });
+      setStatus({ ok: true, text: tr("db.connectedSuccessfully") });
     } catch (e) {
       setStatus({ ok: false, text: errText(e) });
     }
   };
   const submit = () => {
-    if (!c.name.trim()) return setStatus({ ok: false, text: tr("Enter a connection name", "Nhập tên kết nối") });
+    if (!c.name.trim()) return setStatus({ ok: false, text: tr("db.enterAConnectionName") });
     save({ ...c, name: c.name.trim() });
     if (password) sessionPasswords.set(c.id, password);
     // Quyết định lưu mật khẩu NGAY lúc tạo: tick → ghi keyring (lần sau tự nối); bỏ tick → xoá (lần sau mở modal hỏi).
@@ -397,11 +469,11 @@ function ConnForm({ connId, folderId, onClose }: { connId?: string; folderId?: s
   };
 
   return (
-    <Modal title={editing ? tr("✏ Edit connection", "✏ Sửa kết nối") : tr("＋ New connection", "＋ Kết nối mới")} width={620} onClose={onClose}>
+    <Modal title={editing ? tr("db.editConnection") : tr("db.newConnection2")} width={620} onClose={onClose}>
       <div className="form account-form">
-        <label>{tr("Name", "Tên")}<input value={c.name} onChange={(e) => set({ name: e.target.value })} placeholder="vd. HRM dev" autoFocus /></label>
+        <label>{tr("db.name")}<input value={c.name} onChange={(e) => set({ name: e.target.value })} placeholder="vd. HRM dev" autoFocus /></label>
         <div className="field">
-          <span className="field-cap">{tr("Type", "Loại")}</span>
+          <span className="field-cap">{tr("db.type")}</span>
           <div className="picker-field">
             <Picker
               label={<span className="ellipsis">{DRIVERS[c.driver].name}</span>}
@@ -420,41 +492,41 @@ function ConnForm({ connId, folderId, onClose }: { connId?: string; folderId?: s
             </div>
             <div className="form-row">
               <label className="grow">User<input value={c.user} onChange={(e) => set({ user: e.target.value })} /></label>
-              <label className="grow">{tr("Password", "Mật khẩu")}
+              <label className="grow">{tr("db.password")}
                 <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
               </label>
             </div>
             <label className="check">
               <input type="checkbox" checked={c.savePw !== false} onChange={(e) => set({ savePw: e.target.checked })} />
-              {tr("Save password", "Lưu mật khẩu")}
+              {tr("db.savePassword")}
             </label>
             <label>
               {c.driver === "cassandra" ? "Keyspace" : "Database"}
               <input value={c.database} onChange={(e) => set({ database: e.target.value })}
-                placeholder={c.driver === "cassandra" ? tr("empty = list all keyspaces", "để trống = liệt kê mọi keyspace") : undefined} />
+                placeholder={c.driver === "cassandra" ? tr("db.emptyListAllKeyspaces") : undefined} />
             </label>
           </>
         )}
         <div className="field">
-          <span className="field-cap">{tr("Environment", "Môi trường")}</span>
+          <span className="field-cap">{tr("db.environment")}</span>
           <div className="picker-field">
             <Picker
               label={<span className="ellipsis">{c.env}</span>}
               items={[
                 { id: "dev", label: "dev", selected: c.env === "dev" },
                 { id: "staging", label: "staging", selected: c.env === "staging" },
-                { id: "prod", label: tr("prod (red border, confirm before writes)", "prod (viền đỏ, hỏi trước khi ghi)"), selected: c.env === "prod" },
+                { id: "prod", label: tr("db.prodRedBorderConfirmBeforeWrites"), selected: c.env === "prod" },
               ]}
               onPick={(id) => set({ env: id as Conn["env"] })}
             />
           </div>
         </div>
         <div className="field">
-          <span className="field-cap">{tr("Folder", "Thư mục")}</span>
+          <span className="field-cap">{tr("db.folder")}</span>
           <div className="picker-field">
             <Picker
-              label={<span className="ellipsis">{folders.find((f) => f.id === c.folderId)?.name ?? tr("(No folder)", "(Ngoài thư mục)")}</span>}
-              items={[{ id: "", label: tr("(No folder)", "(Ngoài thư mục)"), selected: !c.folderId }, ...folders.map((f) => ({ id: f.id, label: f.name, selected: c.folderId === f.id }))]}
+              label={<span className="ellipsis">{folders.find((f) => f.id === c.folderId)?.name ?? tr("db.noFolder")}</span>}
+              items={[{ id: "", label: tr("db.noFolder"), selected: !c.folderId }, ...folders.map((f) => ({ id: f.id, label: f.name, selected: c.folderId === f.id }))]}
               onPick={(id) => set({ folderId: id })}
             />
           </div>
@@ -466,7 +538,7 @@ function ConnForm({ connId, folderId, onClose }: { connId?: string; folderId?: s
                 type="checkbox"
                 checked={!!c.ssh?.enabled}
                 onChange={(e) => set({ ssh: { host: "", port: 22, user: "", keyPath: "", ...c.ssh, enabled: e.target.checked } })}
-              /> {tr("Connect via SSH tunnel", "Kết nối qua SSH tunnel")}
+              /> {tr("db.connectViaSshTunnel")}
             </label>
             {c.ssh?.enabled && (
               <div className="ssh-fields">
@@ -475,24 +547,24 @@ function ConnForm({ connId, folderId, onClose }: { connId?: string; folderId?: s
                   <label style={{ width: 90 }}>Port<input className="mono" type="number" value={c.ssh.port} onChange={(e) => set({ ssh: { ...c.ssh!, port: Number(e.target.value) || 22 } })} /></label>
                   <label className="grow">SSH User<input value={c.ssh.user} onChange={(e) => set({ ssh: { ...c.ssh!, user: e.target.value } })} placeholder="ubuntu" /></label>
                 </div>
-                <label>{tr("Private key (BatchMode — needs key/agent, no password prompt)", "Private key (BatchMode — cần key/agent, không hỏi mật khẩu)")}
+                <label>{tr("db.privateKeyBatchmodeNeedsKeyAgent")}
                   <div className="form-row">
-                    <input className="grow mono" value={c.ssh.keyPath} onChange={(e) => set({ ssh: { ...c.ssh!, keyPath: e.target.value } })} placeholder={tr("empty = default key / ssh-agent", "để trống = key mặc định / ssh-agent")} />
-                    <button onClick={() => void pickDbKey((p) => set({ ssh: { ...c.ssh!, keyPath: p } }))}>{tr("Browse…", "Chọn…")}</button>
+                    <input className="grow mono" value={c.ssh.keyPath} onChange={(e) => set({ ssh: { ...c.ssh!, keyPath: e.target.value } })} placeholder={tr("db.emptyDefaultKeySshAgent")} />
+                    <button onClick={() => void pickDbKey((p) => set({ ssh: { ...c.ssh!, keyPath: p } }))}>{tr("db.browse")}</button>
                   </div>
                 </label>
-                <div className="muted small">{tr("DB connects: 127.0.0.1 → (ssh -L) →", "DB sẽ nối: 127.0.0.1 → (ssh -L) →")} <span className="mono">{c.host || "host"}:{c.port ?? "port"}</span> {tr("via the SSH server above.", "qua SSH server trên.")}</div>
+                <div className="muted small">{tr("db.dbConnects127001")} <span className="mono">{c.host || "host"}:{c.port ?? "port"}</span> {tr("db.viaTheSshServerAbove")}</div>
               </div>
             )}
           </>
         )}
         <div className="toolbar">
-          <button onClick={test}>{tr("Test connection", "Thử kết nối")}</button>
+          <button onClick={test}>{tr("db.testConnection")}</button>
           <span className="grow" />
           {editing && (
-            <button onClick={() => void confirmDialog({ message: tr(`Delete connection “${c.name || "this"}”? The saved password is also removed.`, `Xoá kết nối “${c.name || "này"}”? Mật khẩu đã lưu cũng bị xoá.`) }).then((ok) => { if (!ok) return; void call("db_forget_password", { id: c.id }).catch(() => {}); remove(c.id); onClose(); })}>{tr("Delete", "Xoá")}</button>
+            <button className="danger" onClick={() => void confirmDialog({ message: tr("db.deleteConnectionAndPassword", { name: c.name || tr("db.thisFallback") }) }).then((ok) => { if (!ok) return; void call("db_forget_password", { id: c.id }).catch(() => {}); remove(c.id); onClose(); })}>{tr("db.delete")}</button>
           )}
-          <button className="primary" onClick={submit}>{tr("Save & open", "Lưu & mở")}</button>
+          <button className="primary" onClick={submit}>{tr("db.saveOpen")}</button>
         </div>
         {status && <div className={status.ok ? "muted" : "error-box"}>{status.text}</div>}
       </div>
@@ -503,6 +575,9 @@ function ConnForm({ connId, folderId, onClose }: { connId?: string; folderId?: s
 /* ── Phiên làm việc với một kết nối ────────────── */
 
 const READ_ONLY = /^\s*(select|show|describe|desc|explain|with|pragma|values)\b/i;
+/** Câu đổi CẤU TRÚC (bảng/cột/routine) → cần nạp lại cây; DML (INSERT/UPDATE/DELETE) thì không. */
+const isDdl = (stmt: string) =>
+  /^(create|alter|drop|rename|truncate)\b/i.test(stmt.replace(/^(\s|--[^\n]*\n?|#[^\n]*\n?|\/\*[\s\S]*?\*\/)+/, ""));
 const isWrite = (sql: string) => sql.split(";").some((s) => s.trim() && !READ_ONLY.test(s));
 
 function quote(c: Conn, t: TableInfo) {
@@ -543,7 +618,7 @@ function Session({ tab }: { tab: Tab }) {
   const [colsByDb, setColsByDb] = useState<Record<string, { table: string; column: string }[]>>({});
   const [loadingDbs, setLoadingDbs] = useState<Set<string>>(new Set());
   /** Gợi ý khi gõ SQL (tên bảng / cột / database / từ khoá). */
-  const [sug, setSug] = useState<{ items: Sug[]; x: number; y: number; start: number; end: number } | null>(null);
+  const [sug, setSug] = useState<{ items: Sug[]; x: number; y: number; start: number; end: number; q: string } | null>(null);
   const [sugIdx, setSugIdx] = useState(0);
   const [filter, setFilter] = useState("");
   const [sql, setSql] = useState("");
@@ -559,8 +634,12 @@ function Session({ tab }: { tab: Tab }) {
   const [newTable, setNewTable] = useState<{ schema: string } | null>(null);
   const [syncOpen, setSyncOpen] = useState(false);
   const [dumping, setDumping] = useState(false);
-  /** Database/schema đang dùng để chạy query (prepend USE / SET search_path). */
+  /** Tiến trình dump cả database (việc nặng: lặp từng bảng, có thể kèm dữ liệu). */
+  const [dumpProgress, setDumpProgress] = useState<{ db: string; done: number; total: number; table: string } | null>(null);
+  /** Database/schema đang dùng để chạy query (gửi tham số `schema` → backend dùng pool đặt sẵn database/search_path). */
   const [activeDb, setActiveDb] = useState("");
+  /** Bảng đang chọn (click đơn) → khung thông tin cơ bản; double-click / Enter mới chạy SELECT. */
+  const [selTable, setSelTable] = useState<TableInfo | null>(null);
   /** Database đang được chọn (click đơn) — khác activeDb (db đang USE). */
   const [selDb, setSelDb] = useState<string | null>(null);
   /** Menu chuột phải trên một database (Open / Edit / New / Dump). */
@@ -597,6 +676,8 @@ function Session({ tab }: { tab: Tab }) {
   /** Id của query đang chạy (để nút Cancel gọi db_cancel). */
   const runId = useRef<string | null>(null);
   /** Giới hạn thời gian mỗi câu lệnh (giây); 0 = không giới hạn. Nhớ trong localStorage. */
+  /** Cỡ trang mặc định cho kết quả phân trang (nhớ localStorage). */
+  const [pageSize, setPageSize] = useState(() => Number(localStorage.getItem("db.pageSize")) || 200);
   const [timeoutSecs, setTimeoutSecs] = useState(() => Number(localStorage.getItem("db.timeoutSecs")) || 0);
   const [confirmSql, setConfirmSql] = useState<string | null>(null);
   /** Bề rộng cột danh sách bảng — kéo được, nhớ lại. (Phải đặt trước mọi lệnh return sớm.) */
@@ -609,7 +690,7 @@ function Session({ tab }: { tab: Tab }) {
     if (tunnelIdRef.current) void invoke("ssh_tunnel_close", { id: tunnelIdRef.current }).catch(() => {});
   }, []);
 
-  if (!conn) return <div className="empty">Kết nối này đã bị xoá.</div>;
+  if (!conn) return <div className="empty">{t("db.connectionWasDeleted")}</div>;
   const needsPassword = conn.driver !== "sqlite";
 
   const connect = async (pw: string = password) => {
@@ -627,7 +708,7 @@ function Session({ tab }: { tab: Tab }) {
         if (remember && pw) void call("db_save_password", { id: conn.id, password: pw }).catch(() => {});
         else if (!remember) void call("db_forget_password", { id: conn.id }).catch(() => {});
       }
-      log(`db: đã kết nối ${conn.name} (${describe(conn)})`);
+      log(t("db.logConnected", { name: conn.name, desc: describe(conn) }));
       // Config có nhập database cụ thể → chỉ hiện đúng db đó; để trống → liệt kê mọi database (tải lười bảng khi mở).
       const configured = conn.database.trim();
       const list = configured ? [configured] : await call<string[]>("db_databases", { id });
@@ -648,15 +729,16 @@ function Session({ tab }: { tab: Tab }) {
   const loadTables = async (idArg: string, db: string) => {
     setLoadingDbs((s) => new Set(s).add(db));
     try {
-      const [ts, cols] = await Promise.all([
-        call<TableInfo[]>("db_tables", { id: idArg, schema: db }),
-        call<string[]>("db_columns", { id: idArg, schema: db }).catch(() => [] as string[]),
-      ]);
+      const ts = await call<TableInfo[]>("db_tables", { id: idArg, schema: db });
       setTablesByDb((m) => ({ ...m, [db]: ts }));
-      setColsByDb((m) => ({
-        ...m,
-        [db]: cols.map((s) => { const [ , t, c] = s.split("\u001f"); return { table: t ?? "", column: c ?? "" }; }),
-      }));
+      // Cột chỉ dùng cho gợi ý khi gõ SQL — information_schema.columns có thể chậm (MySQL nhiều bảng)
+      // → nạp ngầm, KHÔNG bắt cây bảng phải chờ.
+      void call<string[]>("db_columns", { id: idArg, schema: db })
+        .then((cols) => setColsByDb((m) => ({
+          ...m,
+          [db]: cols.map((s) => { const [ , t, c] = s.split("\u001f"); return { table: t ?? "", column: c ?? "" }; }),
+        })))
+        .catch(() => {});
     } catch (e) {
       setError(errText(e));
     } finally {
@@ -700,6 +782,7 @@ function Session({ tab }: { tab: Tab }) {
   };
   /** Đóng hẳn kết nối db: mất caret, bỏ USE, giải phóng cache đã nạp. */
   const closeDb = (db: string) => {
+    setSelTable((cur) => (cur?.schema === db ? null : cur));
     setOpened((s) => { const n = new Set(s); n.delete(db); return n; });
     setExpanded((s) => { const n = new Set(s); n.delete(db); return n; });
     setActiveDb((cur) => (cur === db ? "" : cur));
@@ -759,16 +842,96 @@ function Session({ tab }: { tab: Tab }) {
     setNewDbOpen(true);
   }, [newDbReq, conn, dbId]);
 
-  // Chọn database/schema cho query: prepend USE (MySQL) / SET search_path (Postgres) vào MỖI câu,
-  // vì mỗi câu chạy trên một kết nối riêng của pool → phải đặt context lại từng câu. run_on! chỉ giữ
-  // kết quả câu cuối nên câu SELECT vẫn ra đúng, USE/SET không ảnh hưởng hiển thị.
-  const withActiveDb = (stmt: string): string => {
-    const db = activeDb.trim();
-    if (!db) return stmt;
-    if (conn.driver === "mysql") return `USE \`${db.replace(/`/g, "``")}\`;\n${stmt}`;
-    if (conn.driver === "postgres") return `SET search_path TO "${db.replace(/"/g, '""')}";\n${stmt}`;
-    return stmt; // sqlite (một db) / cassandra (bảng đã qualify ks.table)
+  /* ── Sửa dữ liệu trên bảng kết quả (kiểu Navicat) ── */
+  const editTargets = useRef(new Map<string, EditTarget>());
+  const gridEditorImpl = useRef<GridEditor | null>(null);
+  gridEditorImpl.current = {
+    driver: conn ? (conn.driver as GridDriver) : "mysql",
+    resolve: async (sql) => {
+      const src = parseSourceTable(sql);
+      if (!src) return /^\s*(select|with)\b/i.test(sql.replace(/^(\s|--[^\n]*\n?|\/\*[\s\S]*?\*\/)+/, "")) ? { ok: false, reason: tr("db.roNotSingleTable") } : null;
+      if (!dbId || !conn) return null;
+      if (conn.driver === "cassandra") return { ok: false, reason: tr("db.roDriver") };
+      const schema = src.schema ?? (conn.driver === "mysql" ? (activeDb || conn.database) : conn.driver === "postgres" ? (activeDb || "public") : "main");
+      const key = `${schema}.${src.table}`;
+      const cached = editTargets.current.get(key);
+      if (cached) return cached;
+      try {
+        const cols = (await call<string[]>("db_table_columns", { id: dbId, schema, table: src.table })).map((x) => x.split("\u001f"));
+        if (!cols.length) return { ok: false, reason: tr("db.roMetaError", { msg: key }) };
+        const pkCols = cols.filter((c) => (conn.driver === "sqlite" ? !!c[4] && c[4] !== "0" : c[4] === "PRI")).map((c) => c[0]);
+        const d = conn.driver as GridDriver;
+        // Không có schema trong câu SELECT → để UPDATE không qualify; chạy cùng schema (activeSchema) như lúc SELECT.
+        const tableRef = src.schema ? `${quoteIdent(src.schema, d)}.${quoteIdent(src.table, d)}` : quoteIdent(src.table, d);
+        const target: EditTarget = pkCols.length
+          ? { ok: true, tableRef, pkCols, tableCols: new Set(cols.map((c) => c[0])) }
+          : { ok: false, reason: tr("db.roNoPk") };
+        editTargets.current.set(key, target);
+        return target;
+      } catch (e) {
+        return { ok: false, reason: tr("db.roMetaError", { msg: errText(e) }) };
+      }
+    },
+    save: async (stmts) => {
+      if (!dbId || !conn) return { done: 0, zero: 0, error: tr("db.connectionWasDeleted") };
+      if (conn.env === "prod") {
+        const ok = await confirmDialog({
+          title: tr("db.saveToProdTitle", { n: stmts.length }),
+          message: stmts.slice(0, 15).join("\n") + (stmts.length > 15 ? "\n…" : ""),
+          confirmLabel: tr("db.saveToProdConfirm"),
+        });
+        if (!ok) return { done: 0, zero: 0, cancelled: true };
+      }
+      let zero = 0;
+      for (let i = 0; i < stmts.length; i++) {
+        try {
+          const out = await call<QueryOut>("db_query", { id: dbId, sql: stmts[i], limit: 1, timeoutSecs, schema: activeSchema() });
+          if (!out.rowsAffected) zero++;
+        } catch (e) {
+          return { done: i, zero, error: errText(e) };
+        }
+      }
+      log(tr("db.logGridSaved", { n: stmts.length, name: conn.name }));
+      return { done: stmts.length, zero };
+    },
   };
+  const gridPagerImpl = useRef<GridPager | null>(null);
+  gridPagerImpl.current = {
+    fetch: async (pg, page, size) => {
+      if (!dbId) throw new Error(tr("db.connectionWasDeleted"));
+      if (pg.cass) {
+        // Đổi cỡ trang → token cũ không dùng được nữa, đọc lại từ đầu.
+        const same = size === pg.size;
+        const states = same ? pg.cass.states : [null];
+        const p = same ? page : 0;
+        const out = await call<QueryOut>("db_query", { id: dbId, sql: pg.base, limit: size, timeoutSecs, pageSize: size, pageState: states[p] ?? null });
+        return withCassPaging(out, pg.base, p, size, states);
+      }
+      const out = await call<QueryOut>("db_query", { id: dbId, sql: pagedSql(pg.base, size, page * size), limit: size + 1, timeoutSecs, schema: activeSchema() });
+      return withPaging(out, pg.base, page, size);
+    },
+    count: async (base) => {
+      if (!dbId) throw new Error(tr("db.connectionWasDeleted"));
+      const out = await call<QueryOut>("db_query", { id: dbId, sql: countSql(base), limit: 1, timeoutSecs, schema: activeSchema() });
+      return Number(out.rows[0]?.[0] ?? 0);
+    },
+    setDefaultSize: (n) => { setPageSize(n); localStorage.setItem("db.pageSize", String(n)); },
+  };
+  const gridPager = useMemo<GridPager>(() => ({
+    fetch: (pg, p, sz) => gridPagerImpl.current!.fetch(pg, p, sz),
+    count: (b) => gridPagerImpl.current!.count(b),
+    setDefaultSize: (n) => gridPagerImpl.current!.setDefaultSize(n),
+  }), []);
+  const gridEditor = useMemo<GridEditor>(() => ({
+    get driver() { return gridEditorImpl.current!.driver; },
+    resolve: (sql) => gridEditorImpl.current!.resolve(sql),
+    save: (stmts) => gridEditorImpl.current!.save(stmts),
+  }), []);
+
+  /** Database/schema đang chọn để chạy query → gửi kèm tham số `schema` cho db_query. Backend dùng pool
+   *  có database/search_path đặt sẵn lúc kết nối — KHÔNG ghép "USE x;" vào câu (ProxySQL từ chối, lỗi 1148). */
+  const activeSchema = (): string | undefined =>
+    (conn?.driver === "mysql" || conn?.driver === "postgres") && activeDb.trim() ? activeDb.trim() : undefined;
 
   const exec = async (text: string, confirmed = false) => {
     if (!dbId || !text.trim()) return;
@@ -781,24 +944,35 @@ function Session({ tab }: { tab: Tab }) {
     setResults([]);
     // Chạy lần lượt từng câu, giữ mọi kết quả (như Navicat). Câu lỗi → dừng, vẫn hiện các kết quả trước đó.
     const outs: QueryOut[] = [];
-    let wrote = false;
+    let ddl = false;
     try {
       for (let i = 0; i < stmts.length; i++) {
         const qid = `q${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
         runId.current = qid;
-        const out = await call<QueryOut>("db_query", { id: dbId, sql: withActiveDb(stmts[i]), limit: ROW_LIMIT, queryId: qid, timeoutSecs });
-        outs.push(out);
+        // Cassandra: SELECT luôn đọc theo trang bằng paging state của driver (như TablePlus) — không có OFFSET.
+        const cassPage = conn.driver === "cassandra" && /^select\b/i.test(stripSql(stmts[i]));
+        const pageable = !cassPage && isPageable(stmts[i], conn.driver as GridDriver);
+        const out = await call<QueryOut>("db_query", {
+          id: dbId,
+          sql: pageable ? pagedSql(stmts[i], pageSize, 0) : stmts[i],
+          limit: pageable ? pageSize + 1 : cassPage ? pageSize : ROW_LIMIT,
+          queryId: qid,
+          timeoutSecs,
+          schema: activeSchema(),
+          ...(cassPage ? { pageSize, pageState: null } : {}),
+        });
+        outs.push(cassPage ? withCassPaging(out, stmts[i], 0, pageSize, [null]) : pageable ? withPaging(out, stmts[i], 0, pageSize) : { ...out, sql: stmts[i] });
         setResults([...outs]); // cập nhật dần để thấy từng bảng khi chạy nhiều câu
-        if (isWrite(stmts[i])) wrote = true;
+        if (isDdl(stmts[i])) { ddl = true; editTargets.current.clear(); }
       }
     } catch (e) {
       // Báo rõ câu nào lỗi (kèm câu lệnh) khi chạy nhiều câu.
       const idx = outs.length; // số câu đã chạy thành công = chỉ số câu lỗi
-      const where = stmts.length > 1 ? tr(`Statement ${idx + 1}/${stmts.length} failed:\n${stmts[idx]}\n\n`, `Câu ${idx + 1}/${stmts.length} lỗi:\n${stmts[idx]}\n\n`) : "";
+      const where = stmts.length > 1 ? tr("db.statementFailed", { p: idx + 1, stmtsLength: stmts.length, p2: stmts[idx] }) : "";
       setError(where + errText(e));
     } finally {
       runId.current = null;
-      if (wrote) for (const db of expanded) void loadTables(dbId, db);
+      if (ddl) for (const db of expanded) void loadTables(dbId, db);
       setRunning(false);
     }
   };
@@ -838,7 +1012,7 @@ function Session({ tab }: { tab: Tab }) {
   const runRoutine = async (sql: string, db: string, dropFirst?: string) => {
     if (!dbId || !sql.trim()) return;
     if (conn.env === "prod") {
-      const ok = await confirmDialog({ message: tr("Run this routine DDL on PROD?", "Chạy câu DDL routine này trên PROD?") });
+      const ok = await confirmDialog({ message: tr("db.runThisRoutineDdlOnProd") });
       if (!ok) return;
     }
     setRunning(true); setError(""); setResults([]);
@@ -865,16 +1039,16 @@ function Session({ tab }: { tab: Tab }) {
       const q = `\`${bq(db)}\`.\`${name}\``;
       sql =
         kind === "event"
-          ? `CREATE EVENT ${q}\nON SCHEDULE EVERY 1 DAY\nSTARTS CURRENT_TIMESTAMP\nON COMPLETION PRESERVE\nENABLE\nDO\n  -- câu lệnh chạy định kỳ\n  SELECT 1;`
+          ? `CREATE EVENT ${q}\nON SCHEDULE EVERY 1 DAY\nSTARTS CURRENT_TIMESTAMP\nON COMPLETION PRESERVE\nENABLE\nDO\n  -- ${t("db.tplRunOnSchedule")}\n  SELECT 1;`
           : kind === "function"
           ? `CREATE FUNCTION ${q}(arg1 INT)\nRETURNS INT\nDETERMINISTIC\nBEGIN\n  RETURN arg1;\nEND`
-          : `CREATE PROCEDURE ${q}(IN arg1 INT)\nBEGIN\n  -- viết câu lệnh ở đây\n  SELECT arg1;\nEND`;
+          : `CREATE PROCEDURE ${q}(IN arg1 INT)\nBEGIN\n  -- ${t("db.tplWriteStatementsHere")}\n  SELECT arg1;\nEND`;
     } else {
       const q = `"${dq(db)}"."${name}"`;
       sql =
         kind === "function"
           ? `CREATE OR REPLACE FUNCTION ${q}(arg1 int)\nRETURNS int\nLANGUAGE sql AS $$\n  SELECT arg1;\n$$;`
-          : `CREATE OR REPLACE PROCEDURE ${q}(arg1 int)\nLANGUAGE plpgsql AS $$\nBEGIN\n  -- câu lệnh\nEND;\n$$;`;
+          : `CREATE OR REPLACE PROCEDURE ${q}(arg1 int)\nLANGUAGE plpgsql AS $$\nBEGIN\n  -- ${t("db.tplStatements")}\nEND;\n$$;`;
     }
     setRoutineModal({ db, name, kind, mode: "new", sql });
   };
@@ -887,7 +1061,7 @@ function Session({ tab }: { tab: Tab }) {
       try {
         const out = await call<QueryOut>("db_query", { id: dbId, sql: `SELECT EVENT_NAME, EVENT_DEFINITION, EVENT_TYPE, EXECUTE_AT, INTERVAL_VALUE, INTERVAL_FIELD, STARTS, ENDS, ON_COMPLETION, STATUS, EVENT_COMMENT FROM information_schema.EVENTS WHERE EVENT_SCHEMA='${r.db.replace(/'/g, "''")}' AND EVENT_NAME='${r.name.replace(/'/g, "''")}' LIMIT 1`, limit: 1 });
         const row = out.rows[0];
-        if (!row) { setError(tr("Event not found.", "Không tìm thấy event.")); return; }
+        if (!row) { setError(tr("db.eventNotFound")); return; }
         const statusMap: Record<string, string> = { ENABLED: "ENABLE", DISABLED: "DISABLE", SLAVESIDE_DISABLED: "DISABLE ON SLAVE" };
         const init: EventInit = {
           name: row[0] ?? r.name,
@@ -927,7 +1101,7 @@ function Session({ tab }: { tab: Tab }) {
 
   /** Xoá routine (DROP) — hỏi xác nhận. */
   const dropRoutine = (r: RoutineInfo) =>
-    void confirmDialog({ message: tr(`Delete ${r.kind} “${r.name}”?`, `Xoá ${r.kind} “${r.name}”?`) }).then((ok) => {
+    void confirmDialog({ message: tr("db.delete2", { kind: r.kind, name: r.name }) }).then((ok) => {
       if (!ok) return;
       const sql = conn.driver === "mysql"
         ? `DROP ${routineKw(r.kind)} IF EXISTS \`${bq(r.db)}\`.\`${bq(r.name)}\``
@@ -1015,12 +1189,17 @@ function Session({ tab }: { tab: Tab }) {
     setDumping(true);
     setError("");
     try {
-      const tables = tablesByDb[db] ?? (await call<TableInfo[]>("db_tables", { id: dbId, schema: db }));
-      let content = `-- Dump database ${db} — ${new Date().toISOString()}\n-- ${tables.length} table(s)\n\n`;
-      for (const t of tables) {
-        if (t.kind === "view") continue; // bỏ view (dump cấu trúc bảng trước đã)
-        content += (await buildTableDump(t, withData)) + "\n";
+      const tables = (tablesByDb[db] ?? (await call<TableInfo[]>("db_tables", { id: dbId, schema: db }))).filter((t) => t.kind !== "view");
+      // Bảng tạo theo thứ tự tên → tắt kiểm tra khoá ngoại khi import (như mysqldump); file chạy tuần tự trong MỘT phiên nên an toàn.
+      const fkOff = conn.driver === "mysql" ? "SET FOREIGN_KEY_CHECKS=0;\n\n" : conn.driver === "sqlite" ? "PRAGMA foreign_keys=OFF;\n\n" : "";
+      const fkOn = conn.driver === "mysql" ? "\nSET FOREIGN_KEY_CHECKS=1;\n" : conn.driver === "sqlite" ? "\nPRAGMA foreign_keys=ON;\n" : "";
+      let content = `-- Dump database ${db} — ${new Date().toISOString()}\n-- ${tables.length} table(s)\n\n${fkOff}`;
+      for (let i = 0; i < tables.length; i++) {
+        setDumpProgress({ db, done: i, total: tables.length, table: tables[i].name });
+        content += (await buildTableDump(tables[i], withData)) + "\n";
       }
+      content += fkOn;
+      setDumpProgress(null);
       const path = await saveDialog({ defaultPath: `${db}.sql`, filters: [{ name: "SQL", extensions: ["sql"] }] });
       if (typeof path !== "string") return;
       await invoke("write_text_file", { path, content });
@@ -1029,6 +1208,7 @@ function Session({ tab }: { tab: Tab }) {
       setError(errText(e));
     } finally {
       setDumping(false);
+      setDumpProgress(null);
     }
   };
 
@@ -1036,44 +1216,44 @@ function Session({ tab }: { tab: Tab }) {
   const databaseMenu = (db: string): CtxItem[] => {
     const isSql = conn.driver === "mysql" || conn.driver === "postgres" || conn.driver === "sqlite";
     const items: CtxItem[] = [
-      { id: "open", label: tr("Open (use for queries)", "Mở (USE để query)"), action: () => openDb(db) },
+      { id: "open", label: tr("db.openUseForQueries"), action: () => openDb(db) },
     ];
     if (opened.has(db)) {
       items.push(expanded.has(db)
-        ? { id: "collapse", label: tr("Collapse (keep open)", "Tạm đóng (vẫn mở)"), action: () => toggleExpand(db) }
-        : { id: "expand", label: tr("Expand", "Mở rộng"), action: () => toggleExpand(db) });
-      items.push({ id: "closedb", label: tr("Close database (disconnect)", "Đóng kết nối database"), action: () => closeDb(db) });
+        ? { id: "collapse", label: tr("db.collapseKeepOpen"), action: () => toggleExpand(db) }
+        : { id: "expand", label: tr("db.expand"), action: () => toggleExpand(db) });
+      items.push({ id: "closedb", label: tr("db.closeDatabaseDisconnect"), action: () => closeDb(db) });
     }
     if (conn.driver === "mysql") {
-      items.push({ id: "edit", label: tr("Edit (charset/collation)…", "Sửa (charset/collation)…"), action: () => setAlterDb(db) });
+      items.push({ id: "edit", label: tr("db.editCharsetCollation"), action: () => setAlterDb(db) });
     }
     if (conn.driver === "mysql" || conn.driver === "postgres") {
-      items.push({ id: "new", label: conn.driver === "postgres" ? tr("New schema…", "Schema mới…") : tr("New database…", "Database mới…"), action: () => setNewDbOpen(true) });
+      items.push({ id: "new", label: conn.driver === "postgres" ? tr("db.newSchema") : tr("db.newDatabase"), action: () => setNewDbOpen(true) });
     }
     // Tạo routine mới trong database này (procedure/function, và event với MySQL).
     if (conn.driver === "mysql" || conn.driver === "postgres") {
       items.push(
         { id: "sr", sep: true },
-        { id: "newproc", label: tr("New procedure…", "Procedure mới…"), action: () => { openDb(db); newRoutine(db, "procedure"); } },
-        { id: "newfunc", label: tr("New function…", "Function mới…"), action: () => { openDb(db); newRoutine(db, "function"); } },
+        { id: "newproc", label: tr("db.newProcedure"), action: () => { openDb(db); newRoutine(db, "procedure"); } },
+        { id: "newfunc", label: tr("db.newFunction"), action: () => { openDb(db); newRoutine(db, "function"); } },
       );
       if (conn.driver === "mysql") {
-        items.push({ id: "newevent", label: tr("New event (schedule)…", "Event mới (lập lịch)…"), action: () => { openDb(db); newRoutine(db, "event"); } });
+        items.push({ id: "newevent", label: tr("db.newEventSchedule"), action: () => { openDb(db); newRoutine(db, "event"); } });
       }
     }
     if (isSql) {
       items.push(
         { id: "s1", sep: true },
-        { id: "dumpStruct", label: tr("Dump SQL (structure)", "Dump SQL (cấu trúc)"), disabled: dumping, action: () => void dumpDatabase(db, false) },
-        { id: "dumpAll", label: tr("Dump SQL (structure + data)", "Dump SQL (cấu trúc + dữ liệu)"), disabled: dumping, action: () => void dumpDatabase(db, true) },
+        { id: "dumpStruct", label: tr("db.dumpSqlStructure"), disabled: dumping, action: () => void dumpDatabase(db, false) },
+        { id: "dumpAll", label: tr("db.dumpSqlStructureData"), disabled: dumping, action: () => void dumpDatabase(db, true) },
       );
     }
     // Xoá database/schema/keyspace (DROP) — vĩnh viễn, hỏi xác nhận mạnh.
     if (conn.driver === "mysql" || conn.driver === "postgres" || conn.driver === "cassandra") {
       const dropLabel =
-        conn.driver === "postgres" ? tr("Delete schema (DROP)…", "Xoá schema (DROP)…")
-        : conn.driver === "cassandra" ? tr("Delete keyspace (DROP)…", "Xoá keyspace (DROP)…")
-        : tr("Delete database (DROP)…", "Xoá database (DROP)…");
+        conn.driver === "postgres" ? tr("db.deleteSchemaDrop")
+        : conn.driver === "cassandra" ? tr("db.deleteKeyspaceDrop")
+        : tr("db.deleteDatabaseDrop");
       const dropSql =
         conn.driver === "postgres" ? `DROP SCHEMA "${db.replace(/"/g, '""')}" CASCADE;`
         : conn.driver === "cassandra" ? `DROP KEYSPACE "${db.replace(/"/g, '""')}";`
@@ -1081,10 +1261,7 @@ function Session({ tab }: { tab: Tab }) {
       items.push(
         { id: "s3", sep: true },
         { id: "drop", label: dropLabel, danger: true, action: () => void confirmDialog({
-          message: tr(
-            `PERMANENTLY delete “${db}” and ALL tables/data inside it? This cannot be undone.`,
-            `Xoá VĨNH VIỄN “${db}” và TOÀN BỘ bảng/dữ liệu bên trong? Không thể hoàn tác.`,
-          ),
+          message: tr("db.permanentlyDeleteAndAllTablesData", { db }),
         }).then((ok) => {
           if (!ok) return;
           void exec(dropSql).then(() => {
@@ -1096,8 +1273,8 @@ function Session({ tab }: { tab: Tab }) {
     }
     items.push(
       { id: "s2", sep: true },
-      { id: "refresh", label: tr("Refresh", "Tải lại"), action: () => dbIdRef.current && void loadTables(dbIdRef.current, db) },
-      { id: "copy", label: tr("Copy name", "Copy tên"), action: () => void navigator.clipboard.writeText(db) },
+      { id: "refresh", label: tr("db.refresh"), action: () => dbIdRef.current && void loadTables(dbIdRef.current, db) },
+      { id: "copy", label: tr("db.copyName"), action: () => void navigator.clipboard.writeText(db) },
     );
     return items;
   };
@@ -1108,43 +1285,42 @@ function Session({ tab }: { tab: Tab }) {
     const truncSql = conn.driver === "sqlite" ? `DELETE FROM ${ref};` : `TRUNCATE TABLE ${ref};`;
     const ask = (msg: string, sql: string) => () =>
       void confirmDialog({ message: msg }).then((ok) => { if (ok) void exec(sql); });
-    const copyItem: CtxItem = { id: "copy", label: tr("Copy table name", "Copy tên bảng"), action: () => void navigator.clipboard.writeText(t.name) };
+    const copyItem: CtxItem = { id: "copy", label: tr("db.copyTableName"), action: () => void navigator.clipboard.writeText(t.name) };
     // Cassandra (CQL): bỏ các mục DDL/dump đặc thù SQL; giữ xem dữ liệu / cấu trúc / TRUNCATE / DROP.
     if (conn.driver === "cassandra") {
       return [
-        { id: "open", label: tr("View data (SELECT *)", "Xem dữ liệu (SELECT *)"), action: () => openTable(t) },
+        { id: "open", label: tr("db.viewDataSelect"), action: () => openTable(t) },
         { id: "s1", sep: true },
-        { id: "edit", label: tr("Edit table (structure)…", "Edit table (cấu trúc)…"), action: () => setStructT(t) },
+        { id: "edit", label: tr("db.editTableStructure"), action: () => setStructT(t) },
         { id: "s2", sep: true },
-        { id: "truncate", label: "Truncate…", danger: true, action: ask(tr(`TRUNCATE table “${t.name}”?`, `TRUNCATE bảng “${t.name}”?`), truncSql) },
-        { id: "drop", label: tr("Delete table (DROP)…", "Delete table (DROP)…"), danger: true, action: ask(tr(`PERMANENTLY delete table “${t.name}” and all its data?`, `Xoá VĨNH VIỄN bảng “${t.name}” và toàn bộ dữ liệu?`), `DROP TABLE ${ref};`) },
+        { id: "truncate", label: "Truncate…", danger: true, action: ask(tr("db.truncateTable", { name: t.name }), truncSql) },
+        { id: "drop", label: tr("db.deleteTableDrop"), danger: true, action: ask(tr("db.permanentlyDeleteTableAndAllIts", { name: t.name }), `DROP TABLE ${ref};`) },
         { id: "s4", sep: true },
         copyItem,
       ];
     }
     return [
-      { id: "open", label: tr("View data (SELECT *)", "Xem dữ liệu (SELECT *)"), action: () => openTable(t) },
+      { id: "open", label: tr("db.viewDataSelect"), action: () => openTable(t) },
       { id: "s1", sep: true },
-      { id: "edit", label: tr("Edit table (structure)…", "Edit table (cấu trúc)…"), action: () => setStructT(t) },
-      { id: "new", label: tr("New table…", "Bảng mới…"), action: () => setNewTable({ schema: t.schema }) },
-      { id: "col", label: tr("Add column…", "Thêm cột…"), action: () => setDdl({ kind: "col", t }) },
-      { id: "idx", label: tr("Add index…", "Thêm index…"), action: () => setDdl({ kind: "idx", t }) },
+      { id: "edit", label: tr("db.editTableStructure"), action: () => setStructT(t) },
+      { id: "new", label: tr("db.newTable"), action: () => setNewTable({ schema: t.schema }) },
+      { id: "col", label: tr("db.addColumn"), action: () => setDdl({ kind: "col", t }) },
+      { id: "idx", label: tr("db.addIndex"), action: () => setDdl({ kind: "idx", t }) },
       { id: "s2", sep: true },
-      { id: "dumpStruct", label: tr("Dump SQL (structure)", "Dump SQL (cấu trúc)"), disabled: dumping, action: () => void dumpTable(t, false) },
-      { id: "dumpAll", label: tr("Dump SQL (structure + data)", "Dump SQL (cấu trúc + dữ liệu)"), disabled: dumping, action: () => void dumpTable(t, true) },
+      { id: "dumpStruct", label: tr("db.dumpSqlStructure"), disabled: dumping, action: () => void dumpTable(t, false) },
+      { id: "dumpAll", label: tr("db.dumpSqlStructureData"), disabled: dumping, action: () => void dumpTable(t, true) },
       { id: "s3", sep: true },
-      { id: "empty", label: tr("Empty (delete rows)…", "Empty (xoá dữ liệu)…"), danger: true, action: ask(tr(`Delete all data in “${t.name}”?`, `Xoá toàn bộ dữ liệu trong “${t.name}”?`), `DELETE FROM ${ref};`) },
-      { id: "truncate", label: conn.driver === "sqlite" ? tr("Empty (SQLite has no TRUNCATE)…", "Empty (SQLite không có TRUNCATE)…") : "Truncate…", danger: true, action: ask(tr(`TRUNCATE table “${t.name}”?`, `TRUNCATE bảng “${t.name}”?`), truncSql) },
-      { id: "drop", label: tr("Delete table (DROP)…", "Delete table (DROP)…"), danger: true, action: ask(tr(`PERMANENTLY delete table “${t.name}” and all its data?`, `Xoá VĨNH VIỄN bảng “${t.name}” và toàn bộ dữ liệu?`), `DROP TABLE ${ref};`) },
+      { id: "empty", label: tr("db.emptyDeleteRows"), danger: true, action: ask(tr("db.deleteAllDataIn", { name: t.name }), `DELETE FROM ${ref};`) },
+      { id: "truncate", label: conn.driver === "sqlite" ? tr("db.emptySqliteHasNoTruncate") : "Truncate…", danger: true, action: ask(tr("db.truncateTable", { name: t.name }), truncSql) },
+      { id: "drop", label: tr("db.deleteTableDrop"), danger: true, action: ask(tr("db.permanentlyDeleteTableAndAllIts", { name: t.name }), `DROP TABLE ${ref};`) },
       { id: "s4", sep: true },
       copyItem,
     ];
   };
 
   const openTable = (t: TableInfo) => {
-    const q = `SELECT * FROM ${quote(conn, t)} LIMIT 100;`;
-    // Không xoá câu lệnh đang viết: chỉ điền khi ô còn trống, ngược lại chạy luôn vào bảng kết quả.
-    if (!sql.trim()) setSql(q);
+    const q = `SELECT * FROM ${quote(conn, t)};`;
+    // Không đụng tới ô soạn SQL — chạy thẳng vào bảng kết quả (phân trang tự động).
     void exec(q);
   };
 
@@ -1154,7 +1330,7 @@ function Session({ tab }: { tab: Tab }) {
       <div className="view">
         <div className="db-connecting">
           <span className="spinner" />
-          <div>{tr("Connecting to", "Đang kết nối")} <b>{conn.name}</b>…</div>
+          <div>{tr("db.connectingTo")} <b>{conn.name}</b>…</div>
           <div className="muted small">{DRIVERS[conn.driver].name} · {describe(conn)}</div>
         </div>
       </div>
@@ -1163,23 +1339,23 @@ function Session({ tab }: { tab: Tab }) {
     return (
       <>
         {connectingScreen}
-        <Modal title={tr("🔑 Enter password", "🔑 Nhập mật khẩu")} width={480} onClose={() => useWorkbench.getState().closeTab(tab.id)}>
+        <Modal title={tr("db.enterPassword")} width={480} onClose={() => useWorkbench.getState().closeTab(tab.id)}>
           <div className="form account-form">
             <div className="muted small">{conn.name} — {DRIVERS[conn.driver].name} · {describe(conn)}</div>
-            <label>{tr("Password", "Mật khẩu")}
+            <label>{tr("db.password")}
               <input type="password" autoFocus value={password} onChange={(e) => setPassword(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && connect()} />
             </label>
             <label className="check">
               <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
-              {tr("Save password", "Lưu mật khẩu")}
+              {tr("db.savePassword")}
             </label>
             {error && <div className="error-box">⚠ {error}</div>}
             <div className="toolbar">
-              <button onClick={() => openForm(conn.id)}>{tr("Edit config", "Sửa cấu hình")}</button>
+              <button onClick={() => openForm(conn.id)}>{tr("db.editConfig2")}</button>
               <span className="grow" />
-              <button onClick={() => useWorkbench.getState().closeTab(tab.id)}>{tr("Cancel", "Huỷ")}</button>
-              <button className="primary" disabled={connecting} onClick={() => connect()}>{connecting ? tr("Connecting…", "Đang kết nối…") : tr("Connect", "Kết nối")}</button>
+              <button onClick={() => useWorkbench.getState().closeTab(tab.id)}>{tr("db.cancel")}</button>
+              <button className="primary" disabled={connecting} onClick={() => connect()}>{connecting ? tr("db.connecting") : tr("db.connect")}</button>
             </div>
           </div>
         </Modal>
@@ -1217,11 +1393,22 @@ function Session({ tab }: { tab: Tab }) {
       for (const w of SQL_WORDS) push({ label: w, kind: "kw" });
     }
 
-    // Giữ thứ tự ưu tiên (bảng → cột → database → từ khoá), chỉ lọc theo tiền tố.
-    const matched = items.filter((s) => s.label.toLowerCase().startsWith(prefix)).slice(0, 12);
+    // Bảng / cột / database khớp kiểu CONTAINS (gõ "order" ra cả "sale_order", "order_item"); từ khoá SQL chỉ khớp
+    // tiền tố (contains với từ khoá rất nhiễu: "or" → ORDER, FOR…). Xếp: khớp đúng → khớp đầu → khớp giữa
+    // (vị trí càng sớm càng trên), cùng mức thì giữ ưu tiên bảng → cột → database → từ khoá.
+    const ranked: { s: Sug; rank: number; order: number }[] = [];
+    items.forEach((s, order) => {
+      const l = s.label.toLowerCase();
+      const at = l.indexOf(prefix);
+      if (at < 0 || (s.kind === "kw" && at > 0)) return;
+      ranked.push({ s, order, rank: l === prefix ? 0 : at === 0 ? 1 : 2 + at });
+    });
+    const KIND = { table: 0, col: 1, db: 2, kw: 3 } as const;
+    ranked.sort((a, b) => (Math.min(a.rank, 2) - Math.min(b.rank, 2)) || (KIND[a.s.kind] - KIND[b.s.kind]) || (a.rank - b.rank) || (a.order - b.order));
+    const matched = ranked.slice(0, 20).map((r) => r.s);
     if (!matched.length) return setSug(null);
     const { x, y } = caretXY(el, pos);
-    setSug({ items: matched, x, y, start, end: pos });
+    setSug({ items: matched, x, y, start, end: pos, q: prefix });
     setSugIdx(0);
   };
 
@@ -1230,8 +1417,11 @@ function Session({ tab }: { tab: Tab }) {
     const el = editor.current;
     const it = sug.items[i];
     if (!el || !it) return setSug(null);
-    const next = el.value.slice(0, sug.start) + it.label + el.value.slice(sug.end);
-    const caret = sug.start + it.label.length;
+    // Chọn xong thêm dấu cách để gõ tiếp; ngay sau đã có khoảng trắng thì chỉ đưa con trỏ qua nó (không nhân đôi).
+    const rest = el.value.slice(sug.end);
+    const gap = /^\s/.test(rest) ? "" : " ";
+    const next = el.value.slice(0, sug.start) + it.label + gap + rest;
+    const caret = sug.start + it.label.length + 1;
     setSql(next);
     setSug(null);
     requestAnimationFrame(() => { el.focus(); el.setSelectionRange(caret, caret); });
@@ -1258,12 +1448,16 @@ function Session({ tab }: { tab: Tab }) {
         />
       </div>
     ) : (
-      <div key={`${t.schema}.${t.name}`} className="side-item" style={{ paddingLeft: padLeft }}
+      <div key={`${t.schema}.${t.name}`} className={`side-item ${selTable?.schema === t.schema && selTable?.name === t.name ? "sel" : ""}`} style={{ paddingLeft: padLeft }}
         tabIndex={0}
-        onClick={() => openTable(t)}
-        onKeyDown={(e) => { if (e.key === "F2" && conn.driver !== "cassandra") { e.preventDefault(); setRenaming({ t, name: t.name }); } }}
-        onContextMenu={(e) => { e.preventDefault(); setTblMenu({ x: e.clientX, y: e.clientY, t }); }}
-        title={`${t.schema}.${t.name} — ${tr("F2 to rename, right-click for actions", "F2 đổi tên, chuột phải để thao tác")}`}>
+        onClick={() => setSelTable(t)}
+        onDoubleClick={() => openTable(t)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") { e.preventDefault(); openTable(t); }
+          else if (e.key === "F2" && conn.driver !== "cassandra") { e.preventDefault(); setRenaming({ t, name: t.name }); }
+        }}
+        onContextMenu={(e) => { e.preventDefault(); setSelTable(t); setTblMenu({ x: e.clientX, y: e.clientY, t }); }}
+        title={`${t.schema}.${t.name} — ${tr("db.tableRowHint")}`}>
         <span style={{ display: "inline-flex", alignItems: "center" }}>{t.kind === "view" ? "👁" : <TableIcon />}</span>
         <span className="grow ellipsis">{t.name}</span>
       </div>
@@ -1279,7 +1473,7 @@ function Session({ tab }: { tab: Tab }) {
       <div key={key}>
         <div className="tree-row sub" style={{ paddingLeft: pad }} onClick={() => toggleSec(key, defOpen)}
           onContextMenu={onNew ? (e) => { e.preventDefault(); onNew(); } : undefined}
-          title={onNew ? tr("Right-click: new…", "Chuột phải: tạo mới…") : undefined}>
+          title={onNew ? tr("db.rightClickNew") : undefined}>
           <span className="tree-caret">{open ? "▾" : "▸"}</span>
           <span className="routine-ic">{icon}</span>
           <span className="grow ellipsis muted small">{label}</span>
@@ -1295,7 +1489,7 @@ function Session({ tab }: { tab: Tab }) {
     <div key={`${r.kind}.${r.name}`} className="side-item" style={{ paddingLeft: pad }} tabIndex={0}
       onDoubleClick={() => void openRoutine(r)}
       onContextMenu={(e) => { e.preventDefault(); setRoutineMenu({ x: e.clientX, y: e.clientY, r }); }}
-      title={`${r.name} — ${tr("double-click to view/edit, right-click for actions", "double-click để xem/sửa, chuột phải để thao tác")}`}>
+      title={`${r.name} — ${tr("db.doubleClickToViewEditRight")}`}>
       <span className="routine-ic">{ROUTINE_ICON[r.kind]}</span>
       <span className="grow ellipsis">{r.name}</span>
     </div>
@@ -1310,11 +1504,11 @@ function Session({ tab }: { tab: Tab }) {
     const list = routinesByDb[db];
     const canRoutine = conn.driver === "mysql" || conn.driver === "postgres";
     const kinds: RoutineKind[] = conn.driver === "postgres" ? ["procedure", "function"] : ["procedure", "function", "event"];
-    const rlabel: Record<RoutineKind, string> = { procedure: tr("Procedures", "Procedures"), function: tr("Functions", "Functions"), event: tr("Events", "Events") };
+    const rlabel: Record<RoutineKind, string> = { procedure: tr("db.procedures"), function: tr("db.functions"), event: tr("db.events") };
     return (
       <>
-        {(!fl || tables.length > 0) && section(`${db}|tables`, pad, true, <TableIcon />, tr("Tables", "Tables"), tables.length, tables.map((t) => tableRow(t, ip)))}
-        {views.length > 0 && section(`${db}|views`, pad, true, "👁", tr("Views", "Views"), views.length, views.map((t) => tableRow(t, ip)))}
+        {(!fl || tables.length > 0) && section(`${db}|tables`, pad, true, <TableIcon />, tr("db.tables"), tables.length, tables.map((t) => tableRow(t, ip)))}
+        {views.length > 0 && section(`${db}|views`, pad, true, "👁", tr("db.views"), views.length, views.map((t) => tableRow(t, ip)))}
         {canRoutine && list && kinds.map((kind) => {
           const items = list.filter((r) => r.kind === kind && (!fl || r.name.toLowerCase().includes(fl)));
           if (fl && !items.length) return null;
@@ -1335,7 +1529,7 @@ function Session({ tab }: { tab: Tab }) {
     >
       <div className="db-tables" style={{ width: tablesW, flex: "0 0 auto" }}>
         <input
-          placeholder={singleDb ? tr(`Filter tables in ${singleDb}…`, `Lọc bảng trong ${singleDb}…`) : tr(`Filter in ${dbs.length} databases…`, `Lọc trong ${dbs.length} database…`)}
+          placeholder={singleDb ? tr("db.filterTablesIn", { singleDb }) : tr("db.filterInDatabases", { dbsLength: dbs.length })}
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
         />
@@ -1343,7 +1537,7 @@ function Session({ tab }: { tab: Tab }) {
           {singleDb ? (
             // Đã chỉ đích danh db trong cấu hình → hiện nhóm (Tables/Views/…), không có node database.
             loadingDbs.has(singleDb) && !tablesByDb[singleDb]
-              ? <div className="muted small pad">{tr("loading…", "đang tải…")}</div>
+              ? <div className="muted small pad">{tr("db.loading")}</div>
               : dbChildren(singleDb, 8)
           ) : (
             <>
@@ -1354,62 +1548,78 @@ function Session({ tab }: { tab: Tab }) {
                     onClick={() => setSelDb(db)}
                     onDoubleClick={() => (opened.has(db) ? toggleExpand(db) : openDb(db))}
                     onContextMenu={(e) => { e.preventDefault(); setSelDb(db); setDbMenu({ x: e.clientX, y: e.clientY, db }); }}
-                    title={`${db} — ${opened.has(db) ? tr("double-click to collapse/expand; right-click to close", "double-click để tạm đóng/mở; chuột phải để đóng kết nối") : tr("double-click to open & use", "double-click để mở & USE")}`}
+                    title={`${db} — ${opened.has(db) ? tr("db.doubleClickToCollapseExpandRight") : tr("db.doubleClickToOpenUse")}`}
                   >
                     {opened.has(db)
-                      ? <span className="tree-caret" onClick={(e) => { e.stopPropagation(); toggleExpand(db); }} title={expanded.has(db) ? tr("Collapse", "Tạm đóng") : tr("Expand", "Mở rộng")}>{expanded.has(db) ? "▾" : "▸"}</span>
+                      ? <span className="tree-caret" onClick={(e) => { e.stopPropagation(); toggleExpand(db); }} title={expanded.has(db) ? tr("db.collapse") : tr("db.expand")}>{expanded.has(db) ? "▾" : "▸"}</span>
                       : <span className="tree-caret" />}
                     <span className="tree-icon"><DbIcon /></span>
                     <span className="grow ellipsis">{db}</span>
-                    {db === activeDb && <span className="env-tag use" title={tr("Current query database", "Database đang chạy query")}>USE</span>}
+                    {db === activeDb && <span className="env-tag use" title={tr("db.currentQueryDatabase")}>USE</span>}
                     {tablesByDb[db] && <span className="muted small">{tablesByDb[db].length}</span>}
                   </div>
                   {expanded.has(db) && (
                     loadingDbs.has(db) && !tablesByDb[db]
-                      ? <div className="muted small pad" style={{ paddingLeft: 24 }}>{tr("loading…", "đang tải…")}</div>
+                      ? <div className="muted small pad" style={{ paddingLeft: 24 }}>{tr("db.loading")}</div>
                       : dbChildren(db, 22)
                   )}
                 </div>
               ))}
-              {!dbs.length && <div className="muted small pad">{tr("No databases.", "Không có database nào.")}</div>}
+              {!dbs.length && <div className="muted small pad">{tr("db.noDatabases")}</div>}
             </>
           )}
         </div>
+        {selTable && dbId && (
+          <TableInfoPanel
+            conn={conn}
+            dbId={dbId}
+            table={selTable}
+            onOpen={() => openTable(selTable)}
+            onStructure={() => setStructT(selTable)}
+            onClose={() => setSelTable(null)}
+          />
+        )}
       </div>
       <Splitter axis="x" onResize={(d) => setTablesW((w) => w + d)} onReset={() => setTablesW(220)} />
       <div className="view">
         <div className="toolbar db-toolbar">
           <span className="dot green" /> {describe(conn)}
+          {dumpProgress && (
+            <span className="db-progress" title={dumpProgress.table}>
+              <span className="update-bar"><span style={{ width: `${(dumpProgress.done / Math.max(1, dumpProgress.total)) * 100}%` }} /></span>
+              {tr("db.dumpProgress", { db: dumpProgress.db, done: dumpProgress.done, total: dumpProgress.total, table: dumpProgress.table })}
+            </span>
+          )}
           {dbs.length > 0 && conn.driver !== "sqlite" && (
-            <span className="db-active" title={tr("Database used to run queries (USE / search_path)", "Database dùng để chạy query (USE / search_path)")}>
+            <span className="db-active" title={tr("db.databaseUsedToRunQueriesUse")}>
               <Picker
-                label={<><span className="tree-icon"><DbIcon /></span> {activeDb || tr("(default)", "(mặc định)")}</>}
+                label={<><span className="tree-icon"><DbIcon /></span> {activeDb || tr("db.default")}</>}
                 items={dbs.map((d) => ({ id: d, label: d, selected: d === activeDb }))}
                 onPick={(d) => { setSelDb(d); openDb(d); }}
-                filterPlaceholder={tr("Filter databases…", "Lọc database…")}
+                filterPlaceholder={tr("db.filterDatabases")}
               />
             </span>
           )}
           <span className="grow" />
           <Picker
-            label={<>📑 {curQueryName || tr("Queries", "Query đã lưu")}{savedQueries.length ? ` (${savedQueries.length})` : ""}</>}
-            title={tr("Saved queries for this connection — pick to load, right-click to rename/delete", "Query đã lưu của kết nối này — chọn để nạp, chuột phải để đổi tên/xoá")}
+            label={<>📑 {curQueryName || tr("db.queries")}{savedQueries.length ? ` (${savedQueries.length})` : ""}</>}
+            title={tr("db.savedQueriesForThisConnectionPick")}
             items={savedQueries.length
               ? savedQueries.map((q) => ({ id: q.id, label: q.name, selected: q.name === curQueryName }))
-              : [{ id: "__none__", label: tr("(no saved queries)", "(chưa có query nào)"), disabled: true }]}
+              : [{ id: "__none__", label: tr("db.noSavedQueries"), disabled: true }]}
             onPick={(id) => { const q = savedQueries.find((x) => x.id === id); if (q) { setSql(q.sql); setCurQueryName(q.name); } }}
             onItemContextMenu={(id, e) => { if (id === "__none__") return; setQMenu({ x: e.clientX, y: e.clientY, id }); }}
-            filterPlaceholder={tr("Filter queries…", "Lọc query…")}
+            filterPlaceholder={tr("db.filterQueries")}
           />
           <button
             onClick={() => { if (!sql.trim()) return; setSaveName(curQueryName || deriveQueryName(sql)); }}
             disabled={!sql.trim()}
-            title={tr("Save current SQL as a named query", "Lưu câu SQL hiện tại thành query có tên")}
-          >💾 {tr("Save", "Lưu")}</button>
+            title={tr("db.saveCurrentSqlAsANamed")}
+          >💾 {tr("db.save")}</button>
           {conn.driver !== "cassandra" && (
-            <button onClick={() => setSyncOpen(true)} title={tr("Sync structure between databases (pick server then database)", "Đồng bộ cấu trúc giữa các database (chọn server rồi chọn database)")}>⇄ Struct sync</button>
+            <button onClick={() => setSyncOpen(true)} title={tr("db.syncStructureBetweenDatabasesPickServer")}>⇄ Struct sync</button>
           )}
-          <label className="db-timeout" title={tr("Statement timeout in seconds (0 = unlimited)", "Giới hạn thời gian mỗi câu (giây, 0 = không giới hạn)")}>
+          <label className="db-timeout" title={tr("db.statementTimeoutInSeconds0Unlimited")}>
             ⏱
             <input
               type="number"
@@ -1419,18 +1629,18 @@ function Session({ tab }: { tab: Tab }) {
             />s
           </label>
           {conn.driver !== "cassandra" && (
-            <button disabled={running} onClick={runExplain} title={tr("Show execution plan of selected statement", "Xem kế hoạch thực thi câu lệnh đang chọn")}>EXPLAIN</button>
+            <button disabled={running} onClick={runExplain} title={tr("db.showExecutionPlanOfSelectedStatement")}>EXPLAIN</button>
           )}
           {running
-            ? <button className="danger" onClick={cancelRun} title={tr("Stop the running statement", "Dừng câu lệnh đang chạy")}>■ {tr("Cancel", "Hủy")}</button>
-            : <button className="primary" onClick={runEditor} title={tr("Run (Ctrl+Enter / Ctrl+R) — select text to run only that part", "Chạy (Ctrl+Enter / Ctrl+R) — bôi đen để chạy riêng phần đó")}>{tr("▶ Run", "▶ Chạy")}</button>}
+            ? <button className="danger" onClick={cancelRun} title={tr("db.stopTheRunningStatement")}>■ {tr("db.cancel2")}</button>
+            : <button className="primary" onClick={runEditor} title={tr("db.runCtrlEnterCtrlRSelect")}>{tr("db.run")}</button>}
         </div>
         <textarea
           ref={editor}
           className="db-editor mono"
           value={sql}
           spellCheck={false}
-          placeholder={tr("SELECT … — Ctrl+Enter or Ctrl+R to run (select to run part)", "SELECT … — Ctrl+Enter hoặc Ctrl+R để chạy (bôi đen để chạy một phần)")}
+          placeholder={tr("db.selectCtrlEnterOrCtrlR")}
           onChange={(e) => { setSql(e.target.value); updateSug(e.currentTarget); }}
           onClick={(e) => updateSug(e.currentTarget)}
           onBlur={() => setSug(null)}
@@ -1464,7 +1674,7 @@ function Session({ tab }: { tab: Tab }) {
                 onMouseEnter={() => setSugIdx(i)}
               >
                 <span className={`sug-kind ${it.kind}`}>{it.kind === "table" ? "▦" : it.kind === "col" ? "▪" : it.kind === "db" ? "🗃" : "K"}</span>
-                <span className="grow ellipsis">{it.label}</span>
+                <span className="grow ellipsis">{hlMatch(it.label, sug.q)}</span>
                 {it.hint && <span className="muted small ellipsis">{it.hint}</span>}
               </div>
             ))}
@@ -1472,21 +1682,21 @@ function Session({ tab }: { tab: Tab }) {
         )}
         {confirmSql && (
           <div className="error-box toolbar">
-            {tr("⚠ This is a PROD connection and the statement writes data. Run for real?", "⚠ Đây là kết nối PROD và câu lệnh có ghi dữ liệu. Chạy thật?")}
+            {tr("db.thisIsAProdConnectionAnd")}
             <span className="grow" />
-            <button onClick={() => setConfirmSql(null)}>{tr("Cancel", "Huỷ")}</button>
-            <button className="primary danger" onClick={() => exec(confirmSql, true)}>{tr("Run on PROD", "Chạy trên PROD")}</button>
+            <button onClick={() => setConfirmSql(null)}>{tr("db.cancel")}</button>
+            <button className="primary danger" onClick={() => exec(confirmSql, true)}>{tr("db.runOnProd")}</button>
           </div>
         )}
         {error && <div className="error-box">⚠ {error}</div>}
         {results.length > 1 ? (
           <div className="results-list">
             {results.map((o, i) => (
-              <ResultGrid key={i} out={o} title={`${tr("Result", "Kết quả")} ${i + 1}/${results.length}`} />
+              <ResultGrid key={i} out={o} title={`${tr("db.result")} ${i + 1}/${results.length}`} editor={gridEditor} pager={gridPager} />
             ))}
           </div>
         ) : results.length === 1 ? (
-          <ResultGrid out={results[0]} />
+          <ResultGrid out={results[0]} editor={gridEditor} pager={gridPager} />
         ) : (
           !error && <ResultGrid out={null} />
         )}
@@ -1563,10 +1773,10 @@ function Session({ tab }: { tab: Tab }) {
           y={routineMenu.y}
           onClose={() => setRoutineMenu(null)}
           items={[
-            { id: "view", label: tr("View / edit definition…", "Xem / sửa định nghĩa…"), action: () => void openRoutine(routineMenu.r) },
-            { id: "copy", label: tr("Copy name", "Copy tên"), action: () => void navigator.clipboard.writeText(routineMenu.r.name) },
+            { id: "view", label: tr("db.viewEditDefinition"), action: () => void openRoutine(routineMenu.r) },
+            { id: "copy", label: tr("db.copyName"), action: () => void navigator.clipboard.writeText(routineMenu.r.name) },
             { id: "s1", sep: true },
-            { id: "drop", label: tr("Delete (DROP)…", "Xoá (DROP)…"), danger: true, action: () => dropRoutine(routineMenu.r) },
+            { id: "drop", label: tr("db.deleteDrop"), danger: true, action: () => dropRoutine(routineMenu.r) },
           ] as CtxItem[]}
         />
       )}
@@ -1599,41 +1809,41 @@ function Session({ tab }: { tab: Tab }) {
             const q = savedQueries.find((x) => x.id === qMenu.id);
             if (!q) return [];
             return [
-              { id: "load", label: tr("Load into editor", "Nạp vào editor"), action: () => { setSql(q.sql); setCurQueryName(q.name); } },
-              { id: "rename", label: tr("Rename…", "Đổi tên…"), action: () => setRenameQ({ id: q.id, name: q.name }) },
+              { id: "load", label: tr("db.loadIntoEditor"), action: () => { setSql(q.sql); setCurQueryName(q.name); } },
+              { id: "rename", label: tr("db.rename2"), action: () => setRenameQ({ id: q.id, name: q.name }) },
               { id: "s1", sep: true },
-              { id: "del", label: tr("Delete query", "Xoá query"), danger: true, action: () => void confirmDialog({ message: tr(`Delete saved query “${q.name}”?`, `Xoá query đã lưu “${q.name}”?`) }).then((ok) => { if (ok) { removeQuery(q.id); if (curQueryName === q.name) setCurQueryName(""); } }) },
+              { id: "del", label: tr("db.deleteQuery"), danger: true, action: () => void confirmDialog({ message: tr("db.deleteSavedQuery", { name: q.name }) }).then((ok) => { if (ok) { removeQuery(q.id); if (curQueryName === q.name) setCurQueryName(""); } }) },
             ] as CtxItem[];
           })()}
         />
       )}
       {saveName !== null && (
-        <Modal title={tr("💾 Save query", "💾 Lưu query")} width={440} onClose={() => setSaveName(null)}>
+        <Modal title={tr("db.saveQuery")} width={440} onClose={() => setSaveName(null)}>
           <div className="form account-form">
-            <label>{tr("Name", "Tên")}
+            <label>{tr("db.name")}
               <input
                 autoFocus
                 value={saveName}
                 onChange={(e) => setSaveName(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter" && saveName.trim()) { saveQuery(connId, saveName.trim(), sql); setCurQueryName(saveName.trim()); setSaveName(null); } }}
-                placeholder={tr("e.g. active users report", "vd. báo cáo user active")}
+                placeholder={tr("db.eGActiveUsersReport")}
               />
             </label>
             {savedQueries.some((q) => q.name === saveName.trim()) && (
-              <div className="muted small">{tr("A query with this name exists — it will be overwritten.", "Đã có query trùng tên — sẽ ghi đè.")}</div>
+              <div className="muted small">{tr("db.aQueryWithThisNameExists")}</div>
             )}
             <div className="toolbar">
               <span className="grow" />
-              <button onClick={() => setSaveName(null)}>{tr("Cancel", "Huỷ")}</button>
-              <button className="primary" disabled={!saveName.trim()} onClick={() => { saveQuery(connId, saveName.trim(), sql); setCurQueryName(saveName.trim()); setSaveName(null); }}>{tr("Save", "Lưu")}</button>
+              <button onClick={() => setSaveName(null)}>{tr("db.cancel")}</button>
+              <button className="primary" disabled={!saveName.trim()} onClick={() => { saveQuery(connId, saveName.trim(), sql); setCurQueryName(saveName.trim()); setSaveName(null); }}>{tr("db.save")}</button>
             </div>
           </div>
         </Modal>
       )}
       {renameQ && (
-        <Modal title={tr("✎ Rename query", "✎ Đổi tên query")} width={440} onClose={() => setRenameQ(null)}>
+        <Modal title={tr("db.renameQuery")} width={440} onClose={() => setRenameQ(null)}>
           <div className="form account-form">
-            <label>{tr("Name", "Tên")}
+            <label>{tr("db.name")}
               <input
                 autoFocus
                 value={renameQ.name}
@@ -1643,8 +1853,8 @@ function Session({ tab }: { tab: Tab }) {
             </label>
             <div className="toolbar">
               <span className="grow" />
-              <button onClick={() => setRenameQ(null)}>{tr("Cancel", "Huỷ")}</button>
-              <button className="primary" disabled={!renameQ.name.trim()} onClick={() => { const old = savedQueries.find((x) => x.id === renameQ.id); renameQuery(renameQ.id, renameQ.name.trim()); if (old && curQueryName === old.name) setCurQueryName(renameQ.name.trim()); setRenameQ(null); }}>{tr("Rename", "Đổi tên")}</button>
+              <button onClick={() => setRenameQ(null)}>{tr("db.cancel")}</button>
+              <button className="primary" disabled={!renameQ.name.trim()} onClick={() => { const old = savedQueries.find((x) => x.id === renameQ.id); renameQuery(renameQ.id, renameQ.name.trim()); if (old && curQueryName === old.name) setCurQueryName(renameQ.name.trim()); setRenameQ(null); }}>{tr("db.rename")}</button>
             </div>
           </div>
         </Modal>
@@ -1654,39 +1864,286 @@ function Session({ tab }: { tab: Tab }) {
 }
 
 /* Memo: bảng kết quả có thể rất lớn — không vẽ lại mỗi lần gõ phím trong ô SQL (out không đổi). */
-const ResultGrid = memo(function ResultGrid({ out, title }: { out: QueryOut | null; title?: string }) {
-  const lang = getLang();
-  const rows = (vi: string, en: string) => (lang === "vi" ? vi : en);
-  if (!out) return <div className="pane"><div className="empty">{rows("Kết quả hiện ở đây", "Results appear here")}</div></div>;
+/** Số dòng vẽ ngay ở lần đầu; phần còn lại vẽ ở khung hình sau → kết quả lớn hiện tức thì, không khựng. */
+const FIRST_ROWS = 120;
+
+/** Bảng nguồn + khoá chính của một kết quả (sửa được), hoặc lý do chỉ đọc. */
+type EditTarget =
+  | { ok: true; tableRef: string; pkCols: string[]; tableCols: Set<string> }
+  | { ok: false; reason: string };
+
+/** Session cung cấp cho lưới: xác định bảng nguồn + chạy các câu UPDATE khi Save. */
+interface GridEditor {
+  driver: GridDriver;
+  /** null = không phải SELECT (không hiện gì về sửa). */
+  resolve: (sql: string) => Promise<EditTarget | null>;
+  /** Chạy lần lượt; `done` = số câu đã xong (dừng ở câu lỗi), `zero` = số câu không khớp dòng nào. */
+  save: (stmts: string[]) => Promise<{ done: number; zero: number; error?: string; cancelled?: boolean }>;
+}
+
+/** Session cung cấp cho lưới: lấy một trang khác / đếm tổng / nhớ cỡ trang. */
+interface GridPager {
+  fetch: (pg: NonNullable<QueryOut["paging"]>, page: number, size: number) => Promise<QueryOut>;
+  count: (base: string) => Promise<number>;
+  setDefaultSize: (n: number) => void;
+}
+const PAGE_SIZES = [100, 200, 500, 1000];
+
+const ResultGrid = memo(function ResultGrid({ out: initial, title, editor, pager }: {
+  out: QueryOut | null; title?: string; editor?: GridEditor; pager?: GridPager;
+}) {
+  const tr = useT();
+  // Trang đang xem: sau khi chuyển trang thì thay cho kết quả ban đầu (gắn với đúng `initial`).
+  const [view, setView] = useState<{ src: QueryOut | null; out: QueryOut | null }>({ src: null, out: null });
+  const out = view.src === initial && view.out ? view.out : initial;
+  const [pageBusy, setPageBusy] = useState(false);
+  const [total, setTotal] = useState<{ base: string; n: number | null; busy: boolean } | null>(null);
+
+  // Gắn số dòng đã vẽ với đúng kết quả `out` → kết quả mới luôn bắt đầu lại từ FIRST_ROWS.
+  const [painted, setPainted] = useState<{ out: QueryOut | null; n: number }>({ out: null, n: FIRST_ROWS });
+  const shown = painted.out === out ? painted.n : FIRST_ROWS;
+  useEffect(() => {
+    if (!out || out.rows.length <= FIRST_ROWS) return;
+    const id = setTimeout(() => setPainted({ out, n: out.rows.length }), 16);
+    return () => clearTimeout(id);
+  }, [out]);
+
+  /* ── Sửa dữ liệu trên lưới (kiểu Navicat) ── */
+  const [target, setTarget] = useState<{ out: QueryOut | null; t: EditTarget | null }>({ out: null, t: null });
+  const [base, setBase] = useState<{ out: QueryOut | null; rows: (string | null)[][] }>({ out: null, rows: [] });
+  const [edits, setEdits] = useState<GridEdits>(new Map());
+  const [editing, setEditing] = useState<{ r: number; c: number } | null>(null);
+  const typed = useRef(false);
+  const [saving, setSaving] = useState(false);
+  const [note, setNote] = useState<{ kind: "error" | "info"; text: string } | null>(null);
+  const [cellMenu, setCellMenu] = useState<{ x: number; y: number; r: number; c: number } | null>(null);
+
+  useEffect(() => {
+    setEdits(new Map());
+    setEditing(null);
+    setNote(null);
+    if (!out || !editor || !out.sql || !out.columns.length) { setTarget({ out, t: null }); return; }
+    let alive = true;
+    void editor.resolve(out.sql).then((t) => { if (alive) setTarget({ out, t }); });
+    return () => { alive = false; };
+  }, [out, editor]);
+
+  if (!out) return <div className="pane"><div className="empty">{tr("db.resultsAppearHere")}</div></div>;
+
+  const rows = base.out === out ? base.rows : out.rows;
+  const t = target.out === out ? target.t : null;
+  const pkMissing = t?.ok ? t.pkCols.filter((pk) => !out.columns.includes(pk)) : [];
+  const canEditAny = !!t?.ok && !pkMissing.length && !saving;
+  const editable = (c: number) => {
+    const name = out.columns[c];
+    return canEditAny && !!t?.ok && t.tableCols.has(name) && out.columns.indexOf(name) === out.columns.lastIndexOf(name);
+  };
+  const cellValue = (r: number, c: number) => (edits.get(r)?.has(c) ? edits.get(r)!.get(c)! : rows[r][c]);
+  const nChanges = [...edits.values()].reduce((n, m) => n + m.size, 0);
+
+  const setCell = (r: number, c: number, v: string | null) => {
+    setEdits((prev) => {
+      const next = new Map(prev);
+      const row = new Map(next.get(r) ?? []);
+      if (v === rows[r][c]) row.delete(c); else row.set(c, v);
+      if (row.size) next.set(r, row); else next.delete(r);
+      return next;
+    });
+  };
+  const nextEditable = (c: number, dir: 1 | -1) => {
+    for (let j = c + dir; j >= 0 && j < out.columns.length; j += dir) if (editable(j)) return j;
+    return -1;
+  };
+  const commit = (r: number, c: number, value: string, move?: 1 | -1) => {
+    // Ô gốc NULL mà chưa gõ gì → giữ NULL (không biến thành chuỗi rỗng chỉ vì mở ô rồi thoát).
+    if (typed.current) setCell(r, c, value);
+    typed.current = false;
+    const nc = move ? nextEditable(c, move) : -1;
+    setEditing(nc >= 0 ? { r, c: nc } : null);
+  };
+
+  const save = async () => {
+    if (!t?.ok || !editor || !nChanges) return;
+    const stmts = buildUpdates({ driver: editor.driver, tableRef: t.tableRef, columns: out.columns, rows, edits, pkCols: t.pkCols });
+    setSaving(true);
+    setNote(null);
+    const res = await editor.save(stmts.map((x) => x.sql));
+    setSaving(false);
+    if (res.cancelled) return;
+    // Dòng đã lưu xong → gộp giá trị mới vào dữ liệu gốc; dòng chưa lưu (lỗi giữa chừng) giữ nguyên ô sửa.
+    const okRows = new Set(stmts.slice(0, res.done).map((x) => x.row));
+    setBase({ out, rows: rows.map((row, i) => (okRows.has(i) ? row.map((v, c) => (edits.get(i)?.has(c) ? edits.get(i)!.get(c)! : v)) : row)) });
+    setEdits((prev) => { const next = new Map(prev); okRows.forEach((r) => next.delete(r)); return next; });
+    if (res.error) setNote({ kind: "error", text: tr("db.saveFailedAt", { i: res.done + 1, n: stmts.length, msg: res.error }) });
+    else if (res.zero) setNote({ kind: "info", text: tr("db.savedZeroRows", { n: stmts.length, zero: res.zero }) });
+    else setNote({ kind: "info", text: tr("db.savedRows", { n: stmts.length }) });
+  };
+
+  /* ── Phân trang phía server ── */
+  const pg = out.paging;
+  const offset = pg ? pg.page * pg.size : 0;
+  const tot = pg && total && total.base === pg.base ? total : null;
+  const lastPage = pg && tot?.n != null ? Math.max(0, Math.ceil(tot.n / pg.size) - 1) : null;
+  const goPage = async (page: number, size = pg?.size ?? 200) => {
+    if (!pager || !pg || nChanges || pageBusy) return;
+    setPageBusy(true);
+    setNote(null);
+    try {
+      const res = await pager.fetch(pg, Math.max(0, page), size);
+      setView({ src: initial, out: res });
+    } catch (e) {
+      setNote({ kind: "error", text: errText(e) });
+    } finally {
+      setPageBusy(false);
+    }
+  };
+  const countAll = async () => {
+    if (!pager || !pg) return;
+    setTotal({ base: pg.base, n: null, busy: true });
+    try {
+      const n = await pager.count(pg.base);
+      setTotal({ base: pg.base, n, busy: false });
+    } catch (e) {
+      setTotal(null);
+      setNote({ kind: "error", text: errText(e) });
+    }
+  };
+  const lockTitle = nChanges ? tr("db.pageSaveFirst") : undefined;
+
   const info = out.columns.length
-    ? rows(`${out.rows.length}${out.truncated ? `+ (chỉ hiện ${ROW_LIMIT} dòng đầu)` : ""} dòng`, `${out.rows.length}${out.truncated ? `+ (first ${ROW_LIMIT} rows)` : ""} rows`)
-    : rows(`${out.rowsAffected} dòng bị ảnh hưởng`, `${out.rowsAffected} rows affected`);
+    ? pg
+      ? tr("db.pageRows", { from: rows.length ? offset + 1 : 0, to: offset + rows.length }) + (tot?.n != null ? ` ${tr("db.pageOfTotal", { total: tot.n })}` : "")
+      : out.truncated
+        ? tr("db.gridRowCountTruncated", { n: out.rows.length, limit: ROW_LIMIT })
+        : tr("db.gridRowCount", { n: out.rows.length })
+    : tr("db.gridRowsAffected", { n: out.rowsAffected });
+  const readOnlyReason = t && !t.ok ? t.reason : pkMissing.length ? tr("db.roPkMissing", { cols: pkMissing.join(", ") }) : "";
+
   return (
     <div className="pane result-pane">
       <div className="pane-title">
-        {title && <b className="muted">{title} · </b>}{info} · {out.elapsedMs} ms <span className="grow" />
+        {title && <b className="muted">{title} · </b>}{info} · {out.elapsedMs} ms
+        {nChanges > 0 ? (
+          <>
+            <span className="grid-dirty">· {tr("db.gridChanges", { n: nChanges })}</span>
+            <span className="grow" />
+            <button disabled={saving} onClick={() => { setEdits(new Map()); setEditing(null); setNote(null); }}>↺ {tr("db.gridDiscard")}</button>
+            <button className="primary" disabled={saving} onClick={() => void save()}>💾 {saving ? tr("db.gridSaving") : tr("db.gridSave")}</button>
+          </>
+        ) : (
+          <>
+            {canEditAny && <span className="muted grid-hint"> · ✎ {tr("db.gridEditHint")}</span>}
+            {readOnlyReason && <span className="muted grid-hint" title={readOnlyReason}> · 🔒 {tr("db.gridReadOnly", { reason: readOnlyReason })}</span>}
+            <span className="grow" />
+          </>
+        )}
         {out.columns.length > 0 && (
-          <button onClick={() => navigator.clipboard.writeText(toTsv(out))} title={rows("Dán thẳng vào Excel", "Paste into Excel")}>Copy (TSV)</button>
+          <button onClick={() => navigator.clipboard.writeText(toTsv({ ...out, rows }))} title={tr("db.pasteIntoExcel")}>Copy (TSV)</button>
         )}
       </div>
+      {note && <div className={note.kind === "error" ? "error-box pre grid-note" : "muted small grid-note"}>{note.text}</div>}
       {out.columns.length > 0 ? (
-        <div className="grid-wrap">
+        <div className={`grid-wrap${pageBusy ? " busy" : ""}`}>
           <table className="grid mono">
             <thead>
               <tr><th>#</th>{out.columns.map((c, i) => <th key={i}>{c}</th>)}</tr>
             </thead>
             <tbody>
-              {out.rows.map((r, i) => (
+              {(shown < rows.length ? rows.slice(0, shown) : rows).map((r, i) => (
                 <tr key={i}>
-                  <td className="muted">{i + 1}</td>
-                  {r.map((v, j) => (v === null ? <td key={j} className="null">NULL</td> : <td key={j} className="cell" title={v}>{v}</td>))}
+                  <td className="muted">{offset + i + 1}</td>
+                  {r.map((_, j) => {
+                    if (editing && editing.r === i && editing.c === j) {
+                      const cur = cellValue(i, j);
+                      return (
+                        <td key={j} className="cell editing">
+                          <input
+                            autoFocus
+                            className="cell-input mono"
+                            defaultValue={cur ?? ""}
+                            placeholder={cur === null ? "NULL" : undefined}
+                            onFocus={(e) => { typed.current = false; e.currentTarget.select(); }}
+                            onChange={() => { typed.current = true; }}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") { e.preventDefault(); commit(i, j, e.currentTarget.value); }
+                              else if (e.key === "Tab") { e.preventDefault(); commit(i, j, e.currentTarget.value, e.shiftKey ? -1 : 1); }
+                              else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); typed.current = false; setEditing(null); }
+                            }}
+                            onBlur={(e) => { if (editing && editing.r === i && editing.c === j) commit(i, j, e.currentTarget.value); }}
+                          />
+                        </td>
+                      );
+                    }
+                    const v = cellValue(i, j);
+                    const edited = !!edits.get(i)?.has(j);
+                    return (
+                      <td
+                        key={j}
+                        className={`${v === null ? "null" : "cell"}${edited ? " edited" : ""}${editable(j) ? " editable" : ""}`}
+                        title={v !== null && v.length > 40 ? v : undefined}
+                        onDoubleClick={editable(j) ? () => setEditing({ r: i, c: j }) : undefined}
+                        onContextMenu={(e) => { e.preventDefault(); setCellMenu({ x: e.clientX, y: e.clientY, r: i, c: j }); }}
+                      >
+                        {v === null ? "NULL" : v}
+                      </td>
+                    );
+                  })}
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       ) : (
-        <div className="empty">{rows("✓ Xong", "✓ Done")}</div>
+        <div className="empty">{tr("db.gridDone")}</div>
+      )}
+      {pg && out.columns.length > 0 && (
+        <div className="grid-pager">
+          <button className="icon-btn" title={lockTitle ?? tr("db.pageFirst")} disabled={pageBusy || pg.page === 0 || nChanges > 0} onClick={() => void goPage(0)}>⏮</button>
+          <button className="icon-btn" title={lockTitle ?? tr("db.pagePrev")} disabled={pageBusy || pg.page === 0 || nChanges > 0} onClick={() => void goPage(pg.page - 1)}>◀</button>
+          <span className="grid-pager-page">
+            {tr("db.pageLabel", { n: pg.page + 1 })}{lastPage != null ? ` / ${lastPage + 1}` : ""}
+          </span>
+          <button className="icon-btn" title={lockTitle ?? tr("db.pageNext")} disabled={pageBusy || !pg.hasNext || nChanges > 0} onClick={() => void goPage(pg.page + 1)}>▶</button>
+          {lastPage != null && (
+            <button className="icon-btn" title={lockTitle ?? tr("db.pageLast")} disabled={pageBusy || pg.page >= lastPage || nChanges > 0} onClick={() => void goPage(lastPage)}>⏭</button>
+          )}
+          {pageBusy && <span className="spinner grid-pager-spin" />}
+          <span className="grow" />
+          {!pg.cass && (
+            <button disabled={!!tot?.busy} onClick={() => void countAll()} title={tr("db.pageCountHint")}>
+              Σ {tot?.busy ? tr("db.pageCounting") : tot?.n != null ? tr("db.pageTotal", { total: tot.n }) : tr("db.pageCount")}
+            </button>
+          )}
+          <Picker
+            label={<span>{tr("db.pageSize", { n: pg.size })}</span>}
+            items={PAGE_SIZES.map((n) => ({ id: String(n), label: tr("db.pageSize", { n }), selected: n === pg.size }))}
+            onPick={(id) => { const n = Number(id); pager?.setDefaultSize(n); void goPage(0, n); }}
+            disabled={pageBusy || nChanges > 0}
+          />
+        </div>
+      )}
+      {cellMenu && (
+        <ContextMenu
+          x={cellMenu.x}
+          y={cellMenu.y}
+          onClose={() => setCellMenu(null)}
+          items={((): CtxItem[] => {
+            const { r, c } = cellMenu;
+            const v = cellValue(r, c);
+            const items: CtxItem[] = [];
+            if (editable(c)) {
+              items.push(
+                { id: "edit", label: tr("db.gridEditCell"), action: () => setEditing({ r, c }) },
+                { id: "null", label: tr("db.gridSetNull"), disabled: v === null, action: () => setCell(r, c, null) },
+                { id: "empty", label: tr("db.gridSetEmpty"), disabled: v === "", action: () => setCell(r, c, "") },
+              );
+              if (edits.get(r)?.has(c)) items.push({ id: "revert", label: tr("db.gridRevertCell"), action: () => setCell(r, c, rows[r][c]) });
+              items.push({ id: "s1", sep: true });
+            }
+            items.push({ id: "copy", label: tr("db.gridCopyValue"), action: () => void navigator.clipboard.writeText(v ?? "NULL") });
+            return items;
+          })()}
+        />
       )}
     </div>
   );
@@ -1735,14 +2192,14 @@ function DdlModal({ kind, conn, table, onClose, onRun }: {
   const valid = name.trim() && (kind === "col" ? type.trim() : colList.length > 0);
 
   return (
-    <Modal title={kind === "col" ? `➕ ${tr("Add column", "Thêm cột")} — ${table.name}` : `➕ ${tr("Add index", "Thêm index")} — ${table.name}`} width={560} onClose={onClose}>
+    <Modal title={kind === "col" ? `➕ ${tr("db.addColumn2")} — ${table.name}` : `➕ ${tr("db.addIndex2")} — ${table.name}`} width={560} onClose={onClose}>
       <div className="form account-form">
         {kind === "col" ? (
           <>
             <div className="form-row">
-              <label className="grow">{tr("Column name", "Tên cột")}<input autoFocus className="mono" value={name} onChange={(e) => setName(e.target.value)} placeholder="created_at" /></label>
+              <label className="grow">{tr("db.columnName")}<input autoFocus className="mono" value={name} onChange={(e) => setName(e.target.value)} placeholder="created_at" /></label>
               <div className="field grow" style={{ flex: 1 }}>
-                <span className="field-cap">{tr("Data type", "Kiểu dữ liệu")}</span>
+                <span className="field-cap">{tr("db.dataType")}</span>
                 <div className="picker-field">
                   <Picker
                     label={<span className="ellipsis mono">{type}</span>}
@@ -1753,30 +2210,132 @@ function DdlModal({ kind, conn, table, onClose, onRun }: {
               </div>
             </div>
             <div className="form-row">
-              <label className="grow">{tr("Default value (optional)", "Giá trị mặc định (tuỳ chọn)")}<input className="mono" value={def} onChange={(e) => setDef(e.target.value)} placeholder="NULL / 0 / CURRENT_TIMESTAMP" /></label>
+              <label className="grow">{tr("db.defaultValueOptional")}<input className="mono" value={def} onChange={(e) => setDef(e.target.value)} placeholder="NULL / 0 / CURRENT_TIMESTAMP" /></label>
             </div>
             <label className="check"><input type="checkbox" checked={notNull} onChange={(e) => setNotNull(e.target.checked)} /> NOT NULL</label>
           </>
         ) : (
           <>
             <div className="form-row">
-              <label className="grow">{tr("Index name", "Tên index")}<input autoFocus className="mono" value={name} onChange={(e) => setName(e.target.value)} /></label>
+              <label className="grow">{tr("db.indexName")}<input autoFocus className="mono" value={name} onChange={(e) => setName(e.target.value)} /></label>
             </div>
-            <label>{tr("Columns (comma-separated)", "Cột (cách nhau dấu phẩy)")}<input className="mono" value={cols} onChange={(e) => setCols(e.target.value)} placeholder="user_id, created_at" /></label>
+            <label>{tr("db.columnsCommaSeparated")}<input className="mono" value={cols} onChange={(e) => setCols(e.target.value)} placeholder="user_id, created_at" /></label>
             <label className="check"><input type="checkbox" checked={uniq} onChange={(e) => setUniq(e.target.checked)} /> UNIQUE</label>
           </>
         )}
         <div className="field">
-          <span className="field-cap">{tr("SQL to run", "SQL sẽ chạy")}</span>
+          <span className="field-cap">{tr("db.sqlToRun")}</span>
           <pre className="sql-preview mono">{sql}</pre>
         </div>
         <div className="toolbar">
           <span className="grow" />
-          <button onClick={onClose}>{tr("Cancel", "Huỷ")}</button>
-          <button className="primary" disabled={!valid} onClick={() => { onRun(sql); onClose(); }}>{tr("Run", "Chạy")}</button>
+          <button onClick={onClose}>{tr("db.cancel")}</button>
+          <button className="primary" disabled={!valid} onClick={() => { onRun(sql); onClose(); }}>{tr("db.run2")}</button>
         </div>
       </div>
     </Modal>
+  );
+}
+
+/** Định dạng số byte → KB/MB/GB. */
+function fmtBytes(v: string | null | undefined): string {
+  const n = Number(v);
+  if (v == null || v === "" || !Number.isFinite(n)) return "";
+  const u = ["B", "KB", "MB", "GB", "TB"];
+  let x = n;
+  let i = 0;
+  while (x >= 1024 && i < u.length - 1) { x /= 1024; i++; }
+  return `${x >= 100 || i === 0 ? x.toFixed(0) : x.toFixed(1)} ${u[i]}`;
+}
+
+/**
+ * Thông tin cơ bản của bảng đang chọn (click đơn trong cây) — kiểu khung "Object info" của Navicat.
+ * Double-click / Enter trên bảng mới chạy SELECT.
+ */
+function TableInfoPanel({ conn, dbId, table, onOpen, onStructure, onClose }: {
+  conn: Conn; dbId: string; table: TableInfo; onOpen: () => void; onStructure: () => void; onClose: () => void;
+}) {
+  const tr = useT();
+  const [rows, setRows] = useState<[string, string][] | null>(null);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    let alive = true;
+    setRows(null);
+    setErr("");
+    const esc = (s: string) => s.replace(/'/g, "''");
+    const q = (sql: string) => invoke<QueryOut>("db_query", { id: dbId, sql, limit: 5 });
+    (async () => {
+      const out: [string, string][] = [];
+      const push = (k: string, v: string | null | undefined) => { if (v != null && v !== "") out.push([k, v]); };
+      push(tr("db.infoType"), table.kind === "view" ? "VIEW" : "TABLE");
+      try {
+        if (conn.driver === "mysql") {
+          const r = (await q(`SELECT ENGINE, TABLE_ROWS, DATA_LENGTH, INDEX_LENGTH, AUTO_INCREMENT, CREATE_TIME, UPDATE_TIME, TABLE_COLLATION, TABLE_COMMENT FROM information_schema.TABLES WHERE TABLE_SCHEMA='${esc(table.schema)}' AND TABLE_NAME='${esc(table.name)}'`)).rows[0];
+          if (r) {
+            push(tr("db.infoEngine"), r[0]);
+            push(tr("db.infoRowsApprox"), r[1]);
+            push(tr("db.infoDataSize"), fmtBytes(r[2]));
+            push(tr("db.infoIndexSize"), fmtBytes(r[3]));
+            push(tr("db.infoAutoIncrement"), r[4]);
+            push(tr("db.infoCreated"), r[5]);
+            push(tr("db.infoUpdated"), r[6]);
+            push(tr("db.infoCollation"), r[7]);
+            push(tr("db.infoComment"), r[8]);
+          }
+        } else if (conn.driver === "postgres") {
+          const r = (await q(`SELECT c.reltuples::bigint, pg_size_pretty(pg_relation_size(c.oid)), pg_size_pretty(pg_indexes_size(c.oid)), pg_size_pretty(pg_total_relation_size(c.oid)), obj_description(c.oid, 'pg_class') FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname='${esc(table.schema)}' AND c.relname='${esc(table.name)}'`)).rows[0];
+          if (r) {
+            push(tr("db.infoRowsApprox"), r[0] != null && Number(r[0]) >= 0 ? r[0] : "?");
+            push(tr("db.infoDataSize"), r[1]);
+            push(tr("db.infoIndexSize"), r[2]);
+            push(tr("db.infoTotalSize"), r[3]);
+            push(tr("db.infoComment"), r[4]);
+          }
+        } else if (conn.driver === "sqlite") {
+          const r = (await q(`SELECT count(*) FROM "${table.name.replace(/"/g, '""')}"`)).rows[0];
+          if (r) push(tr("db.infoRows"), r[0]);
+        }
+      } catch (e) {
+        if (alive) setErr(errText(e));
+      }
+      // Cột + khoá chính (mọi loại DB).
+      try {
+        const cols = (await invoke<string[]>("db_table_columns", { id: dbId, schema: table.schema, table: table.name })).map((s) => s.split("\u001f"));
+        push(tr("db.infoColumns"), String(cols.length));
+        const pk = cols.filter((c) =>
+          conn.driver === "sqlite" ? !!c[4] && c[4] !== "0"
+          : conn.driver === "cassandra" ? c[2] === "partition_key" || c[2] === "clustering"
+          : c[4] === "PRI").map((c) => c[0]);
+        push(tr("db.infoPrimaryKey"), pk.length ? pk.join(", ") : tr("db.infoNone"));
+      } catch { /* bỏ qua — vẫn hiện phần đã có */ }
+      if (alive) setRows(out);
+    })();
+    return () => { alive = false; };
+  }, [conn.driver, dbId, table.schema, table.name, table.kind]);
+
+  return (
+    <div className="db-table-info">
+      <div className="db-table-info-head">
+        <span className="tree-icon">{table.kind === "view" ? "👁" : <TableIcon />}</span>
+        <b className="grow ellipsis" title={`${table.schema}.${table.name}`}>{table.name}</b>
+        <button className="icon-btn" title={tr("db.close")} onClick={onClose}>×</button>
+      </div>
+      {err && <div className="error-box small">{err}</div>}
+      {!rows ? (
+        <div className="muted small pad">{tr("db.loading")}</div>
+      ) : (
+        <dl className="db-table-info-list">
+          {rows.map(([k, v]) => (
+            <div key={k} className="db-table-info-row"><dt>{k}</dt><dd title={v}>{v}</dd></div>
+          ))}
+        </dl>
+      )}
+      <div className="db-table-info-actions">
+        <button className="primary" onClick={onOpen} title={tr("db.tableOpenHint")}>▶ {tr("db.openData")}</button>
+        <button onClick={onStructure}>{tr("db.structure")}</button>
+      </div>
+    </div>
   );
 }
 
@@ -1804,10 +2363,10 @@ function TableStructModal({ dbId, table, onClose, onAddColumn }: {
     <Modal title={`✏ Edit table — ${table.schema}.${table.name}`} width={760} onClose={onClose}>
       <div className="form account-form">
         {err && <div className="error-box">⚠ {err}</div>}
-        {!cols ? <div className="muted small">{tr("loading…", "đang tải…")}</div> : (
+        {!cols ? <div className="muted small">{tr("db.loading")}</div> : (
           <div className="grid-wrap" style={{ maxHeight: "50vh" }}>
             <table className="grid mono">
-              <thead><tr><th>{tr("Column", "Cột")}</th><th>{tr("Type", "Kiểu")}</th><th>Null</th><th>Key</th><th>Default</th></tr></thead>
+              <thead><tr><th>{tr("db.column")}</th><th>{tr("db.type2")}</th><th>Null</th><th>Key</th><th>Default</th></tr></thead>
               <tbody>
                 {cols.map((c) => (
                   <tr key={c.name}>
@@ -1822,9 +2381,9 @@ function TableStructModal({ dbId, table, onClose, onAddColumn }: {
           </div>
         )}
         <div className="toolbar">
-          <button onClick={onAddColumn}>＋ {tr("Add column", "Thêm cột")}</button>
+          <button onClick={onAddColumn}>＋ {tr("db.addColumn2")}</button>
           <span className="grow" />
-          <button onClick={onClose}>{tr("Close", "Đóng")}</button>
+          <button onClick={onClose}>{tr("db.close")}</button>
         </div>
       </div>
     </Modal>
@@ -1842,17 +2401,17 @@ function NewTableModal({ conn, schema, onClose, onRun }: {
   const ref = schema && conn.driver !== "sqlite" ? `${qi(schema)}.${qi(name.trim() || "new_table")}` : qi(name.trim() || "new_table");
   const sql = `CREATE TABLE ${ref} (\n  ${cols.split("\n").map((l) => l.trim()).filter(Boolean).join(",\n  ")}\n);`;
   return (
-    <Modal title={tr("➕ New table", "➕ Bảng mới")} width={620} onClose={onClose}>
+    <Modal title={tr("db.newTable2")} width={620} onClose={onClose}>
       <div className="form account-form">
-        <label>{tr("Table name", "Tên bảng")}<input autoFocus className="mono" value={name} onChange={(e) => setName(e.target.value)} placeholder="orders" /></label>
-        <label>{tr("Column definitions (one per line)", "Định nghĩa cột (mỗi dòng một cột)")}
+        <label>{tr("db.tableName")}<input autoFocus className="mono" value={name} onChange={(e) => setName(e.target.value)} placeholder="orders" /></label>
+        <label>{tr("db.columnDefinitionsOnePerLine")}
           <textarea className="mono" style={{ minHeight: 110 }} value={cols} onChange={(e) => setCols(e.target.value)} spellCheck={false} />
         </label>
-        <div className="field"><span className="field-cap">{tr("SQL to run", "SQL sẽ chạy")}</span><pre className="sql-preview mono">{sql}</pre></div>
+        <div className="field"><span className="field-cap">{tr("db.sqlToRun")}</span><pre className="sql-preview mono">{sql}</pre></div>
         <div className="toolbar">
           <span className="grow" />
-          <button onClick={onClose}>{tr("Cancel", "Huỷ")}</button>
-          <button className="primary" disabled={!name.trim()} onClick={() => { onRun(sql); onClose(); }}>{tr("Create table", "Tạo bảng")}</button>
+          <button onClick={onClose}>{tr("db.cancel")}</button>
+          <button className="primary" disabled={!name.trim()} onClick={() => { onRun(sql); onClose(); }}>{tr("db.createTable")}</button>
         </div>
       </div>
     </Modal>
@@ -1867,16 +2426,16 @@ function RoutineModal({ info, driver, running, onClose, onRun }: {
 }) {
   const tr = useT();
   const [sql, setSql] = useState(info.sql);
-  const kindLabel = info.kind === "event" ? tr("event", "event") : info.kind === "function" ? tr("function", "function") : tr("procedure", "procedure");
+  const kindLabel = info.kind === "event" ? tr("db.event") : info.kind === "function" ? tr("db.function") : tr("db.procedure");
   const title = info.mode === "new"
-    ? tr(`➕ New ${kindLabel} in ${info.db}`, `➕ ${kindLabel} mới trong ${info.db}`)
-    : tr(`✎ Edit ${kindLabel} “${info.name}”`, `✎ Sửa ${kindLabel} “${info.name}”`);
+    ? tr("db.newIn", { kindLabel, db: info.db })
+    : tr("db.edit2", { kindLabel, name: info.name });
   void driver;
   return (
     <Modal title={title} width={720} onClose={onClose}>
-      <div className="form account-form" style={{ maxWidth: "none" }}>
+      <div className="form account-form">
         {info.kind === "event" && (
-          <div className="muted small">{tr("Event scheduler must be ON: SET GLOBAL event_scheduler = ON;", "Bộ lập lịch phải bật: SET GLOBAL event_scheduler = ON;")}</div>
+          <div className="muted small">{tr("db.eventSchedulerMustBeOnSet")}</div>
         )}
         <textarea
           autoFocus
@@ -1887,10 +2446,10 @@ function RoutineModal({ info, driver, running, onClose, onRun }: {
           onChange={(e) => setSql(e.target.value)}
         />
         <div className="toolbar">
-          <span className="muted small">{info.mode === "edit" ? tr("Saving drops & recreates it.", "Lưu sẽ xoá rồi tạo lại.") : tr("Runs as a single statement.", "Chạy như một câu lệnh.")}</span>
+          <span className="muted small">{info.mode === "edit" ? tr("db.savingDropsRecreatesIt") : tr("db.runsAsASingleStatement")}</span>
           <span className="grow" />
-          <button onClick={onClose}>{tr("Cancel", "Huỷ")}</button>
-          <button className="primary" disabled={running || !sql.trim()} onClick={() => onRun(sql)}>{running ? tr("Running…", "Đang chạy…") : tr("▶ Run", "▶ Chạy")}</button>
+          <button onClick={onClose}>{tr("db.cancel")}</button>
+          <button className="primary" disabled={running || !sql.trim()} onClick={() => onRun(sql)}>{running ? tr("db.running") : tr("db.run")}</button>
         </div>
       </div>
     </Modal>
@@ -1924,7 +2483,7 @@ function EventModal({ db, mode: emode, init, running, onClose, onRun, onRawEdit 
   const [preserve, setPreserve] = useState(init?.preserve ?? true);
   const [status, setStatus] = useState(init?.status ?? "ENABLE");
   const [comment, setComment] = useState(init?.comment ?? "");
-  const [body, setBody] = useState(init?.body ?? "-- câu lệnh chạy định kỳ\nSELECT 1;");
+  const [body, setBody] = useState(init?.body ?? `-- ${t("db.tplRunOnSchedule")}\nSELECT 1;`);
 
   const nm = name.trim() || "new_event";
   // Giá trị lịch: để nguyên CURRENT_TIMESTAMP / biểu thức, còn lại bọc nháy nếu người dùng nhập ngày giờ thường.
@@ -1948,31 +2507,31 @@ function EventModal({ db, mode: emode, init, running, onClose, onRun, onRawEdit 
     `DO\n${body.trim() || "SELECT 1;"}`;
 
   const title = emode === "edit"
-    ? tr(`⏰ Edit event “${init?.name ?? name}”`, `⏰ Sửa event “${init?.name ?? name}”`)
-    : tr(`⏰ New event in ${db}`, `⏰ Event mới trong ${db}`);
+    ? tr("db.editEvent", { p: init?.name ?? name })
+    : tr("db.newEventIn", { db });
   return (
     <Modal title={title} width={720} onClose={onClose}>
-      <div className="form account-form" style={{ maxWidth: "none" }}>
-        <div className="muted small">{tr("Event scheduler must be ON: SET GLOBAL event_scheduler = ON;", "Bộ lập lịch phải bật: SET GLOBAL event_scheduler = ON;")}</div>
-        <label>{tr("Event name", "Tên event")}
+      <div className="form account-form">
+        <div className="muted small">{tr("db.eventSchedulerMustBeOnSet")}</div>
+        <label>{tr("db.eventName")}
           <input autoFocus className="mono" value={name} onChange={(e) => setName(e.target.value)} placeholder="my_event" />
         </label>
         <div className="form-row">
           <div className="field grow">
-            <span className="field-cap">{tr("Schedule", "Lịch chạy")}</span>
+            <span className="field-cap">{tr("db.schedule")}</span>
             <div className="picker-field">
               <Picker
-                label={<span className="ellipsis">{mode === "every" ? tr("Every (recurring)", "Lặp lại (EVERY)") : tr("At (one time)", "Một lần (AT)")}</span>}
+                label={<span className="ellipsis">{mode === "every" ? tr("db.everyRecurring") : tr("db.atOneTime")}</span>}
                 items={[
-                  { id: "every", label: tr("Every (recurring)", "Lặp lại (EVERY)"), selected: mode === "every" },
-                  { id: "at", label: tr("At (one time)", "Một lần (AT)"), selected: mode === "at" },
+                  { id: "every", label: tr("db.everyRecurring"), selected: mode === "every" },
+                  { id: "at", label: tr("db.atOneTime"), selected: mode === "at" },
                 ]}
                 onPick={(m) => setMode(m as "every" | "at")}
               />
             </div>
           </div>
           <div className="field grow">
-            <span className="field-cap">{tr("Status", "Trạng thái")}</span>
+            <span className="field-cap">{tr("db.status")}</span>
             <div className="picker-field">
               <Picker
                 label={<span className="ellipsis">{status}</span>}
@@ -1985,48 +2544,48 @@ function EventModal({ db, mode: emode, init, running, onClose, onRun, onRawEdit 
         {mode === "every" ? (
           <>
             <div className="form-row">
-              <label style={{ width: 120 }}>{tr("Every", "Mỗi")}
+              <label style={{ width: 120 }}>{tr("db.every")}
                 <input className="mono" type="number" min={1} value={every} onChange={(e) => setEvery(e.target.value)} />
               </label>
               <div className="field grow">
-                <span className="field-cap">{tr("Unit", "Đơn vị")}</span>
+                <span className="field-cap">{tr("db.unit")}</span>
                 <div className="picker-field">
                   <Picker label={<span className="ellipsis">{unit}</span>} items={EVENT_UNITS.map((u) => ({ id: u, label: u, selected: u === unit }))} onPick={setUnit} />
                 </div>
               </div>
             </div>
             <div className="form-row">
-              <label className="grow">{tr("Starts", "Bắt đầu")}
+              <label className="grow">{tr("db.starts")}
                 <input className="mono" value={starts} onChange={(e) => setStarts(e.target.value)} placeholder="CURRENT_TIMESTAMP / 2026-01-01 00:00:00" />
               </label>
-              <label className="grow">{tr("Ends (optional)", "Kết thúc (tuỳ chọn)")}
-                <input className="mono" value={ends} onChange={(e) => setEnds(e.target.value)} placeholder={tr("empty = no end", "trống = không kết thúc")} />
+              <label className="grow">{tr("db.endsOptional")}
+                <input className="mono" value={ends} onChange={(e) => setEnds(e.target.value)} placeholder={tr("db.emptyNoEnd")} />
               </label>
             </div>
           </>
         ) : (
-          <label>{tr("Execute at", "Chạy lúc")}
+          <label>{tr("db.executeAt")}
             <input className="mono" value={at} onChange={(e) => setAt(e.target.value)} placeholder="CURRENT_TIMESTAMP + INTERVAL 1 HOUR" />
           </label>
         )}
         <label className="check">
           <input type="checkbox" checked={preserve} onChange={(e) => setPreserve(e.target.checked)} />
-          {tr("Keep event after it finishes (ON COMPLETION PRESERVE)", "Giữ event sau khi chạy xong (ON COMPLETION PRESERVE)")}
+          {tr("db.keepEventAfterItFinishesOn")}
         </label>
-        <label>{tr("Comment (optional)", "Ghi chú (tuỳ chọn)")}
+        <label>{tr("db.commentOptional")}
           <input value={comment} onChange={(e) => setComment(e.target.value)} />
         </label>
         <div className="field">
-          <span className="field-cap">{tr("Body (DO)", "Thân lệnh (DO)")}</span>
+          <span className="field-cap">{tr("db.bodyDo")}</span>
           <textarea className="db-editor mono" style={{ minHeight: 120, width: "100%" }} spellCheck={false} value={body} onChange={(e) => setBody(e.target.value)} />
         </div>
-        <div className="field"><span className="field-cap">{tr("SQL to run", "SQL sẽ chạy")}</span><pre className="sql-preview mono">{sql}</pre></div>
+        <div className="field"><span className="field-cap">{tr("db.sqlToRun")}</span><pre className="sql-preview mono">{sql}</pre></div>
         <div className="toolbar">
-          <button onClick={() => onRawEdit(sql)} title={tr("Switch to raw SQL editor", "Chuyển sang soạn SQL thô")}>{tr("Edit SQL…", "Sửa SQL…")}</button>
-          {emode === "edit" && <span className="muted small">{tr("Saving drops & recreates it.", "Lưu sẽ xoá rồi tạo lại.")}</span>}
+          <button onClick={() => onRawEdit(sql)} title={tr("db.switchToRawSqlEditor")}>{tr("db.editSql")}</button>
+          {emode === "edit" && <span className="muted small">{tr("db.savingDropsRecreatesIt")}</span>}
           <span className="grow" />
-          <button onClick={onClose}>{tr("Cancel", "Huỷ")}</button>
-          <button className="primary" disabled={running || !name.trim()} onClick={() => onRun(sql, init?.name)}>{running ? tr("Running…", "Đang chạy…") : emode === "edit" ? tr("▶ Save", "▶ Lưu") : tr("▶ Create", "▶ Tạo")}</button>
+          <button onClick={onClose}>{tr("db.cancel")}</button>
+          <button className="primary" disabled={running || !name.trim()} onClick={() => onRun(sql, init?.name)}>{running ? tr("db.running") : emode === "edit" ? tr("db.save2") : tr("db.create")}</button>
         </div>
       </div>
     </Modal>
@@ -2064,24 +2623,24 @@ function CharsetCollationFields({ dbId, charset, setCharset, collation, setColla
   return (
     <div className="form-row">
       <div className="field grow">
-        <span className="field-cap">{tr("Charset", "Charset")}</span>
+        <span className="field-cap">{tr("db.charset")}</span>
         <div className="picker-field">
           <Picker
-            label={<span className="ellipsis">{charset || tr("(server default)", "(mặc định server)")}</span>}
+            label={<span className="ellipsis">{charset || tr("db.serverDefault")}</span>}
             items={charsets.map((c) => ({ id: c.name, label: c.name, selected: c.name === charset }))}
             onPick={(cs) => { setCharset(cs); const d = charsets.find((x) => x.name === cs)?.def; setCollation(d || ""); }}
-            filterPlaceholder={tr("Filter charset…", "Lọc charset…")}
+            filterPlaceholder={tr("db.filterCharset")}
           />
         </div>
       </div>
       <div className="field grow">
-        <span className="field-cap">{tr("Collation", "Collation")}</span>
+        <span className="field-cap">{tr("db.collation")}</span>
         <div className="picker-field">
           <Picker
-            label={<span className="ellipsis">{collation || tr("(default)", "(mặc định)")}</span>}
+            label={<span className="ellipsis">{collation || tr("db.default")}</span>}
             items={collOpts.map((c) => ({ id: c, label: c, selected: c === collation }))}
             onPick={(c) => setCollation(c)}
-            filterPlaceholder={tr("Filter collation…", "Lọc collation…")}
+            filterPlaceholder={tr("db.filterCollation")}
           />
         </div>
       </div>
@@ -2103,19 +2662,19 @@ function NewDbModal({ conn, dbId, onClose, onRun }: { conn: Conn; dbId: string |
       (charset.trim() ? ` CHARACTER SET ${charset.trim()}` : "") +
       (collation.trim() ? ` COLLATE ${collation.trim()}` : "") + ";";
   return (
-    <Modal title={pg ? tr("➕ New schema", "➕ Schema mới") : tr("➕ New database", "➕ Database mới")} width={560} onClose={onClose}>
+    <Modal title={pg ? tr("db.newSchema2") : tr("db.newDatabase2")} width={560} onClose={onClose}>
       <div className="form account-form">
-        <label>{pg ? tr("Schema name", "Tên schema") : tr("Database name", "Tên database")}
+        <label>{pg ? tr("db.schemaName") : tr("db.databaseName")}
           <input autoFocus className="mono" value={name} onChange={(e) => setName(e.target.value)} placeholder={pg ? "reporting" : "myapp"} />
         </label>
         {mysql && (
           <CharsetCollationFields dbId={dbId} charset={charset} setCharset={setCharset} collation={collation} setCollation={setCollation} />
         )}
-        <div className="field"><span className="field-cap">{tr("SQL to run", "SQL sẽ chạy")}</span><pre className="sql-preview mono">{sql}</pre></div>
+        <div className="field"><span className="field-cap">{tr("db.sqlToRun")}</span><pre className="sql-preview mono">{sql}</pre></div>
         <div className="toolbar">
           <span className="grow" />
-          <button onClick={onClose}>{tr("Cancel", "Huỷ")}</button>
-          <button className="primary" disabled={!name.trim()} onClick={() => { onRun(sql); onClose(); }}>{tr("Create", "Tạo")}</button>
+          <button onClick={onClose}>{tr("db.cancel")}</button>
+          <button className="primary" disabled={!name.trim()} onClick={() => { onRun(sql); onClose(); }}>{tr("db.create2")}</button>
         </div>
       </div>
     </Modal>
@@ -2132,15 +2691,15 @@ function AlterDbModal({ conn, db, dbId, onClose, onRun }: { conn: Conn; db: stri
     (collation.trim() ? ` COLLATE ${collation.trim()}` : "") + ";";
   void conn;
   return (
-    <Modal title={tr(`✎ Edit database “${db}”`, `✎ Sửa database “${db}”`)} width={560} onClose={onClose}>
+    <Modal title={tr("db.editDatabase", { db })} width={560} onClose={onClose}>
       <div className="form account-form">
         <CharsetCollationFields dbId={dbId} charset={charset} setCharset={setCharset} collation={collation} setCollation={setCollation} />
-        <div className="muted small">{tr("Sets default charset/collation for NEW tables; existing tables keep theirs.", "Đặt charset/collation mặc định cho bảng MỚI; bảng cũ giữ nguyên.")}</div>
-        <div className="field"><span className="field-cap">{tr("SQL to run", "SQL sẽ chạy")}</span><pre className="sql-preview mono">{sql}</pre></div>
+        <div className="muted small">{tr("db.setsDefaultCharsetCollationForNew")}</div>
+        <div className="field"><span className="field-cap">{tr("db.sqlToRun")}</span><pre className="sql-preview mono">{sql}</pre></div>
         <div className="toolbar">
           <span className="grow" />
-          <button onClick={onClose}>{tr("Cancel", "Huỷ")}</button>
-          <button className="primary" onClick={() => { onRun(sql); onClose(); }}>{tr("Run", "Chạy")}</button>
+          <button onClick={onClose}>{tr("db.cancel")}</button>
+          <button className="primary" onClick={() => { onRun(sql); onClose(); }}>{tr("db.run2")}</button>
         </div>
       </div>
     </Modal>
@@ -2160,53 +2719,70 @@ function parseStruct(rows: string[]): Record<string, ScCol[]> {
   return out;
 }
 
-function buildSyncSql(conn: Conn, dstSchema: string, src: Record<string, ScCol[]>, dst: Record<string, ScCol[]>, dropExtra: boolean) {
-  const qi = (s: string) => (conn.driver === "mysql" ? `\`${s}\`` : `"${s}"`);
-  const ref = (t: string) =>
-    dstSchema && conn.driver !== "sqlite" ? `${qi(dstSchema)}.${qi(t)}` : qi(t);
-  const norm = (s: string) => s.trim().toLowerCase().replace(/\s+/g, " ");
-  const stmts: string[] = [];
-  const notes: string[] = [];
+/** Kế hoạch đồng bộ cho Postgres/SQLite (và khi hai đầu khác loại) — dựng từ metadata cột (db_struct). */
+function planGenericSync(conn: Conn, dstSchema: string, src: Record<string, ScCol[]>, dst: Record<string, ScCol[]>, dropExtra: boolean): { plan: SyncPlan; notes: string[] } {
+  const qi = (x: string) => (conn.driver === "mysql" ? `\`${x}\`` : `"${x}"`);
+  const ref = (tb: string) => (dstSchema && conn.driver !== "sqlite" ? `${qi(dstSchema)}.${qi(tb)}` : qi(tb));
+  const norm = (x: string) => x.trim().toLowerCase().replace(/\s+/g, " ");
   const colDef = (c: ScCol) => `${qi(c.name)} ${c.type}${c.nn ? " NOT NULL" : ""}${c.def ? ` DEFAULT ${c.def}` : ""}`;
-
+  const tables: SyncTable[] = [];
+  const notes: string[] = [];
   for (const [tbl, scols] of Object.entries(src)) {
     const dcols = dst[tbl];
+    const items: SyncItem[] = [];
+    const id = (k: string, n = "") => `${tbl}|${k}|${n}`;
     if (!dcols) {
       const lines = scols.map((c) => `  ${colDef(c)}`);
       const pks = scols.filter((c) => c.key === "PRI").map((c) => qi(c.name));
       if (pks.length) lines.push(`  PRIMARY KEY (${pks.join(", ")})`);
-      stmts.push(`CREATE TABLE ${ref(tbl)} (\n${lines.join(",\n")}\n);`);
+      items.push({ id: id("create"), kind: "create", action: "add", name: "", detail: `${scols.length} columns`, parts: [{ phase: 2, order: 0, stmt: `CREATE TABLE ${ref(tbl)} (\n${lines.join(",\n")}\n);` }] });
+      tables.push({ table: tbl, ref: ref(tbl), isNew: true, items, dstCols: [] });
       continue;
     }
     for (const sc of scols) {
       const dc = dcols.find((c) => c.name === sc.name);
       if (!dc) {
-        stmts.push(`ALTER TABLE ${ref(tbl)} ADD COLUMN ${colDef(sc)};`);
+        items.push({ id: id("col", sc.name), kind: "column", action: "add", name: sc.name, detail: colDef(sc), parts: [{ phase: 3, order: 1, stmt: `ALTER TABLE ${ref(tbl)} ADD COLUMN ${colDef(sc)};` }] });
         continue;
       }
       const typeDiff = norm(sc.type) !== norm(dc.type);
       const nullDiff = sc.nn !== dc.nn;
       const defDiff = norm(sc.def) !== norm(dc.def);
       if (!typeDiff && !nullDiff && !defDiff) continue;
-      if (conn.driver === "mysql") {
-        stmts.push(`ALTER TABLE ${ref(tbl)} MODIFY COLUMN ${colDef(sc)};`);
-      } else if (conn.driver === "postgres") {
+      const stmts: string[] = [];
+      if (conn.driver === "mysql") stmts.push(`ALTER TABLE ${ref(tbl)} MODIFY COLUMN ${colDef(sc)};`);
+      else if (conn.driver === "postgres") {
         if (typeDiff) stmts.push(`ALTER TABLE ${ref(tbl)} ALTER COLUMN ${qi(sc.name)} TYPE ${sc.type};`);
         if (nullDiff) stmts.push(`ALTER TABLE ${ref(tbl)} ALTER COLUMN ${qi(sc.name)} ${sc.nn ? "SET NOT NULL" : "DROP NOT NULL"};`);
         if (defDiff) stmts.push(`ALTER TABLE ${ref(tbl)} ALTER COLUMN ${qi(sc.name)} ${sc.def ? `SET DEFAULT ${sc.def}` : "DROP DEFAULT"};`);
       } else {
-        notes.push(t(`SQLite can't alter column ${tbl}.${sc.name} — skipped.`, `SQLite không sửa được cột ${tbl}.${sc.name} — bỏ qua.`));
+        notes.push(t("db.sqliteCanTAlterColumnSkipped", { tbl, name: sc.name }));
+        continue;
       }
+      items.push({ id: id("col", sc.name), kind: "column", action: "modify", name: sc.name, detail: `${colDef(dc)}\n→ ${colDef(sc)}`, parts: stmts.map((st, i) => ({ phase: 3 as const, order: 1 + i / 10, stmt: st })) });
     }
-    if (dropExtra) {
-      for (const dc of dcols) if (!scols.some((c) => c.name === dc.name)) {
-        stmts.push(`ALTER TABLE ${ref(tbl)} DROP COLUMN ${qi(dc.name)};`);
-      }
+    if (dropExtra) for (const dc of dcols) if (!scols.some((c) => c.name === dc.name)) {
+      items.push({ id: id("col", dc.name), kind: "column", action: "drop", name: dc.name, detail: colDef(dc), parts: [{ phase: 3, order: 2, stmt: `ALTER TABLE ${ref(tbl)} DROP COLUMN ${qi(dc.name)};` }] });
     }
+    if (items.length) tables.push({ table: tbl, ref: ref(tbl), isNew: false, items, dstCols: dcols.map((c) => c.name) });
   }
-  for (const tbl of Object.keys(dst)) if (!src[tbl]) notes.push(t(`Only in target: table ${tbl} (not auto-dropped).`, `Chỉ có ở đích: bảng ${tbl} (không xoá tự động).`));
+  return { plan: { tables, viewsSkipped: [], onlyInTarget: Object.keys(dst).filter((tb) => !src[tb]) }, notes };
+}
 
-  return { sql: stmts.join("\n"), notes };
+/** SHOW CREATE TABLE cho nhiều bảng (MySQL/MariaDB), chạy song song 4 luồng. */
+async function showCreateAll(id: string, schema: string, tables: string[], onEach?: (table: string) => void): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  const queue = [...tables];
+  const q = (x: string) => `\`${x.replace(/`/g, "``")}\``;
+  const worker = async () => {
+    for (let tb = queue.shift(); tb !== undefined; tb = queue.shift()) {
+      const r = await call<QueryOut>("db_query", { id, sql: `SHOW CREATE TABLE ${q(schema)}.${q(tb)}`, limit: 1 });
+      out[tb] = r.rows[0]?.[1] ?? "";
+      onEach?.(tb);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(4, tables.length) }, worker));
+  return out;
 }
 
 /** Một đầu (nguồn/đích) của Struct sync: chọn server (kết nối) → chọn database trong đó. */
@@ -2221,17 +2797,17 @@ function SyncEnd({ cap, conns, connId, setConnId, dbs, loading, db, setDb }: {
       <span className="field-cap">{cap}</span>
       <div className="picker-field">
         <Picker
-          label={<span className="ellipsis">{c ? c.name : tr("— pick server —", "— chọn server —")}{c && c.env === "prod" ? " (PROD)" : ""}</span>}
+          label={<span className="ellipsis">{c ? c.name : tr("db.pickServer")}{c && c.env === "prod" ? " (PROD)" : ""}</span>}
           items={conns.map((x) => ({ id: x.id, label: `${x.name} · ${DRIVERS[x.driver].name.split(" ")[0]}`, hint: x.env, selected: x.id === connId }))}
           onPick={setConnId}
         />
       </div>
       <div className="picker-field" style={{ marginTop: 6 }}>
         <Picker
-          label={<span className="ellipsis">{loading ? tr("loading databases…", "đang tải database…") : db || tr("— pick database —", "— chọn database —")}</span>}
+          label={<span className="ellipsis">{loading ? tr("db.loadingDatabases") : db || tr("db.pickDatabase")}</span>}
           items={dbs.map((d) => ({ id: d, label: d, selected: d === db }))}
           onPick={setDb}
-          filterPlaceholder={tr("Filter databases…", "Lọc database…")}
+          filterPlaceholder={tr("db.filterDatabases")}
         />
       </div>
     </div>
@@ -2260,6 +2836,14 @@ function StructSyncModal({ current, conns, onClose, onReloadSession }: {
   const [ok, setOk] = useState("");
   const [sql, setSql] = useState("");
   const [notes, setNotes] = useState<string[]>([]);
+  /** Kế hoạch đồng bộ (bảng → các mục thay đổi chọn được) + các mục đã chọn + bảng đang mở rộng. */
+  const [plan, setPlan] = useState<SyncPlan | null>(null);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [openTables, setOpenTables] = useState<Set<string>>(new Set());
+  /** Bước của wizard: 1 so sánh → 2 chọn thay đổi → 3 SQL & chạy (có thể quay lại). */
+  const [step, setStep] = useState<1 | 2 | 3>(1);
+  /** Tiến trình việc nặng (đọc cấu trúc / chạy script). */
+  const [progress, setProgress] = useState<{ label: string; done: number; total: number } | null>(null);
   // Cache kết nối mở tạm cho các server KHÁC session hiện tại — đóng khi tắt modal.
   const cache = useRef<Map<string, { dbId: string; tunnelId: string | null }>>(new Map());
 
@@ -2271,9 +2855,9 @@ function StructSyncModal({ current, conns, onClose, onReloadSession }: {
     const cached = cache.current.get(connId);
     if (cached) return cached.dbId;
     const c = connOf(connId);
-    if (!c) throw new Error(tr("Connection does not exist", "Kết nối không tồn tại"));
+    if (!c) throw new Error(tr("db.connectionDoesNotExist"));
     const pw = sessionPasswords.get(connId) ?? (await call<string | null>("db_get_password", { id: connId }).catch(() => null)) ?? "";
-    if (c.driver !== "sqlite" && !pw) throw new Error(tr(`Connection “${c.name}” has no saved password — open it once (tick Save password) then retry.`, `Kết nối “${c.name}” chưa có mật khẩu lưu — mở nó một lần (và tick Lưu mật khẩu) rồi thử lại.`));
+    if (c.driver !== "sqlite" && !pw) throw new Error(tr("db.connectionHasNoSavedPasswordOpen", { name: c.name }));
     const { id, tunnelId } = await dbConnectMaybeTunnel(c, pw);
     cache.current.set(connId, { dbId: id, tunnelId });
     return id;
@@ -2296,6 +2880,8 @@ function StructSyncModal({ current, conns, onClose, onReloadSession }: {
   };
 
   useEffect(() => { void loadDbs(srcConn, true); /* eslint-disable-next-line */ }, [srcConn]);
+  // Đổi server/database nguồn-đích → kết quả so sánh cũ không còn đúng → về bước 1.
+  useEffect(() => { setPlan(null); setSql(""); setNotes([]); setStep(1); }, [srcConn, dstConn, srcDb, dstDb]);
   useEffect(() => { void loadDbs(dstConn, false); /* eslint-disable-next-line */ }, [dstConn]);
 
   const closeAll = () => {
@@ -2307,9 +2893,11 @@ function StructSyncModal({ current, conns, onClose, onReloadSession }: {
     onClose();
   };
 
+  /** Bước 1: đọc cấu trúc 2 đầu → lập kế hoạch (danh sách bảng/trường cần thay đổi). CHƯA sinh SQL. */
   const runCompare = async () => {
     if (!srcDb || !dstDb) return;
-    setBusy(true); setErr(""); setOk(""); setSql(""); setNotes([]);
+    setBusy(true); setErr(""); setOk(""); setSql(""); setNotes([]); setPlan(null); setPicked(new Set()); setOpenTables(new Set());
+    setProgress({ label: tr("db.syncReadingStructure"), done: 0, total: 0 });
     try {
       const sId = await openFor(srcConn);
       const dId = await openFor(dstConn);
@@ -2317,65 +2905,242 @@ function StructSyncModal({ current, conns, onClose, onReloadSession }: {
         call<string[]>("db_struct", { id: sId, schema: srcDb }),
         call<string[]>("db_struct", { id: dId, schema: dstDb }),
       ]);
-      const { sql, notes } = buildSyncSql(connOf(dstConn)!, dstDb, parseStruct(s), parseStruct(d), dropExtra);
-      setSql(sql);
-      setNotes(sql.trim() ? notes : [tr("Both sides are identical — nothing to sync.", "Hai bên giống nhau — không cần đồng bộ."), ...notes]);
+      const srcS = parseStruct(s);
+      const dstS = parseStruct(d);
+      let p: SyncPlan;
+      const extra: string[] = [];
+      if (connOf(srcConn)?.driver === "mysql" && connOf(dstConn)?.driver === "mysql") {
+        // MySQL/MariaDB: so sánh theo SHOW CREATE TABLE → đủ AUTO_INCREMENT, ON UPDATE, COMMENT, CHARSET/COLLATE,
+        // index, khoá ngoại, tuỳ chọn bảng.
+        const srcTables = Object.keys(srcS);
+        const dstTables = Object.keys(dstS);
+        const dstNeeded = dstTables.filter((tb) => srcTables.includes(tb));
+        const total = srcTables.length + dstNeeded.length;
+        let done = 0;
+        const tick = (tb: string) => { done++; setProgress({ label: tr("db.syncReadingTable", { table: tb }), done, total }); };
+        const [sd, dd] = await Promise.all([showCreateAll(sId, srcDb, srcTables, tick), showCreateAll(dId, dstDb, dstNeeded, tick)]);
+        for (const tb of dstTables) if (!(tb in dd)) dd[tb] = ""; // bảng chỉ có ở đích (để báo)
+        p = planMysqlSync(sd, dd, dstDb, dropExtra);
+        if (p.viewsSkipped.length) extra.push(tr("db.viewsNotSynced", { names: p.viewsSkipped.join(", ") }));
+      } else {
+        const g = planGenericSync(connOf(dstConn)!, dstDb, srcS, dstS, dropExtra);
+        p = g.plan;
+        extra.push(...g.notes);
+      }
+      const notes = [...extra, ...p.onlyInTarget.map((tbl) => tr("db.onlyInTargetTableNotAuto", { tbl }))];
+      setPlan(p);
+      setPicked(new Set(p.tables.flatMap((tb) => tb.items.map((it) => it.id)))); // mặc định chọn hết
+      setNotes(p.tables.length ? notes : [tr("db.bothSidesAreIdenticalNothingTo"), ...notes]);
+      if (p.tables.length) setStep(2);
     } catch (e) {
       setErr(errText(e));
     } finally {
       setBusy(false);
+      setProgress(null);
     }
   };
 
+  /** Bước 2: sinh SQL CHỈ từ các mục đã chọn (vẫn theo 5 pha an toàn cho khoá ngoại). */
+  const genSql = () => {
+    if (!plan || !picked.size) return;
+    setSql(assembleSync(plan, picked));
+   
+    setOk("");
+    setErr("");
+    setStep(3);
+  };
+
+  const togglePick = (ids: string[], on: boolean) => {
+    setPicked((prev) => {
+      const n = new Set(prev);
+      for (const id of ids) { if (on) n.add(id); else n.delete(id); }
+      return n;
+    });
+  };
+  const toggleOpen = (table: string) =>
+    setOpenTables((prev) => { const n = new Set(prev); if (n.has(table)) n.delete(table); else n.add(table); return n; });
+
+  /** Bước 3: chạy script lên đích — từng câu, có tiến trình; lỗi thì dừng và báo đúng câu. */
   const runScript = async () => {
     const dc = connOf(dstConn)!;
     const confirmed = await confirmDialog({
-      title: dc.env === "prod" ? tr("⚠ Sync to PROD", "⚠ Đồng bộ lên PROD") : tr("Run sync script", "Chạy script đồng bộ"),
-      message: tr(`Run the structure sync script on ${dc.name} / ${dstDb}?`, `Chạy script đồng bộ cấu trúc lên ${dc.name} / ${dstDb}?`),
-      confirmLabel: tr("Run", "Chạy"),
+      title: dc.env === "prod" ? tr("db.syncToProd") : tr("db.runSyncScript"),
+      message: tr("db.runTheStructureSyncScriptOn", { name: dc.name, dstDb }),
+      confirmLabel: tr("db.run2"),
       danger: dc.env === "prod",
     });
     if (!confirmed) return;
+    const stmts = splitStatements(sql);
     setBusy(true); setErr(""); setOk("");
+    let i = 0;
     try {
       const dId = await openFor(dstConn);
-      const stmts = splitStatements(sql);
-      for (const s of stmts) await call("db_query", { id: dId, sql: s, limit: 1 });
-      setOk(tr(`✓ Ran ${stmts.length} statements on ${dc.name} / ${dstDb}`, `✓ Đã chạy ${stmts.length} câu lệnh lên ${dc.name} / ${dstDb}`));
+      for (; i < stmts.length; i++) {
+        setProgress({ label: stmts[i].replace(/--[^\n]*\n/g, "").replace(/\s+/g, " ").trim().slice(0, 160), done: i, total: stmts.length });
+        await call("db_query", { id: dId, sql: stmts[i], limit: 1 });
+      }
+      setOk(tr("db.ranStatementsOn", { stmtsLength: stmts.length, name: dc.name, dstDb }));
       if (dstConn === current.conn.id) onReloadSession();
     } catch (e) {
-      setErr(errText(e));
+      setErr(`${tr("db.syncFailedAt", { i: i + 1, n: stmts.length, msg: errText(e) })}\n\n${stmts[i] ?? ""}`);
     } finally {
       setBusy(false);
+      setProgress(null);
     }
   };
 
   return (
-    <Modal title={tr("⇄ Struct sync — sync structure between databases", "⇄ Struct sync — đồng bộ cấu trúc giữa các database")} width={820} onClose={closeAll}>
+    <Modal title={tr("db.structSyncSyncStructureBetweenDatabases")} width={880} onClose={closeAll}>
       <div className="form account-form">
-        <div className="form-row" style={{ alignItems: "stretch" }}>
-          <SyncEnd cap={tr("Source (reference)", "Nguồn (chuẩn)")} conns={conns} connId={srcConn} setConnId={setSrcConn} dbs={srcDbs} loading={srcLoad} db={srcDb} setDb={setSrcDb} />
-          <span style={{ alignSelf: "center", fontSize: 18 }}>→</span>
-          <SyncEnd cap={tr("Target (will change)", "Đích (sẽ sửa)")} conns={conns} connId={dstConn} setConnId={setDstConn} dbs={dstDbs} loading={dstLoad} db={dstDb} setDb={setDstDb} />
+        {/* Thanh bước: bấm vào bước đã qua để quay lại */}
+        <div className="wizard-steps">
+          {([1, 2, 3] as const).map((n) => {
+            const reachable = n === 1 || (n === 2 && !!plan && plan.tables.length > 0) || (n === 3 && !!sql);
+            return (
+              <button
+                key={n}
+                className={`wizard-step${step === n ? " on" : ""}${n < step ? " done" : ""}`}
+                disabled={busy || !reachable || n === step}
+                onClick={() => setStep(n)}
+              >
+                <span className="wizard-num">{n < step ? "✓" : n}</span>
+                {n === 1 ? tr("db.syncStepCompare") : n === 2 ? tr("db.syncStepPick") : tr("db.syncStepRun")}
+              </button>
+            );
+          })}
         </div>
-        <label className="check"><input type="checkbox" checked={dropExtra} onChange={(e) => setDropExtra(e.target.checked)} /> {tr("Drop extra columns on target (DROP COLUMN)", "Xoá cột thừa ở đích (DROP COLUMN)")}</label>
-        <div className="toolbar">
-          <button onClick={() => void runCompare()} disabled={busy || !srcDb || !dstDb}>{busy ? tr("Working…", "Đang xử lý…") : tr("Compare", "So sánh")}</button>
-          <span className="grow" />
-          <button className="primary" disabled={busy || !sql.trim()} onClick={() => void runScript()}>{tr("Sync", "Đồng bộ")}</button>
-        </div>
-        {err && <div className="error-box">⚠ {err}</div>}
-        {ok && <div className="muted small" style={{ color: "var(--ok)" }}>{ok}</div>}
-        {notes.length > 0 && <div className="muted small">{notes.map((n, i) => <div key={i}>• {n}</div>)}</div>}
-        {sql && (
+
+        {step === 1 && (
+          <>
+            <div className="form-row" style={{ alignItems: "stretch" }}>
+              <SyncEnd cap={tr("db.sourceReference")} conns={conns} connId={srcConn} setConnId={setSrcConn} dbs={srcDbs} loading={srcLoad} db={srcDb} setDb={setSrcDb} />
+              <span style={{ alignSelf: "center", fontSize: 18 }}>→</span>
+              <SyncEnd cap={tr("db.targetWillChange")} conns={conns} connId={dstConn} setConnId={setDstConn} dbs={dstDbs} loading={dstLoad} db={dstDb} setDb={setDstDb} />
+            </div>
+            <label className="check">
+              <input type="checkbox" checked={dropExtra} onChange={(e) => { setDropExtra(e.target.checked); setPlan(null); setSql(""); setNotes([]); }} />
+              {tr("db.dropExtraColumnsOnTargetDrop")}
+            </label>
+          </>
+        )}
+
+        {step === 2 && plan && (
+          <>
+            <div className="muted small">{tr("db.syncPickIntro", { src: srcDb, dst: dstDb })}</div>
+            <SyncPicker plan={plan} picked={picked} open={openTables} onToggle={togglePick} onToggleOpen={toggleOpen} />
+          </>
+        )}
+
+        {step === 3 && (
           <div className="field">
-            <span className="field-cap">{tr("Sync SQL (editable before running)", "SQL đồng bộ (sửa được trước khi chạy)")}</span>
-            <textarea className="mono" style={{ minHeight: 200 }} value={sql} onChange={(e) => setSql(e.target.value)} spellCheck={false} />
+            <span className="field-cap">{tr("db.syncSqlEditableBeforeRunning")}</span>
+            <textarea className="mono" style={{ minHeight: 280 }} value={sql} onChange={(e) => setSql(e.target.value)} spellCheck={false} />
           </div>
         )}
-        {!sql && !busy && !err && <div className="muted small">{tr("Pick server + database for source and target, then Compare.", "Chọn server + database cho nguồn và đích rồi bấm So sánh.")}</div>}
+
+        {progress && (
+          <div className="sync-progress">
+            <div className="update-bar"><div style={{ width: progress.total ? `${Math.min(100, (progress.done / progress.total) * 100)}%` : "30%" }} /></div>
+            <div className="muted small ellipsis" title={progress.label}>
+              {progress.total ? `${progress.done}/${progress.total} · ` : ""}{progress.label}
+            </div>
+          </div>
+        )}
+        {err && <div className="error-box pre">⚠ {err}</div>}
+        {ok && <div className="muted small" style={{ color: "var(--ok)" }}>{ok}</div>}
+        {notes.length > 0 && step !== 3 && <div className="muted small">{notes.map((n, i) => <div key={i}>• {n}</div>)}</div>}
+        {step === 1 && !plan && !busy && !err && !notes.length && <div className="muted small">{tr("db.pickServerDatabaseForSourceAnd")}</div>}
+
+        {/* Nút điều hướng */}
+        <div className="toolbar">
+          {step > 1 && <button disabled={busy} onClick={() => { setErr(""); setOk(""); setStep((step - 1) as 1 | 2); }}>← {tr("db.syncBack")}</button>}
+          <span className="grow" />
+          {step === 1 && (
+            <>
+              {plan && plan.tables.length > 0 && <button disabled={busy} onClick={() => void runCompare()}>{tr("db.syncCompareAgain")}</button>}
+              {plan && plan.tables.length > 0
+                ? <button className="primary" disabled={busy} onClick={() => setStep(2)}>{tr("db.syncNext")} →</button>
+                : <button className="primary" disabled={busy || !srcDb || !dstDb} onClick={() => void runCompare()}>{busy ? tr("db.working") : `${tr("db.compare")} →`}</button>}
+            </>
+          )}
+          {step === 2 && <button className="primary" disabled={busy || !picked.size} onClick={genSql}>{tr("db.syncGenerateSql", { n: picked.size })} →</button>}
+          {step === 3 && <button className="primary danger" disabled={busy || !sql.trim()} onClick={() => void runScript()}>{busy ? tr("db.working") : tr("db.sync")}</button>}
+        </div>
       </div>
     </Modal>
+  );
+}
+
+/** Ô tick có trạng thái "một phần" (indeterminate). */
+function TriCheck({ checked, indeterminate, onChange }: { checked: boolean; indeterminate: boolean; onChange: (on: boolean) => void }) {
+  return (
+    <input
+      type="checkbox"
+      checked={checked}
+      ref={(el) => { if (el) el.indeterminate = indeterminate; }}
+      onChange={(e) => onChange(e.target.checked)}
+      onClick={(e) => e.stopPropagation()}
+    />
+  );
+}
+
+/** Danh sách thay đổi của Struct sync: tick theo bảng (tri-state) hoặc từng cột / index / khoá ngoại. */
+function SyncPicker({ plan, picked, open, onToggle, onToggleOpen }: {
+  plan: SyncPlan; picked: Set<string>; open: Set<string>;
+  onToggle: (ids: string[], on: boolean) => void; onToggleOpen: (table: string) => void;
+}) {
+  const tr = useT();
+  const all = plan.tables.flatMap((tb) => tb.items.map((it) => it.id));
+  const nOn = all.filter((id) => picked.has(id)).length;
+  const label = (it: SyncItem) =>
+    it.kind === "create" ? tr("db.syncItemCreate", { detail: it.detail })
+    : it.kind === "column" ? tr("db.syncItemColumn", { name: it.name })
+    : it.kind === "key" ? tr("db.syncItemKey", { name: it.name })
+    : it.kind === "fk" ? tr("db.syncItemFk", { name: it.name })
+    : tr("db.syncItemOptions");
+  const summary = (tb: SyncTable) => {
+    const c = (k: SyncKind) => tb.items.filter((it) => it.kind === k).length;
+    return [
+      c("column") && tr("db.syncSumCols", { n: c("column") }),
+      c("key") && tr("db.syncSumKeys", { n: c("key") }),
+      c("fk") && tr("db.syncSumFks", { n: c("fk") }),
+      c("options") && tr("db.syncItemOptions"),
+    ].filter(Boolean).join(" · ");
+  };
+  return (
+    <div className="sync-pick">
+      <label className="sync-pick-head">
+        <TriCheck checked={nOn === all.length} indeterminate={nOn > 0 && nOn < all.length} onChange={(on) => onToggle(all, on)} />
+        <span className="grow">{tr("db.syncPickAll", { tables: plan.tables.length, items: all.length })}</span>
+        <span className="muted small">{tr("db.syncPicked", { n: nOn })}</span>
+      </label>
+      <div className="sync-pick-list">
+        {plan.tables.map((tb) => {
+          const ids = tb.items.map((it) => it.id);
+          const on = ids.filter((id) => picked.has(id)).length;
+          const expanded = open.has(tb.table);
+          return (
+            <div key={tb.table}>
+              <div className="sync-pick-table" onClick={() => onToggleOpen(tb.table)}>
+                <span className="tree-caret">{expanded ? "▾" : "▸"}</span>
+                <TriCheck checked={on === ids.length} indeterminate={on > 0 && on < ids.length} onChange={(v) => onToggle(ids, v)} />
+                <b className="ellipsis">{tb.table}</b>
+                <span className={`sync-badge ${tb.isNew ? "new" : "alter"}`}>{tb.isNew ? "NEW" : "ALTER"}</span>
+                <span className="grow muted small ellipsis">{summary(tb)}</span>
+              </div>
+              {expanded && tb.items.map((it) => (
+                <label key={it.id} className="sync-pick-item" title={it.detail}>
+                  <input type="checkbox" checked={picked.has(it.id)} onChange={(e) => onToggle([it.id], e.target.checked)} />
+                  <span className={`sync-act ${it.action}`}>{it.action === "add" ? "+" : it.action === "drop" ? "−" : "~"}</span>
+                  <span className="sync-item-name">{label(it)}</span>
+                  <code className="grow muted ellipsis">{it.detail.split("\n→ ").pop()}</code>
+                </label>
+              ))}
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -2404,7 +3169,7 @@ const dbApp: AppModule = {
           <div className="welcome">
             <h1>🗄 Database</h1>
             <p className="muted">PostgreSQL · MySQL/MariaDB · SQLite</p>
-            <button className="primary" onClick={() => openForm()}>＋ {t("New connection", "Kết nối mới")}</button>
+            <button className="primary" onClick={() => openForm()}>＋ {t("db.newConnection")}</button>
           </div>
         }
       />
@@ -2412,11 +3177,11 @@ const dbApp: AppModule = {
     </>
   ),
   commands: () => [
-    { id: "db.new", group: "Database", title: t("New database connection", "Kết nối database mới"), run: () => openForm() },
+    { id: "db.new", group: "Database", title: t("db.newDatabaseConnection"), run: () => openForm() },
     ...useConns.getState().conns.map((c) => ({
       id: `db.open.${c.id}`,
       group: "Database",
-      title: `${t("Open connection:", "Mở kết nối:")} ${c.name}`,
+      title: `${t("db.openConnection")} ${c.name}`,
       run: () => openSession(c),
     })),
   ],

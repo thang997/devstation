@@ -16,9 +16,10 @@ use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Column, Either, Row};
+use base64::Engine;
 use tauri::State;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnConfig {
     driver: String,
@@ -35,6 +36,9 @@ pub struct ConnConfig {
     /// Đường dẫn file khi driver = sqlite.
     #[serde(default)]
     file: String,
+    /// Postgres: schema mặc định (search_path) đặt ngay lúc kết nối — dùng cho pool theo schema.
+    #[serde(skip)]
+    search_path: Option<String>,
 }
 
 #[derive(Clone)]
@@ -49,9 +53,17 @@ enum Pool {
 #[derive(Default)]
 pub struct DbState {
     pools: Mutex<HashMap<String, Pool>>,
+    /// Cấu hình đã dùng để mở từng kết nối — để mở thêm pool theo database/schema đang chọn.
+    cfgs: Mutex<HashMap<String, ConnConfig>>,
+    /// Pool theo (id kết nối, database/schema): database đặt sẵn lúc bắt tay kết nối (MySQL) /
+    /// search_path trong tham số kết nối (Postgres) → KHÔNG cần câu USE (ProxySQL từ chối
+    /// "multi-statements command with USE", lỗi 1148).
+    schema_pools: Mutex<HashMap<(String, String), Pool>>,
     next_id: Mutex<u64>,
     /// Kênh hủy cho từng query đang chạy (query_id → Notify) — để nút Cancel dừng câu lệnh treo.
     cancels: Mutex<HashMap<String, Arc<Notify>>>,
+    /// Kết nối đi qua ProxySQL (nhận diện lúc connect) → không gắn thẻ hủy / không gửi KILL.
+    proxysql: Mutex<std::collections::HashSet<String>>,
 }
 
 #[derive(Serialize, Default)]
@@ -64,6 +76,8 @@ pub struct QueryOut {
     elapsed_ms: u128,
     /// Có nhiều dòng hơn `limit`, đã cắt bớt.
     truncated: bool,
+    /// Cassandra phân trang bằng driver: token (base64) để lấy trang kế; None = hết dữ liệu.
+    paging_state: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -74,6 +88,99 @@ pub struct TableInfo {
 }
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/** Đóng kết nối rảnh lâu (server/NAT/firewall hay cắt kết nối im lặng sau vài phút). */
+const IDLE_TIMEOUT: Duration = Duration::from_secs(240);
+
+/** Lỗi do kết nối trong pool đã chết (bị server/mạng cắt khi đang rảnh) — câu lệnh chưa tới server. */
+fn is_stale_conn_err(e: &str) -> bool {
+    let l = e.to_lowercase();
+    ["broken pipe", "connection reset", "forcibly closed", "connection aborted", "gone away",
+     "unexpected eof", "unexpectedeof", "connection closed", "os error 10054", "os error 10053"]
+        .iter()
+        .any(|p| l.contains(p))
+}
+
+/** Câu chỉ đọc (bỏ qua USE/SET search_path chèn ở đầu) — chỉ những câu này mới tự thử lại khi kết nối chết. */
+fn is_read_only(sql: &str) -> bool {
+    let body = strip_lead_comments(sql)
+        .split(';')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .find(|s| {
+            let l = s.to_lowercase();
+            !(l.starts_with("use ") || l.starts_with("set search_path"))
+        })
+        .unwrap_or("")
+        .to_lowercase();
+    ["select", "show", "explain", "describe", "desc ", "pragma"].iter().any(|k| body.starts_with(k))
+}
+
+/** Bỏ các comment `/* … */` ở đầu câu (vd. thẻ hủy `/*ds-q:…*/`). */
+fn strip_lead_comments(sql: &str) -> &str {
+    let mut s = sql.trim_start();
+    while let Some(rest) = s.strip_prefix("/*") {
+        match rest.find("*/") {
+            Some(i) => s = rest[i + 2..].trim_start(),
+            None => break,
+        }
+    }
+    s
+}
+
+/** Thẻ đánh dấu câu lệnh (comment đặt đầu câu) để tìm lại đúng câu đó trên server khi hủy / hết timeout. */
+fn cancel_tag(query_id: &str) -> String {
+    let safe: String = query_id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').take(64).collect();
+    format!("/*ds-q:{safe}*/")
+}
+
+/** Dừng câu lệnh mang thẻ `tag` NGAY TRÊN SERVER (hủy phía app chỉ đóng kết nối — MySQL/Postgres vẫn chạy tiếp
+    tới khi xong, query nặng sẽ ngốn CPU server). MySQL/MariaDB: tìm trong PROCESSLIST → `KILL QUERY`;
+    Postgres: `pg_cancel_backend`. Qua **ProxySQL** thì KHÔNG gửi KILL (ProxySQL hiểu id là session của chính nó
+    → có thể dừng nhầm phiên khác); ProxySQL tự kill query ở backend khi client ngắt kết nối.
+    Trả về số câu đã dừng. */
+/** Kết nối MySQL này có đi qua ProxySQL không — ProxySQL tự trả lời đúng câu này bằng "(ProxySQL)". */
+async fn is_proxysql(pool: &Pool) -> bool {
+    if !matches!(pool, Pool::My(_)) {
+        return false;
+    }
+    let ver = run(pool, "select @@version_comment limit 1", 1).await.ok();
+    ver.and_then(|o| o.rows.into_iter().next())
+        .and_then(|r| r.into_iter().next().flatten())
+        .is_some_and(|c| c.to_lowercase().contains("proxysql"))
+}
+
+async fn kill_server_query(pool: &Pool, tag: &str) -> usize {
+    let work = async {
+        match pool {
+            Pool::My(_) => {
+                if is_proxysql(pool).await {
+                    return 0;
+                }
+                let find = format!("SELECT ID FROM information_schema.PROCESSLIST WHERE INFO LIKE '%{tag}%' AND ID <> CONNECTION_ID()");
+                let ids: Vec<u64> = match run(pool, &find, 50).await {
+                    Ok(o) => o.rows.into_iter().filter_map(|r| r.into_iter().next().flatten()?.parse().ok()).collect(),
+                    Err(_) => return 0,
+                };
+                let mut n = 0;
+                for id in ids {
+                    if run(pool, &format!("KILL QUERY {id}"), 1).await.is_ok() {
+                        n += 1;
+                    }
+                }
+                n
+            }
+            Pool::Pg(_) => {
+                let sql = format!("SELECT pg_cancel_backend(pid) FROM pg_stat_activity WHERE query LIKE '%{tag}%' AND pid <> pg_backend_pid()");
+                match run(pool, &sql, 50).await {
+                    Ok(o) => o.rows.iter().filter(|r| matches!(r.first(), Some(Some(v)) if v == "t" || v == "true")).count(),
+                    Err(_) => 0,
+                }
+            }
+            _ => 0,
+        }
+    };
+    timeout(Duration::from_secs(8), work).await.unwrap_or(0)
+}
 
 async fn open(cfg: &ConnConfig) -> Result<Pool, sqlx::Error> {
     let host = if cfg.host.is_empty() { "localhost" } else { &cfg.host };
@@ -87,7 +194,14 @@ async fn open(cfg: &ConnConfig) -> Result<Pool, sqlx::Error> {
             if !cfg.database.is_empty() {
                 o = o.database(&cfg.database);
             }
-            Pool::Pg(PgPoolOptions::new().max_connections(3).acquire_timeout(CONNECT_TIMEOUT).connect_with(o).await?)
+            if let Some(sp) = cfg.search_path.as_deref().filter(|s| !s.is_empty()) {
+                o = o.options([("search_path", format!("\"{}\"", sp.replace('"', "\"\"")))]);
+            }
+            Pool::Pg(PgPoolOptions::new().max_connections(3).acquire_timeout(CONNECT_TIMEOUT)
+                // Không ping trước mỗi query (tiết kiệm 1 vòng mạng/câu — đáng kể qua SSH tunnel / server xa);
+                // kết nối rảnh >4 phút tự đóng trước khi server/firewall cắt ngầm. Câu đọc gặp kết nối chết thì db_query thử lại 1 lần.
+                .test_before_acquire(false).idle_timeout(Some(IDLE_TIMEOUT))
+                .connect_with(o).await?)
         }
         "mysql" => {
             let mut o = MySqlConnectOptions::new()
@@ -98,7 +212,9 @@ async fn open(cfg: &ConnConfig) -> Result<Pool, sqlx::Error> {
             if !cfg.database.is_empty() {
                 o = o.database(&cfg.database);
             }
-            Pool::My(MySqlPoolOptions::new().max_connections(3).acquire_timeout(CONNECT_TIMEOUT).connect_with(o).await?)
+            Pool::My(MySqlPoolOptions::new().max_connections(3).acquire_timeout(CONNECT_TIMEOUT)
+                .test_before_acquire(false).idle_timeout(Some(IDLE_TIMEOUT))
+                .connect_with(o).await?)
         }
         "sqlite" => {
             let o = SqliteConnectOptions::new().filename(&cfg.file).create_if_missing(false);
@@ -184,6 +300,41 @@ async fn run(pool: &Pool, sql: &str, limit: usize) -> Result<QueryOut, String> {
     Ok(out)
 }
 
+/// Cassandra: lấy MỘT trang (page_size dòng) bằng paging state của driver, consistency LOCAL_ONE —
+/// giống TablePlus / driver DataStax. Truy vấn không phân trang (session.query) nặng hơn nhiều trên
+/// ScyllaDB và dễ "Operation timed out … CL=LOCAL_QUORUM" với bảng lớn.
+async fn run_cass_page(session: &scylla::Session, cql: &str, page_size: i32, state: Option<&str>) -> Result<QueryOut, String> {
+    let started = Instant::now();
+    let mut q = scylla::query::Query::new(cql.trim().trim_end_matches(';').to_string());
+    q.set_page_size(page_size.clamp(1, 5000));
+    q.set_consistency(scylla::statement::Consistency::LocalOne);
+    let ps = match state.filter(|s| !s.is_empty()) {
+        Some(s) => Some(bytes::Bytes::from(
+            base64::engine::general_purpose::STANDARD.decode(s).map_err(|e| format!("paging state: {e}"))?,
+        )),
+        None => None,
+    };
+    let res = session.query_paged(q, &[], ps).await.map_err(|e| e.to_string())?;
+    let mut out = QueryOut::default();
+    out.columns = res.col_specs.iter().map(|c| c.name.clone()).collect();
+    if let Some(rows) = res.rows {
+        for row in rows {
+            out.rows.push(row.columns.into_iter().map(|c| c.map(cql_to_string)).collect());
+        }
+    }
+    out.paging_state = res.paging_state.map(|b| base64::engine::general_purpose::STANDARD.encode(&b));
+    out.elapsed_ms = started.elapsed().as_millis();
+    Ok(out)
+}
+
+/// Chọn cách chạy: Cassandra có page_size → lấy một trang bằng driver; còn lại như thường.
+async fn run_any(pool: &Pool, sql: &str, lim: usize, page_size: Option<i32>, page_state: Option<&str>) -> Result<QueryOut, String> {
+    if let (Pool::Cass(sess), Some(ps)) = (pool, page_size) {
+        return run_cass_page(sess, sql, ps, page_state).await;
+    }
+    run_retry(pool, sql, lim).await
+}
+
 /// Một giá trị CQL → chuỗi (các kiểu phổ biến đẹp, còn lại fallback Debug).
 fn cql_to_string(v: scylla::frame::response::result::CqlValue) -> String {
     use scylla::frame::response::result::CqlValue as V;
@@ -199,8 +350,130 @@ fn cql_to_string(v: scylla::frame::response::result::CqlValue) -> String {
         V::Uuid(u) => u.to_string(),
         V::Inet(ip) => ip.to_string(),
         V::Blob(b) => format!("0x{}", b.iter().map(|x| format!("{x:02x}")).collect::<String>()),
-        other => format!("{other:?}"),
+        // date: số ngày, gốc 2^31 = 1970-01-01.
+        V::Date(d) => cql_fmt_date(d.0 as i64 - (1i64 << 31)),
+        // timestamp: mili-giây UTC → hiện UTC kèm "+0000" như cqlsh (dán lại vào WHERE vẫn đúng).
+        V::Timestamp(t) => cql_fmt_timestamp(t.0),
+        V::Time(t) => cql_fmt_time(t.0),
+        V::Timeuuid(u) => u.to_string(),
+        V::Counter(c) => c.0.to_string(),
+        V::Varint(v) => cql_big_int(v.as_signed_bytes_be_slice()).unwrap_or_else(|| format!("{v:?}")),
+        V::Decimal(d) => {
+            let (bytes, scale) = d.as_signed_be_bytes_slice_and_exponent();
+            cql_big_int(bytes).map(|n| cql_apply_scale(&n, scale)).unwrap_or_else(|| format!("{d:?}"))
+        }
+        V::Duration(d) => cql_fmt_duration(d.months, d.days, d.nanoseconds),
+        V::Empty => String::new(),
+        V::List(items) | V::Set(items) => format!("[{}]", items.into_iter().map(cql_inner).collect::<Vec<_>>().join(", ")),
+        V::Map(kv) => format!(
+            "{{{}}}",
+            kv.into_iter().map(|(k, v)| format!("{}: {}", cql_inner(k), cql_inner(v))).collect::<Vec<_>>().join(", ")
+        ),
+        V::Tuple(items) => format!(
+            "({})",
+            items.into_iter().map(|v| v.map(cql_inner).unwrap_or_else(|| "null".into())).collect::<Vec<_>>().join(", ")
+        ),
+        V::UserDefinedType { fields, .. } => format!(
+            "{{{}}}",
+            fields
+                .into_iter()
+                .map(|(k, v)| format!("{k}: {}", v.map(cql_inner).unwrap_or_else(|| "null".into())))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
     }
+}
+
+/// Phần tử bên trong collection: chuỗi bọc nháy đơn (như cqlsh) để phân biệt với số.
+fn cql_inner(v: scylla::frame::response::result::CqlValue) -> String {
+    use scylla::frame::response::result::CqlValue as V;
+    match v {
+        V::Ascii(s) | V::Text(s) => format!("'{}'", s.replace('\'', "''")),
+        other => cql_to_string(other),
+    }
+}
+
+/// Ngày dương lịch từ số ngày kể từ 1970-01-01 (thuật toán civil_from_days của Howard Hinnant).
+fn cql_civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let y = yoe + era * 400 + if m <= 2 { 1 } else { 0 };
+    (y, m, d)
+}
+
+fn cql_fmt_date(days: i64) -> String {
+    let (y, m, d) = cql_civil_from_days(days);
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+fn cql_fmt_timestamp(ms: i64) -> String {
+    let days = ms.div_euclid(86_400_000);
+    let rem = ms.rem_euclid(86_400_000);
+    format!(
+        "{} {:02}:{:02}:{:02}.{:03}+0000",
+        cql_fmt_date(days),
+        rem / 3_600_000,
+        rem / 60_000 % 60,
+        rem / 1_000 % 60,
+        rem % 1_000
+    )
+}
+
+/// time: nano-giây kể từ nửa đêm → HH:MM:SS[.phần lẻ].
+fn cql_fmt_time(ns: i64) -> String {
+    let secs = ns / 1_000_000_000;
+    let frac = ns % 1_000_000_000;
+    let base = format!("{:02}:{:02}:{:02}", secs / 3_600, secs / 60 % 60, secs % 60);
+    if frac == 0 { base } else { format!("{base}.{}", format!("{frac:09}").trim_end_matches('0')) }
+}
+
+/// Số nguyên có dấu big-endian (varint/decimal) → chuỗi; dài quá 16 byte thì bỏ (None).
+fn cql_big_int(bytes: &[u8]) -> Option<String> {
+    if bytes.is_empty() {
+        return Some("0".into());
+    }
+    if bytes.len() > 16 {
+        return None;
+    }
+    let mut buf = if bytes[0] & 0x80 != 0 { [0xffu8; 16] } else { [0u8; 16] };
+    buf[16 - bytes.len()..].copy_from_slice(bytes);
+    Some(i128::from_be_bytes(buf).to_string())
+}
+
+/// Chèn dấu thập phân theo scale của decimal (scale âm = thêm số 0).
+fn cql_apply_scale(n: &str, scale: i32) -> String {
+    let (neg, digits) = n.strip_prefix('-').map_or((false, n), |d| (true, d));
+    let s = if scale <= 0 {
+        format!("{digits}{}", "0".repeat((-scale) as usize))
+    } else {
+        let sc = scale as usize;
+        let padded = format!("{digits:0>width$}", width = sc + 1);
+        let (int, frac) = padded.split_at(padded.len() - sc);
+        format!("{int}.{frac}")
+    };
+    if neg { format!("-{s}") } else { s }
+}
+
+/// duration → dạng cqlsh: 1mo2d3h4m5s6ms…
+fn cql_fmt_duration(months: i32, days: i32, nanos: i64) -> String {
+    let mut out = String::new();
+    if months != 0 { out.push_str(&format!("{months}mo")); }
+    if days != 0 { out.push_str(&format!("{days}d")); }
+    let mut n = nanos;
+    for (unit, size) in [("h", 3_600_000_000_000i64), ("m", 60_000_000_000), ("s", 1_000_000_000), ("ms", 1_000_000), ("us", 1_000), ("ns", 1)] {
+        let q = n / size;
+        if q != 0 {
+            out.push_str(&format!("{q}{unit}"));
+            n -= q * size;
+        }
+    }
+    if out.is_empty() { "0s".into() } else { out }
 }
 
 /// Chạy một câu CQL trên phiên Cassandra. Cassandra không trả "rows affected" nên để 0.
@@ -222,20 +495,62 @@ fn get(state: &DbState, id: &str) -> Result<Pool, String> {
     state.pools.lock().unwrap().get(id).cloned().ok_or_else(|| "Kết nối đã đóng, hãy kết nối lại".into())
 }
 
-#[tauri::command]
-pub async fn db_connect(state: State<'_, DbState>, cfg: ConnConfig) -> Result<String, String> {
+/// Pool chạy query trong database/schema `schema` (MySQL/Postgres). Không có schema / SQLite / Cassandra
+/// → pool gốc. Pool theo schema mở lười lần đầu cần, dùng lại sau đó; đóng khi db_disconnect.
+async fn get_ctx(state: &DbState, id: &str, schema: Option<&str>) -> Result<Pool, String> {
+    let base = get(state, id)?;
+    let Some(schema) = schema.map(str::trim).filter(|s| !s.is_empty()) else { return Ok(base) };
+    if !matches!(base, Pool::My(_) | Pool::Pg(_)) {
+        return Ok(base);
+    }
+    let key = (id.to_string(), schema.to_string());
+    if let Some(p) = state.schema_pools.lock().unwrap().get(&key).cloned() {
+        return Ok(p);
+    }
+    let mut cfg = state.cfgs.lock().unwrap().get(id).cloned().ok_or("Kết nối đã đóng, hãy kết nối lại")?;
+    match base {
+        Pool::My(_) => cfg.database = schema.to_string(), // MySQL: "database" = schema, gửi trong handshake
+        _ => cfg.search_path = Some(schema.to_string()),  // Postgres: schema trong database hiện tại
+    }
     let pool = open(&cfg).await.map_err(|e| e.to_string())?;
+    // Hai query song song có thể cùng mở → giữ pool vào trước, pool thừa tự đóng khi drop.
+    Ok(state.schema_pools.lock().unwrap().entry(key).or_insert(pool).clone())
+}
+
+#[tauri::command]
+pub async fn db_connect(app: tauri::AppHandle, window: tauri::Window, state: State<'_, DbState>, cfg: ConnConfig) -> Result<String, String> {
+    let pool = open(&cfg).await.map_err(|e| e.to_string())?;
+    let via_proxysql = is_proxysql(&pool).await;
     let id = {
         let mut n = state.next_id.lock().unwrap();
         *n += 1;
         format!("db{}", *n)
     };
     state.pools.lock().unwrap().insert(id.clone(), pool);
+    state.cfgs.lock().unwrap().insert(id.clone(), cfg);
+    if via_proxysql {
+        state.proxysql.lock().unwrap().insert(id.clone());
+    }
+    crate::owners::track(&app, window.label(), crate::owners::Kind::Db, &id);
     Ok(id)
 }
 
 #[tauri::command]
 pub async fn db_disconnect(state: State<'_, DbState>, id: String) -> Result<(), String> {
+    state.cfgs.lock().unwrap().remove(&id);
+    state.proxysql.lock().unwrap().remove(&id);
+    let extra: Vec<Pool> = {
+        let mut m = state.schema_pools.lock().unwrap();
+        let keys: Vec<_> = m.keys().filter(|(i, _)| i == &id).cloned().collect();
+        keys.into_iter().filter_map(|k| m.remove(&k)).collect()
+    };
+    for p in extra {
+        match p {
+            Pool::Pg(p) => p.close().await,
+            Pool::My(p) => p.close().await,
+            _ => {}
+        }
+    }
     let pool = state.pools.lock().unwrap().remove(&id);
     match pool {
         Some(Pool::Pg(p)) => p.close().await,
@@ -255,8 +570,11 @@ pub async fn db_query(
     limit: Option<usize>,
     query_id: Option<String>,
     timeout_secs: Option<u64>,
+    schema: Option<String>,
+    page_size: Option<i32>,
+    page_state: Option<String>,
 ) -> Result<QueryOut, String> {
-    let pool = get(&state, &id)?;
+    let pool = get_ctx(&state, &id, schema.as_deref()).await?;
     let lim = limit.unwrap_or(1000);
 
     // Đăng ký kênh hủy (nếu UI cấp query_id) để nút Cancel dừng được câu lệnh này.
@@ -266,29 +584,61 @@ pub async fn db_query(
         n
     });
 
-    // Query + hủy: chạy query, nếu Notify được bắn thì bỏ (drop future → sqlx đóng kết nối, server dừng).
+    // MySQL/Postgres: gắn thẻ comment vào đầu câu để khi hủy/timeout tìm lại được và dừng NGAY TRÊN SERVER.
+    // Qua ProxySQL thì không gắn (comment đầu câu có thể làm lệch query rule kiểu `^SELECT` → sai hostgroup).
+    let via_proxysql = state.proxysql.lock().unwrap().contains(&id);
+    let tag = query_id
+        .as_deref()
+        .filter(|_| !via_proxysql && matches!(pool, Pool::My(_) | Pool::Pg(_)))
+        .map(cancel_tag);
+    let sql = match &tag {
+        Some(t) => format!("{t} {sql}"),
+        None => sql,
+    };
+
+    // Query + hủy: Notify bắn → bỏ future (sqlx đóng kết nối). Err(None) = hủy, Err(Some(s)) = timeout.
     let run_cancellable = async {
         match &notify {
             Some(n) => tokio::select! {
-                r = run(&pool, &sql, lim) => r,
-                _ = n.notified() => Err("Đã hủy câu lệnh".to_string()),
+                r = run_any(&pool, &sql, lim, page_size, page_state.as_deref()) => Ok(r),
+                _ = n.notified() => Err(None),
             },
-            None => run(&pool, &sql, lim).await,
+            None => Ok(run_any(&pool, &sql, lim, page_size, page_state.as_deref()).await),
         }
     };
 
     // Statement timeout: >0 giây thì bọc timeout; 0/None = không giới hạn.
-    let out = match timeout_secs.filter(|s| *s > 0) {
-        Some(secs) => timeout(Duration::from_secs(secs), run_cancellable)
-            .await
-            .unwrap_or_else(|_| Err(format!("Câu lệnh vượt {secs}s — đã dừng (timeout)"))),
+    let res = match timeout_secs.filter(|s| *s > 0) {
+        Some(secs) => timeout(Duration::from_secs(secs), run_cancellable).await.unwrap_or(Err(Some(secs))),
         None => run_cancellable.await,
+    };
+    let out = match res {
+        Ok(r) => r,
+        Err(stopped) => {
+            let killed = match &tag {
+                Some(t) => kill_server_query(&pool, t).await,
+                None => 0,
+            };
+            let base = match stopped {
+                None => "Đã hủy câu lệnh".to_string(),
+                Some(secs) => format!("Câu lệnh vượt {secs}s — đã dừng (timeout)"),
+            };
+            Err(if killed > 0 { format!("{base} · đã dừng trên server") } else { base })
+        }
     };
 
     if let Some(qid) = &query_id {
         state.cancels.lock().unwrap().remove(qid);
     }
     out
+}
+
+/// Chạy câu lệnh; câu đọc gặp kết nối chết (rảnh lâu bị cắt) thì thử lại 1 lần trên kết nối mới.
+async fn run_retry(pool: &Pool, sql: &str, lim: usize) -> Result<QueryOut, String> {
+    match run(pool, sql, lim).await {
+        Err(e) if is_stale_conn_err(&e) && is_read_only(sql) => run(pool, sql, lim).await,
+        r => r,
+    }
 }
 
 /// Hủy một query đang chạy theo `query_id` (nút Cancel).
@@ -519,8 +869,9 @@ pub async fn db_tables(state: State<'_, DbState>, id: String, schema: Option<Str
              WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY 2"
             .into(),
         Pool::Cass(_) => match &esc {
-            Some(s) => format!("SELECT keyspace_name, table_name, 'table' FROM system_schema.tables WHERE keyspace_name = '{s}'"),
-            None => "SELECT keyspace_name, table_name, 'table' FROM system_schema.tables".into(),
+            // CQL (nhất là ScyllaDB) không cho SELECT chuỗi hằng ('table') → chỉ lấy 2 cột, loại gán ở dưới.
+            Some(s) => format!("SELECT keyspace_name, table_name FROM system_schema.tables WHERE keyspace_name = '{s}'"),
+            None => "SELECT keyspace_name, table_name FROM system_schema.tables".into(),
         },
     };
     let out = run(&pool, &sql, 100_000).await?;
@@ -532,7 +883,10 @@ pub async fn db_tables(state: State<'_, DbState>, id: String, schema: Option<Str
             TableInfo {
                 schema: it.next().unwrap_or_default(),
                 name: it.next().unwrap_or_default(),
-                kind: it.next().unwrap_or_default().to_lowercase().replace("base table", "table"),
+                kind: match it.next().unwrap_or_default().to_lowercase().replace("base table", "table") {
+                    k if k.is_empty() => "table".into(), // Cassandra: không có cột loại → luôn là bảng
+                    k => k,
+                },
             }
         })
         .collect())
@@ -575,5 +929,55 @@ mod tests {
         assert_eq!(out.rows.len(), 10);
         assert!(out.truncated);
         assert!(run(&p, "SELEC 1", 10).await.is_err());
+    }
+
+    #[test]
+    fn cancel_tag_and_read_only() {
+        let t = cancel_tag("q-12'; DROP x");
+        assert_eq!(t, "/*ds-q:q-12DROPx*/");
+        assert!(is_read_only(&format!("{t} SELECT 1")));
+        assert!(!is_read_only(&format!("{t} UPDATE a SET b=1")));
+        assert_eq!(strip_lead_comments("/*a*/ /*b*/ select"), "select");
+    }
+
+    #[test]
+    fn read_only_detection() {
+        assert!(is_read_only("SELECT 1"));
+        assert!(is_read_only("USE `shop`;\nSELECT * FROM t"));
+        assert!(is_read_only("SET search_path TO \"app\";\n  show tables"));
+        assert!(is_read_only("EXPLAIN SELECT 1"));
+        assert!(!is_read_only("USE `shop`;\nINSERT INTO t VALUES (1)"));
+        assert!(!is_read_only("UPDATE t SET a = 1"));
+        assert!(!is_read_only("DELETE FROM t"));
+        assert!(!is_read_only("WITH x AS (SELECT 1) DELETE FROM t")); // WITH có thể ghi → không tự thử lại
+        assert!(!is_read_only(""));
+    }
+
+    #[test]
+    fn cassandra_date_time_formatting() {
+        assert_eq!(cql_fmt_date(0), "1970-01-01");
+        assert_eq!(cql_fmt_date(20_406), "2025-11-14");
+        assert_eq!(cql_fmt_date(-1), "1969-12-31");
+        assert_eq!(cql_fmt_date(11_016), "2000-02-29"); // năm nhuận
+        // CqlDate gốc 2^31 → đúng 1970-01-01
+        assert_eq!(cql_to_string(scylla::frame::response::result::CqlValue::Date(scylla::frame::value::CqlDate(1u32 << 31))), "1970-01-01");
+        assert_eq!(cql_fmt_timestamp(0), "1970-01-01 00:00:00.000+0000");
+        assert_eq!(cql_fmt_timestamp(1_763_110_487_123), "2025-11-14 08:54:47.123+0000");
+        assert_eq!(cql_fmt_timestamp(-1), "1969-12-31 23:59:59.999+0000");
+        assert_eq!(cql_fmt_time(13 * 3_600_000_000_000 + 5 * 60_000_000_000 + 7_000_000_000 + 500_000_000), "13:05:07.5");
+        assert_eq!(cql_apply_scale("12345", 2), "123.45");
+        assert_eq!(cql_apply_scale("-5", 3), "-0.005");
+        assert_eq!(cql_apply_scale("7", -2), "700");
+        assert_eq!(cql_big_int(&[0xff, 0x38]).as_deref(), Some("-200"));
+        assert_eq!(cql_fmt_duration(1, 2, 3_723_000_000_000), "1mo2d1h2m3s");
+    }
+
+    #[test]
+    fn stale_connection_errors() {
+        assert!(is_stale_conn_err("error communicating with database: An existing connection was forcibly closed by the remote host. (os error 10054)"));
+        assert!(is_stale_conn_err("io error: Broken pipe (os error 32)"));
+        assert!(is_stale_conn_err("error returned from database: 2006 (HY000): MySQL server has gone away"));
+        assert!(!is_stale_conn_err("error returned from database: 1146 (42S02): Table 'x.y' doesn't exist"));
+        assert!(!is_stale_conn_err("Đã hủy câu lệnh"));
     }
 }

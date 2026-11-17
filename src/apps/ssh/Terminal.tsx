@@ -1,18 +1,11 @@
 import { useEffect, useRef } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { WebglAddon } from "@xterm/addon-webgl";
 import { listen } from "@tauri-apps/api/event";
 import "@xterm/xterm/css/xterm.css";
 import { ssh, errText, type ConnectCfg } from "./api";
 import { t } from "../../store/lang";
-
-/** Giải base64 (chuỗi) về bytes để ghi nguyên vẹn vào xterm. */
-function b64ToBytes(s: string): Uint8Array {
-  const bin = atob(s);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
 
 /** Terminal SSH: mở ConPTY qua ssh.exe, nối hai chiều với xterm. */
 export function SshTerminal({ cfg, onStatus, onCd }: { cfg: Omit<ConnectCfg, "cols" | "rows">; onStatus?: (s: string) => void; onCd?: (arg: string) => void }) {
@@ -34,6 +27,13 @@ export function SshTerminal({ cfg, onStatus, onCd }: { cfg: Omit<ConnectCfg, "co
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(el);
+    // Vẽ bằng WebGL (GPU) thay cho renderer DOM mặc định — output nhiều / cuộn nhanh mượt hơn hẳn.
+    // Máy không có WebGL hoặc mất context (GPU reset, ngủ máy) → về renderer DOM.
+    try {
+      const gl = new WebglAddon();
+      gl.onContextLoss(() => gl.dispose());
+      term.loadAddon(gl);
+    } catch { /* không có WebGL → DOM renderer */ }
     try { fit.fit(); } catch { /* chưa có kích thước */ }
 
     // Nhả các phím tắt CẤP APP ra ngoài (không gửi vào shell) để Shell xử lý khi đang focus terminal:
@@ -62,7 +62,9 @@ export function SshTerminal({ cfg, onStatus, onCd }: { cfg: Omit<ConnectCfg, "co
       closed = false;
       try {
         onStatus?.("connecting");
-        const id = await ssh.connect({ ...cfg, cols: term.cols, rows: term.rows });
+        const id = await ssh.connect({ ...cfg, cols: term.cols, rows: term.rows }, (bytes) => {
+          if (alive) term.write(bytes);
+        });
         if (!alive) { void ssh.disconnect(id); return; }
         sid = id;
         onStatus?.("connected");
@@ -71,15 +73,12 @@ export function SshTerminal({ cfg, onStatus, onCd }: { cfg: Omit<ConnectCfg, "co
       } catch (e) {
         sid = null;
         closed = true;
-        term.write(`\r\n\x1b[31m${errText(e)}\x1b[0m\r\n\x1b[90m[${t("press R to retry", "nhấn R để thử lại")}]\x1b[0m\r\n`);
+        term.write(`\r\n\x1b[31m${errText(e)}\x1b[0m\r\n\x1b[90m[${t("ssh.pressRToRetry")}]\x1b[0m\r\n`);
         onStatus?.("error");
       }
     };
 
     (async () => {
-      unlisteners.push(await listen<{ id: string; data: string }>("ssh-data", (ev) => {
-        if (ev.payload.id === sid) term.write(b64ToBytes(ev.payload.data));
-      }));
       unlisteners.push(await listen<{ id: string; arg: string }>("ssh-cd", (ev) => {
         if (ev.payload.id === sid) onCdRef.current?.(ev.payload.arg);
       }));
@@ -87,7 +86,7 @@ export function SshTerminal({ cfg, onStatus, onCd }: { cfg: Omit<ConnectCfg, "co
         if (ev.payload.id === sid) {
           sid = null;
           closed = true;
-          term.write(`\r\n\x1b[90m[${t("session closed — press R to reconnect", "phiên đã đóng — nhấn R để kết nối lại")}]\x1b[0m\r\n`);
+          term.write(`\r\n\x1b[90m[${t("ssh.sessionClosedPressRToReconnect")}]\x1b[0m\r\n`);
           onStatus?.("closed");
         }
       }));
@@ -103,16 +102,27 @@ export function SshTerminal({ cfg, onStatus, onCd }: { cfg: Omit<ConnectCfg, "co
     })();
 
     // Vừa vào & khi đổi kích thước: fit rồi báo server đổi cột/hàng.
+    // Gộp theo khung hình (kéo thanh chia bắn ResizeObserver liên tục); bỏ qua khi khung ~0 (tab ẩn);
+    // chỉ báo server khi cột/hàng THỰC SỰ đổi (mỗi lần đổi, shell/vim vẽ lại toàn màn → giật).
+    let raf = 0;
+    let sent = "";
     const doResize = () => {
+      raf = 0;
+      if (el.clientWidth < 20 || el.clientHeight < 20) return;
       try { fit.fit(); } catch { /* ẩn */ }
-      if (sid) void ssh.resize(sid, term.cols, term.rows).catch(() => {});
+      const key = `${term.cols}x${term.rows}`;
+      if (sid && key !== sent) {
+        sent = key;
+        void ssh.resize(sid, term.cols, term.rows).catch(() => {});
+      }
     };
-    const ro = new ResizeObserver(() => doResize());
+    const ro = new ResizeObserver(() => { if (!raf) raf = requestAnimationFrame(doResize); });
     ro.observe(el);
 
     return () => {
       alive = false;
       ro.disconnect();
+      if (raf) cancelAnimationFrame(raf);
       unlisteners.forEach((u) => u());
       if (sid) void ssh.disconnect(sid).catch(() => {});
       term.dispose();

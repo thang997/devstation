@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { AppModule, Tab } from "../types";
 import { useWorkbench } from "../../store/workbench";
-import { getLang, t, useT } from "../../store/lang";
+import { getLang, t, useT, rich } from "../../store/lang";
 import { TabbedLayout } from "../../shell/TabbedLayout";
 import { Picker } from "../../shell/Picker";
 import { ContextMenu, type CtxItem } from "../../shell/ContextMenu";
@@ -18,7 +18,7 @@ function openRepo(r: Repo) {
 
 /** Chọn thư mục: là repo thì thêm luôn, không phải thì quét các repo con bên trong. */
 async function addRepos(): Promise<string> {
-  const dir = await openDialog({ directory: true, title: t("Pick a repo or a folder containing repos", "Chọn repo hoặc thư mục chứa nhiều repo") });
+  const dir = await openDialog({ directory: true, title: t("git.pickARepoOrAFolder") });
   if (typeof dir !== "string") return "";
   let paths: string[];
   try {
@@ -26,11 +26,11 @@ async function addRepos(): Promise<string> {
   } catch {
     paths = await git.findRepos(dir);
   }
-  if (!paths.length) return t("No git repo found in this folder", "Không tìm thấy repo git nào trong thư mục này");
+  if (!paths.length) return t("git.noGitRepoFoundInThis");
   const n = useRepos.getState().add(paths);
   void refreshAllSummaries();
   if (paths.length === 1 && n === 1) openRepo({ path: paths[0], name: repoName(paths[0]) });
-  return n ? "" : t("These repos are already in the list", "Các repo này đã có trong danh sách");
+  return n ? "" : t("git.theseReposAreAlreadyInThe");
 }
 
 /* Các thao tác cần nhập thêm (tài khoản, clone) mở dạng MODAL, không phải tab.
@@ -66,22 +66,22 @@ function RepoSwitcher({ currentPath }: { currentPath: string | null }) {
 
   return (
     <Picker
-      title={tr("Switch / add repository", "Đổi / thêm repository")}
-      filterPlaceholder={tr("Filter repository…", "Lọc repository…")}
-      label={<><span className="branch-glyph">▤</span> {current?.name ?? tr("Pick repository", "Chọn repository")}</>}
+      title={tr("git.switchAddRepository")}
+      filterPlaceholder={tr("git.filterRepository")}
+      label={<><span className="branch-glyph">▤</span> {current?.name ?? tr("git.pickRepository")}</>}
       items={[
         ...repos.map((r) => {
           const s = summaries[r.path];
           const hint = s?.error
-            ? tr("error", "lỗi")
+            ? tr("git.error")
             : s
               ? `${s.branch ?? "detached"}${s.ahead ? ` ↑${s.ahead}` : ""}${s.behind ? ` ↓${s.behind}` : ""}${s.changes ? ` •${s.changes}` : ""}`
               : undefined;
           return { id: r.path, label: r.name, group: "Repository", icon: "▤", hint, selected: r.path === currentPath, removable: true };
         }),
-        { id: "\u0000add", label: tr("Add existing repo…", "Thêm repo có sẵn…"), group: tr("Actions", "Thao tác"), icon: "＋" },
-        { id: "\u0000clone", label: tr("Clone from URL…", "Clone từ URL…"), group: tr("Actions", "Thao tác"), icon: "⬇" },
-        { id: "\u0000account", label: tr("Git account…", "Tài khoản Git…"), group: tr("Actions", "Thao tác"), icon: "⚙" },
+        { id: "\u0000add", label: tr("git.addExistingRepo"), group: tr("git.actions"), icon: "＋" },
+        { id: "\u0000clone", label: tr("git.cloneFromUrl"), group: tr("git.actions"), icon: "⬇" },
+        { id: "\u0000account", label: tr("git.gitAccount"), group: tr("git.actions"), icon: "⚙" },
       ]}
       onPick={(id) => {
         if (id === "\u0000add") return void addRepos().catch(() => {});
@@ -220,7 +220,7 @@ function RepoView({ tab }: { tab: Tab }) {
       selected.type === "commit"
         ? git.show(path, selected.commit.hash)
         : git.fileDiff(path, selected.file.path, selected.file.kind === "untracked");
-    p.then((d) => alive && setDiff(d || tr("(No textual difference)", "(Không có khác biệt dạng văn bản)"))).catch((e) => alive && setDiff(`⚠ ${errText(e)}`));
+    p.then((d) => alive && setDiff(d || tr("git.noTextualDifference"))).catch((e) => alive && setDiff(`⚠ ${errText(e)}`));
     return () => { alive = false; };
   }, [selected, path, status]);
 
@@ -300,27 +300,27 @@ function RepoView({ tab }: { tab: Tab }) {
 
   const doDiscardAll = () => {
     setConfirmDiscardAll(false);
-    void run(tr("discard all changes", "bỏ tất cả thay đổi"), async () => {
+    void run(tr("git.discardAllChanges"), async () => {
       await git.discardAll(path);
       setSelected(null);
-      return tr("reverted every file to HEAD and removed untracked files", "đã đưa mọi file về HEAD và xoá file chưa track");
+      return tr("git.revertedEveryFileToHeadAnd");
     });
   };
 
   /** Bỏ commit cuối (chỉ khi chưa push): thay đổi về Staged, message cũ điền lại để sửa. */
   const undoCommit = (c: Commit) => {
     setConfirmUndo(null);
-    void run(tr("undo commit", "bỏ commit"), async () => {
+    void run(tr("git.undoCommit"), async () => {
       const msg = await git.undoCommit(path);
       setMessage(msg);
       setSelected(null);
-      return tr(`undid commit ${c.short}; changes are still Staged, message refilled in the box`, `đã bỏ commit ${c.short}; thay đổi vẫn ở Staged, message điền lại vào ô`);
+      return tr("git.undidCommitChangesAreStillStaged", { short: c.short });
     });
   };
 
   const doDiscard = (list: FileChange[]) => {
     setConfirmDiscard(null);
-    void run(tr(`discard changes in ${list.length} file(s)`, `bỏ thay đổi ${list.length} file`), () =>
+    void run(tr("git.discardChangesInFileS", { listLength: list.length }), () =>
       git.discard(path, list.filter((f) => f.kind !== "untracked").map((f) => f.path), list.filter((f) => f.kind === "untracked").map((f) => f.path)),
     );
   };
@@ -328,11 +328,11 @@ function RepoView({ tab }: { tab: Tab }) {
   const switchTo = (name: string) => {
     const b = branches.find((x) => x.name === name);
     if (!b || b.current) return;
-    if (!b.remote) return void doSwitch({ branch: name, create: false, track: false, label: tr(`switch to ${name}`, `chuyển sang ${name}`) });
+    if (!b.remote) return void doSwitch({ branch: name, create: false, track: false, label: tr("git.switchTo", { name }) });
     // Nhánh remote: đã có nhánh local cùng tên thì chuyển sang đó, chưa có thì tạo nhánh theo dõi.
     const local = name.slice(name.indexOf("/") + 1);
     if (branches.some((x) => !x.remote && x.name === local))
-      return void doSwitch({ branch: local, create: false, track: false, label: tr(`switch to ${local}`, `chuyển sang ${local}`) });
+      return void doSwitch({ branch: local, create: false, track: false, label: tr("git.switchTo2", { local }) });
     void doSwitch({ branch: name, create: false, track: true, label: `checkout ${name}` });
   };
 
@@ -359,7 +359,7 @@ function RepoView({ tab }: { tab: Tab }) {
   /** Chuyển nhánh kèm mang theo thay đổi chưa commit (stash → switch → pop phía Rust). */
   const doSwitchBring = (t: SwitchTarget) => {
     setSwitchDirty(null);
-    void run(`${t.label} ${tr("(bring changes along)", "(mang theo thay đổi)")}`, () => git.switchBringChanges(path, t.branch, t.create, t.track));
+    void run(`${t.label} ${tr("git.bringChangesAlong")}`, () => git.switchBringChanges(path, t.branch, t.create, t.track));
   };
 
   const selectCommit = useCallback((c: Commit) => setSelected({ type: "commit", commit: c }), []);
@@ -378,11 +378,11 @@ function RepoView({ tab }: { tab: Tab }) {
   };
   const doReword = (c: Commit, msg: string) => {
     setCommitAction(null);
-    void run(tr(`edit message ${c.short}`, `sửa message ${c.short}`), async () => { await git.rewordHead(path, msg); return tr(`updated commit message ${c.short}`, `đã cập nhật message commit ${c.short}`); });
+    void run(tr("git.editMessage", { short: c.short }), async () => { await git.rewordHead(path, msg); return tr("git.updatedCommitMessage", { short: c.short }); });
   };
   const doBranchAt = (c: Commit, name: string) => {
     setCommitAction(null);
-    void run(tr(`create branch ${name.trim()} from ${c.short}`, `tạo nhánh ${name.trim()} từ ${c.short}`), () => git.branchAt(path, name, c.hash));
+    void run(tr("git.createBranchFrom", { p: name.trim(), short: c.short }), () => git.branchAt(path, name, c.hash));
   };
   const doRevert = (c: Commit) => {
     setCommitAction(null);
@@ -390,10 +390,10 @@ function RepoView({ tab }: { tab: Tab }) {
   };
   const doReset = (c: Commit, hard: boolean) => {
     setCommitAction(null);
-    void run(`reset ${hard ? "--hard" : "--soft"} ${tr("to", "về")} ${c.short}`, async () => {
+    void run(`reset ${hard ? "--hard" : "--soft"} ${tr("git.to")} ${c.short}`, async () => {
       await git.resetTo(path, c.hash, hard);
       setSelected(null);
-      return hard ? tr("reset and cleared all changes back to this commit", "đã reset và xoá mọi thay đổi về đúng commit này") : tr("reset; changes from later commits are now Staged", "đã reset, thay đổi của các commit sau nằm ở Staged");
+      return hard ? tr("git.resetAndClearedAllChangesBack") : tr("git.resetChangesFromLaterCommitsAre");
     });
   };
   const doCheckout = (c: Commit) => {
@@ -407,30 +407,30 @@ function RepoView({ tab }: { tab: Tab }) {
     const isHead = history[0]?.hash === c.hash;
     return [
       // Sửa message = amend, chỉ áp dụng cho commit mới nhất và chưa push.
-      ...(isHead && !headPushed ? [{ id: "reword", label: tr("Edit this commit message…", "Sửa message commit này…"), action: () => void openReword(c) }] : []),
-      { id: "branch", label: tr("Create branch from this commit…", "Tạo nhánh từ commit này…"), action: () => setCommitAction({ kind: "branch", c, name: "" }) },
-      { id: "revert", label: tr("Revert this commit…", "Revert commit này…"), action: () => setCommitAction({ kind: "revert", c }) },
-      { id: "reset", label: tr("Reset branch to this commit…", "Reset nhánh về commit này…"), danger: true, action: () => setCommitAction({ kind: "reset", c }) },
-      { id: "checkout", label: tr("Checkout this commit (detached)…", "Checkout commit này (detached)…"), action: () => setCommitAction({ kind: "checkout", c }) },
+      ...(isHead && !headPushed ? [{ id: "reword", label: tr("git.editThisCommitMessage"), action: () => void openReword(c) }] : []),
+      { id: "branch", label: tr("git.createBranchFromThisCommit"), action: () => setCommitAction({ kind: "branch", c, name: "" }) },
+      { id: "revert", label: tr("git.revertThisCommit"), action: () => setCommitAction({ kind: "revert", c }) },
+      { id: "reset", label: tr("git.resetBranchToThisCommit"), danger: true, action: () => setCommitAction({ kind: "reset", c }) },
+      { id: "checkout", label: tr("git.checkoutThisCommitDetached"), action: () => setCommitAction({ kind: "checkout", c }) },
       { id: "s1", sep: true },
-      { id: "copySha", label: tr("Copy full SHA", "Copy SHA đầy đủ"), action: () => copy(c.hash) },
-      { id: "copySubject", label: tr("Copy subject", "Copy tiêu đề"), action: () => copy(c.subject) },
-      { id: "openRemote", label: tr("Open on remote (browser)", "Mở trên remote (trình duyệt)"), action: () => void git.openCommitRemote(path, c.hash).catch((e) => setError(errText(e))) },
+      { id: "copySha", label: tr("git.copyFullSha"), action: () => copy(c.hash) },
+      { id: "copySubject", label: tr("git.copySubject"), action: () => copy(c.subject) },
+      { id: "openRemote", label: tr("git.openOnRemoteBrowser"), action: () => void git.openCommitRemote(path, c.hash).catch((e) => setError(errText(e))) },
     ];
   };
 
   /** Bỏ qua file: chưa track thì chỉ thêm .gitignore, đã track thì hỏi trước khi bỏ theo dõi. */
   const applyIgnore = (f: FileChange, scope: IgnoreScope) => {
     const pattern = ignorePattern(f.path, scope);
-    if (!pattern) return setError(tr("Couldn't build an ignore pattern for this item", "Không tạo được mẫu bỏ qua cho mục này"));
+    if (!pattern) return setError(tr("git.couldnTBuildAnIgnorePattern"));
     if (f.kind === "untracked") return doIgnore(f, scope, false);
     setConfirmIgnore({ file: f, scope, pattern });
   };
   const doIgnore = (f: FileChange, scope: IgnoreScope, untrack: boolean) => {
     setConfirmIgnore(null);
-    void run(tr(`ignore ${f.path}`, `bỏ qua ${f.path}`), async () => {
+    void run(tr("git.ignore", { path: f.path }), async () => {
       const p = await git.ignore(path, f.path, scope, untrack);
-      return tr(`added ${p} to .gitignore${untrack ? " and untracked the file" : ""}`, `đã thêm ${p} vào .gitignore${untrack ? " và bỏ theo dõi file" : ""}`);
+      return tr(untrack ? "git.addedToGitignoreUntracked" : "git.addedToGitignore", { p });
     });
   };
 
@@ -444,20 +444,20 @@ function RepoView({ tab }: { tab: Tab }) {
         ? { id: "unstage", label: "Unstage", action: () => void run(`unstage ${f.path}`, () => git.unstage(path, [f.path])) }
         : {
             id: "stage",
-            label: f.kind === "conflict" ? tr("Mark resolved", "Đánh dấu đã giải quyết") : "Stage",
+            label: f.kind === "conflict" ? tr("git.markResolved") : "Stage",
             action: () => void run(`stage ${f.path}`, () => git.stage(path, [f.path])),
           },
       ...(m.staged
         ? []
-        : [{ id: "discard", label: tr("Discard changes…", "Bỏ thay đổi…"), danger: true, action: () => setConfirmDiscard([f]) }]),
+        : [{ id: "discard", label: tr("git.discardChanges"), danger: true, action: () => setConfirmDiscard([f]) }]),
       { id: "s1", sep: true },
-      { id: "copyRel", label: tr("Copy relative path", "Copy đường dẫn tương đối"), action: () => copy(f.path) },
-      { id: "copyAbs", label: tr("Copy full path", "Copy đường dẫn đầy đủ"), action: () => copy(`${path}/${f.path}`) },
-      { id: "reveal", label: tr("Reveal in Explorer", "Mở trong Explorer"), action: () => void git.reveal(path, f.path).catch((e) => setError(errText(e))) },
+      { id: "copyRel", label: tr("git.copyRelativePath"), action: () => copy(f.path) },
+      { id: "copyAbs", label: tr("git.copyFullPath"), action: () => copy(`${path}/${f.path}`) },
+      { id: "reveal", label: tr("git.revealInExplorer"), action: () => void git.reveal(path, f.path).catch((e) => setError(errText(e))) },
       { id: "s2", sep: true },
-      { id: "igFile", label: tr("Ignore this file (.gitignore)", "Bỏ qua file này (.gitignore)"), action: () => applyIgnore(f, "file") },
-      { id: "igParent", label: tr("Ignore parent folder", "Bỏ qua thư mục chứa"), disabled: !f.path.includes("/"), action: () => applyIgnore(f, "parent") },
-      { id: "igExt", label: tr(`Ignore all ${ext ? `*.${ext}` : "same-ext"} files`, `Bỏ qua mọi file ${ext ? `*.${ext}` : "cùng đuôi"}`), disabled: !ext, action: () => applyIgnore(f, "ext") },
+      { id: "igFile", label: tr("git.ignoreThisFileGitignore"), action: () => applyIgnore(f, "file") },
+      { id: "igParent", label: tr("git.ignoreParentFolder"), disabled: !f.path.includes("/"), action: () => applyIgnore(f, "parent") },
+      { id: "igExt", label: ext ? tr("git.ignoreAllExtFiles", { ext }) : tr("git.ignoreAllSameExtFiles"), disabled: !ext, action: () => applyIgnore(f, "ext") },
     ];
   };
 
@@ -473,18 +473,18 @@ function RepoView({ tab }: { tab: Tab }) {
 
   const doRenameBranch = (b: Branch, name: string) => {
     setBranchAction(null);
-    void run(tr(`rename branch ${b.name} → ${name}`, `đổi tên nhánh ${b.name} → ${name}`), () => git.renameBranch(path, b.name, name));
+    void run(tr("git.renameBranch", { name: b.name, name2: name }), () => git.renameBranch(path, b.name, name));
   };
   const doDeleteBranch = (b: Branch, force: boolean) => {
     setBranchAction(null);
-    void run(tr(`delete branch ${b.name}`, `xoá nhánh ${b.name}`), async () => {
+    void run(tr("git.deleteBranch", { name: b.name }), async () => {
       try {
         return await git.deleteBranch(path, b.name, b.remote, force);
       } catch (e) {
         // Nhánh local chưa merge: Rust gắn tiền tố __UNMERGED__ → mở lại hộp với tuỳ chọn xoá ép.
         if (errText(e).startsWith("__UNMERGED__")) {
           setBranchAction({ kind: "delete", b, force: true });
-          throw new Error(tr(`Branch ${b.name} isn't merged anywhere — its own commits will be lost. Click "Force delete" if you're sure.`, `Nhánh ${b.name} chưa được merge vào đâu — các commit riêng của nó sẽ mất. Bấm “Xoá ép” nếu chắc chắn.`));
+          throw new Error(tr("git.branchIsnTMergedAnywhereIts", { name: b.name }));
         }
         throw e;
       }
@@ -493,21 +493,21 @@ function RepoView({ tab }: { tab: Tab }) {
 
   /** Menu chuột phải trên một nhánh trong dropdown (giống GitHub Desktop). */
   const branchMenuItems = (b: Branch): CtxItem[] => [
-    { id: "switch", label: tr("Switch to this branch", "Chuyển sang nhánh này"), disabled: b.current, action: () => switchTo(b.name) },
-    { id: "merge", label: tr(`Merge “${b.name}” into current branch…`, `Merge “${b.name}” vào nhánh hiện tại…`), disabled: b.current, action: () => doMerge(b.name) },
+    { id: "switch", label: tr("git.switchToThisBranch"), disabled: b.current, action: () => switchTo(b.name) },
+    { id: "merge", label: tr("git.mergeIntoCurrentBranch", { name: b.name }), disabled: b.current, action: () => doMerge(b.name) },
     { id: "s1", sep: true },
     ...(b.remote
       ? []
-      : [{ id: "rename", label: tr("Rename branch…", "Đổi tên nhánh…"), action: () => setBranchAction({ kind: "rename", b, name: b.name }) }]),
+      : [{ id: "rename", label: tr("git.renameBranch2"), action: () => setBranchAction({ kind: "rename", b, name: b.name }) }]),
     {
       id: "delete",
-      label: b.remote ? tr("Delete remote branch…", "Xoá nhánh trên remote…") : tr("Delete branch…", "Xoá nhánh…"),
+      label: b.remote ? tr("git.deleteRemoteBranch") : tr("git.deleteBranch2"),
       danger: true,
       disabled: b.current,
       action: () => setBranchAction({ kind: "delete", b, force: false }),
     },
     { id: "s2", sep: true },
-    { id: "copy", label: tr("Copy branch name", "Copy tên nhánh"), action: () => void navigator.clipboard.writeText(b.name) },
+    { id: "copy", label: tr("git.copyBranchName"), action: () => void navigator.clipboard.writeText(b.name) },
   ];
 
   return (
@@ -517,9 +517,9 @@ function RepoView({ tab }: { tab: Tab }) {
         <span className="tb-sep" />
         {newBranch === null ? (
           <Picker
-            title={tr("Switch branch", "Đổi nhánh")}
+            title={tr("git.switchBranch")}
             disabled={!!busy}
-            filterPlaceholder={tr("Filter branches…", "Lọc nhánh…")}
+            filterPlaceholder={tr("git.filterBranches")}
             label={<><span className="branch-glyph">⎇</span> {status?.branch ?? `(detached ${status?.head ?? ""})`}</>}
             items={[
               ...localBranches.map((b) => ({
@@ -546,7 +546,7 @@ function RepoView({ tab }: { tab: Tab }) {
           <>
             <input
               autoFocus
-              placeholder={tr("new branch name (from current HEAD)", "tên nhánh mới (từ HEAD hiện tại)")}
+              placeholder={tr("git.newBranchNameFromCurrentHead")}
               value={newBranch}
               onChange={(e) => setNewBranch(e.target.value)}
               onKeyDown={(e) => {
@@ -554,39 +554,39 @@ function RepoView({ tab }: { tab: Tab }) {
                 if (e.key === "Enter" && newBranch.trim()) {
                   const n = newBranch.trim();
                   setNewBranch(null);
-                  void run(`${tr("create branch", "tạo nhánh")} ${n}`, () => git.switchBranch(path, n, true));
+                  void run(`${tr("git.createBranch")} ${n}`, () => git.switchBranch(path, n, true));
                 }
               }}
             />
-            <button onClick={() => setNewBranch(null)}>{tr("Cancel", "Huỷ")}</button>
+            <button onClick={() => setNewBranch(null)}>{tr("git.cancel")}</button>
           </>
         )}
         <button
           disabled={!!busy || branches.filter((b) => !b.current).length === 0}
           onClick={() => setMergeOpen(true)}
-          title={tr("Merge another branch into the current one", "Hợp nhất một nhánh khác vào nhánh hiện tại")}
+          title={tr("git.mergeAnotherBranchIntoTheCurrent")}
         >
           ⇄ Merge
         </button>
         <span className="muted small ellipsis" title={path}>
-          {status?.upstream ? `→ ${status.upstream}` : status ? tr("no upstream", "chưa có upstream") : ""}
+          {status?.upstream ? `→ ${status.upstream}` : status ? tr("git.noUpstream") : ""}
         </span>
         <span className="grow" />
         {busy && <span className="muted small ellipsis progress-text">⏳ {progress || busy}</span>}
-        <button className="icon-btn" disabled={!!busy} onClick={() => void refresh()} title={tr("Reload status", "Đọc lại status")}>↻</button>
+        <button className="icon-btn" disabled={!!busy} onClick={() => void refresh()} title={tr("git.reloadStatus")}>↻</button>
         {/* Nhóm remote tách riêng khỏi các nút khác để không bấm nhầm; mỗi nút chỉ bật khi có việc để làm. */}
         <div className="remote-actions">
           <button
             disabled={!!busy}
             onClick={() => remote("fetch", "fetch")}
-            title={tr("Fetch: download new commits from remote, doesn't touch your branch", "Fetch: tải commit mới từ remote về, không đụng nhánh đang làm")}
+            title={tr("git.fetchDownloadNewCommitsFromRemote")}
           >
             ⟳ Fetch
           </button>
           <button
             disabled={!!busy || !status?.behind}
             onClick={() => remote("pull", "pull")}
-            title={status?.behind ? tr(`Pull: fetch ${status.behind} commits from remote into current branch`, `Pull: kéo ${status.behind} commit từ remote vào nhánh hiện tại`) : tr("No commits on remote to pull", "Không có commit nào ở remote để kéo")}
+            title={status?.behind ? tr("git.pullFetchCommitsFromRemoteInto", { behind: status.behind }) : tr("git.noCommitsOnRemoteToPull")}
           >
             ⬇ Pull{status?.behind ? ` ${status.behind}` : ""}
           </button>
@@ -595,33 +595,33 @@ function RepoView({ tab }: { tab: Tab }) {
             onClick={() => remote(pushOp, pushOp === "push" ? "push" : "publish")}
             title={
               !status?.upstream
-                ? tr("Publish: this branch isn't on remote yet — runs push -u origin HEAD", "Publish: nhánh này chưa có trên remote — sẽ chạy push -u origin HEAD")
+                ? tr("git.publishThisBranchIsnTOn")
                 : status.ahead
-                  ? tr(`Push: push ${status.ahead} commits to ${status.upstream}`, `Push: đẩy ${status.ahead} commit lên ${status.upstream}`)
-                  : tr("No commits to push", "Không có commit nào cần đẩy")
+                  ? tr("git.pushPushCommitsTo", { ahead: status.ahead, upstream: status.upstream })
+                  : tr("git.noCommitsToPush")
             }
           >
             {status?.upstream ? `⬆ Push${status.ahead ? ` ${status.ahead}` : ""}` : "⬆ Publish"}
           </button>
         </div>
-        <button disabled={!!busy || !files.length} onClick={() => run("stash", () => git.stash(path, false))} title={tr("Stash: shelve all changes (incl. new files)", "Stash: cất mọi thay đổi (kể cả file mới)")}>Stash</button>
-        <button disabled={!!busy} onClick={() => run("stash pop", () => git.stash(path, true))} title={tr("Pop: restore stashed changes", "Pop: lấy lại thay đổi đã stash")}>Pop</button>
+        <button disabled={!!busy || !files.length} onClick={() => run("stash", () => git.stash(path, false))} title={tr("git.stashShelveAllChangesInclNew")}>Stash</button>
+        <button disabled={!!busy} onClick={() => run("stash pop", () => git.stash(path, true))} title={tr("git.popRestoreStashedChanges")}>Pop</button>
       </div>
 
       {error && <div className="error-box pre">⚠ {error}</div>}
       {confirmDiscard && (
         <div className="error-box toolbar">
-          {tr(`⚠ Discard changes in ${confirmDiscard.length} files? New files are deleted. Can't be undone.`, `⚠ Bỏ thay đổi của ${confirmDiscard.length} file? File mới sẽ bị xoá. Không hoàn tác được.`)}
+          {tr("git.discardChangesInFilesNewFiles", { confirmDiscardLength: confirmDiscard.length })}
           <span className="grow" />
-          <button onClick={() => setConfirmDiscard(null)}>{tr("Cancel", "Huỷ")}</button>
-          <button className="primary danger" onClick={() => doDiscard(confirmDiscard)}>{tr("Discard changes", "Bỏ thay đổi")}</button>
+          <button onClick={() => setConfirmDiscard(null)}>{tr("git.cancel")}</button>
+          <button className="primary danger" onClick={() => doDiscard(confirmDiscard)}>{tr("git.discardChanges2")}</button>
         </div>
       )}
       {commitAction && (
         <div className="error-box commit-action">
           {commitAction.kind === "reword" && (
             <>
-              <div>{tr("Edit message of commit", "Sửa message commit")} <b>{commitAction.c.short}</b> {tr("(amend — only for the latest, unpushed commit):", "(amend — chỉ dùng được khi commit chưa push):")}</div>
+              <div>{tr("git.editMessageOfCommit")} <b>{commitAction.c.short}</b> {tr("git.amendOnlyForTheLatestUnpushed")}</div>
               <textarea
                 autoFocus
                 value={commitAction.draft}
@@ -629,17 +629,17 @@ function RepoView({ tab }: { tab: Tab }) {
               />
               <div className="toolbar">
                 <span className="grow" />
-                <button onClick={() => setCommitAction(null)}>{tr("Cancel", "Huỷ")}</button>
-                <button className="primary" disabled={!commitAction.draft.trim()} onClick={() => doReword(commitAction.c, commitAction.draft)}>{tr("Save message", "Lưu message")}</button>
+                <button onClick={() => setCommitAction(null)}>{tr("git.cancel")}</button>
+                <button className="primary" disabled={!commitAction.draft.trim()} onClick={() => doReword(commitAction.c, commitAction.draft)}>{tr("git.saveMessage")}</button>
               </div>
             </>
           )}
           {commitAction.kind === "branch" && (
             <>
-              <div>{tr("Create a new branch from commit", "Tạo nhánh mới từ commit")} <b>{commitAction.c.short}</b> “{commitAction.c.subject}” {tr("and switch to it:", "rồi chuyển sang nhánh đó:")}</div>
+              <div>{tr("git.createANewBranchFromCommit")} <b>{commitAction.c.short}</b> “{commitAction.c.subject}” {tr("git.andSwitchToIt")}</div>
               <input
                 autoFocus
-                placeholder={tr("new branch name", "tên nhánh mới")}
+                placeholder={tr("git.newBranchName")}
                 value={commitAction.name}
                 onChange={(e) => setCommitAction({ ...commitAction, name: e.target.value })}
                 onKeyDown={(e) => {
@@ -649,27 +649,27 @@ function RepoView({ tab }: { tab: Tab }) {
               />
               <div className="toolbar">
                 <span className="grow" />
-                <button onClick={() => setCommitAction(null)}>{tr("Cancel", "Huỷ")}</button>
-                <button className="primary" disabled={!commitAction.name.trim()} onClick={() => doBranchAt(commitAction.c, commitAction.name)}>{tr("Create & switch branch", "Tạo & chuyển nhánh")}</button>
+                <button onClick={() => setCommitAction(null)}>{tr("git.cancel")}</button>
+                <button className="primary" disabled={!commitAction.name.trim()} onClick={() => doBranchAt(commitAction.c, commitAction.name)}>{tr("git.createSwitchBranch")}</button>
               </div>
             </>
           )}
           {commitAction.kind === "revert" && (
             <>
-              <div>{tr("Revert commit", "Revert commit")} <b>{commitAction.c.short}</b> “{commitAction.c.subject}”? {tr("Creates a new commit that undoes the changes — doesn't rewrite history, safe even after push.", "Sẽ tạo một commit mới đảo ngược thay đổi — không viết lại lịch sử, an toàn cả khi đã push.")}</div>
+              <div>{tr("git.revertCommit")} <b>{commitAction.c.short}</b> “{commitAction.c.subject}”? {tr("git.createsANewCommitThatUndoes")}</div>
               <div className="toolbar">
                 <span className="grow" />
-                <button onClick={() => setCommitAction(null)}>{tr("Cancel", "Huỷ")}</button>
+                <button onClick={() => setCommitAction(null)}>{tr("git.cancel")}</button>
                 <button className="primary" onClick={() => doRevert(commitAction.c)}>Revert</button>
               </div>
             </>
           )}
           {commitAction.kind === "checkout" && (
             <>
-              <div>{tr("Checkout commit", "Checkout commit")} <b>{commitAction.c.short}</b> {tr("in", "ở trạng thái")} <b>detached HEAD</b> {tr("(not on any branch, view only). Uncommitted changes may block this.", "(không nằm trên nhánh nào, chỉ để xem lại). Thay đổi chưa commit có thể cản thao tác này.")}</div>
+              <div>{tr("git.checkoutCommit")} <b>{commitAction.c.short}</b> {tr("git.in")} <b>detached HEAD</b> {tr("git.notOnAnyBranchViewOnly")}</div>
               <div className="toolbar">
                 <span className="grow" />
-                <button onClick={() => setCommitAction(null)}>{tr("Cancel", "Huỷ")}</button>
+                <button onClick={() => setCommitAction(null)}>{tr("git.cancel")}</button>
                 <button className="primary" onClick={() => doCheckout(commitAction.c)}>Checkout</button>
               </div>
             </>
@@ -677,14 +677,14 @@ function RepoView({ tab }: { tab: Tab }) {
           {commitAction.kind === "reset" && (
             <>
               <div>
-                {tr("⚠ Reset branch", "⚠ Reset nhánh")} <b>{status?.branch ?? ""}</b> {tr("to commit", "về commit")} <b>{commitAction.c.short}</b> “{commitAction.c.subject}”.
-                {tr(" All commits after it are removed from the branch; if those were pushed, your local branch diverges from remote.", " Mọi commit sau nó sẽ bị bỏ khỏi nhánh; nếu các commit đó đã push, nhánh local sẽ lệch remote.")}
+                {tr("git.resetBranch")} <b>{status?.branch ?? ""}</b> {tr("git.toCommit")} <b>{commitAction.c.short}</b> “{commitAction.c.subject}”.
+                {tr("git.allCommitsAfterItAreRemoved")}
               </div>
               <div className="toolbar">
                 <span className="grow" />
-                <button onClick={() => setCommitAction(null)}>{tr("Cancel", "Huỷ")}</button>
-                <button className="primary" title={tr("Keep all changes in Staged to commit again", "Giữ mọi thay đổi ở vùng Staged để commit lại")} onClick={() => doReset(commitAction.c, false)}>{tr("Keep changes (soft)", "Giữ thay đổi (soft)")}</button>
-                <button className="primary danger" title={tr("Wipe all changes, reset working tree to this commit", "Xoá sạch mọi thay đổi, đưa thư mục về đúng commit này")} onClick={() => doReset(commitAction.c, true)}>{tr("Wipe all (hard)", "Xoá hết (hard)")}</button>
+                <button onClick={() => setCommitAction(null)}>{tr("git.cancel")}</button>
+                <button className="primary" title={tr("git.keepAllChangesInStagedTo")} onClick={() => doReset(commitAction.c, false)}>{tr("git.keepChangesSoft")}</button>
+                <button className="primary danger" title={tr("git.wipeAllChangesResetWorkingTree")} onClick={() => doReset(commitAction.c, true)}>{tr("git.wipeAllHard")}</button>
               </div>
             </>
           )}
@@ -698,7 +698,7 @@ function RepoView({ tab }: { tab: Tab }) {
               <FileGroup title={`Conflicts (${conflicts.length})`} files={conflicts} selected={selected} staged={false}
                 onSelect={(f) => setSelected({ type: "file", file: f, staged: false })}
                 onMenu={(f, e) => setMenu({ file: f, staged: false, x: e.clientX, y: e.clientY })}
-                actions={(f) => <button className="icon-btn" title={tr("Mark resolved (stage)", "Đánh dấu đã giải quyết (stage)")} onClick={() => run(`stage ${f.path}`, () => git.stage(path, [f.path]))}>✓</button>}
+                actions={(f) => <button className="icon-btn" title={tr("git.markResolvedStage")} onClick={() => run(`stage ${f.path}`, () => git.stage(path, [f.path]))}>✓</button>}
               />
             )}
             {committable.length > 0 && (
@@ -711,7 +711,7 @@ function RepoView({ tab }: { tab: Tab }) {
                   <input
                     type="checkbox"
                     className="file-check"
-                    title={tr("Select / deselect all", "Chọn / bỏ chọn tất cả")}
+                    title={tr("git.selectDeselectAll")}
                     checked={checkState === "all"}
                     ref={(el) => { if (el) el.indeterminate = checkState === "some"; }}
                     onChange={toggleCheckAll}
@@ -719,8 +719,8 @@ function RepoView({ tab }: { tab: Tab }) {
                 }
                 headerAction={
                   <>
-                    <button className="icon-btn" title={tr("Discard all changes (reset to HEAD, delete new files)", "Bỏ tất cả thay đổi (đưa về HEAD, xoá file mới)")} onClick={() => setConfirmDiscardAll(true)}>↶</button>
-                    <button className="icon-btn" title={tr("Stash all changes", "Stash tất cả thay đổi")} onClick={() => run(tr("stash all", "stash tất cả"), () => git.stash(path, false))}>🗄</button>
+                    <button className="icon-btn danger" title={tr("git.discardAllChangesResetToHead")} onClick={() => setConfirmDiscardAll(true)}>↶</button>
+                    <button className="icon-btn" title={tr("git.stashAllChanges")} onClick={() => run(tr("git.stashAll"), () => git.stash(path, false))}>🗄</button>
                   </>
                 }
                 isChecked={(f) => !unchecked.has(f.path)}
@@ -728,15 +728,15 @@ function RepoView({ tab }: { tab: Tab }) {
                 onSelect={(f) => setSelected({ type: "file", file: f, staged: false })}
                 onMenu={(f, e) => setMenu({ file: f, staged: false, x: e.clientX, y: e.clientY })}
                 actions={(f) => (
-                  <button className="icon-btn" title={tr("Discard this file's changes", "Bỏ thay đổi file này")} onClick={() => setConfirmDiscard([f])}>↶</button>
+                  <button className="icon-btn danger" title={tr("git.discardThisFileSChanges")} onClick={() => setConfirmDiscard([f])}>↶</button>
                 )}
               />
             )}
-            {status && !files.length && <div className="muted small pad">{tr("✓ No changes", "✓ Không có thay đổi")}</div>}
+            {status && !files.length && <div className="muted small pad">{tr("git.noChanges")}</div>}
           </div>
           <textarea
             className="commit-msg"
-            placeholder={suggestedMsg || `Commit message (Ctrl+Enter)${status?.branch ? ` — ${tr("to", "vào")} ${status.branch}` : ""}`}
+            placeholder={suggestedMsg || `Commit message (Ctrl+Enter)${status?.branch ? ` — ${tr("git.to2")} ${status.branch}` : ""}`}
             value={message}
             onChange={(e) => setMessage(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); void commit(); } }}
@@ -747,44 +747,44 @@ function RepoView({ tab }: { tab: Tab }) {
               <button
                 disabled={!canUndo}
                 onClick={() => history[0] && setConfirmUndo(history[0])}
-                title={tr("Undo last commit, keep changes in Staged to edit and commit again", "Bỏ commit gần nhất, giữ thay đổi ở Staged để sửa rồi commit lại")}
+                title={tr("git.undoLastCommitKeepChangesIn")}
               >
-                ↶ {tr("Undo commit", "Bỏ commit")} {history[0]?.short}
+                ↶ {tr("git.undoCommit2")} {history[0]?.short}
               </button>
             )}
             <button className="primary grow" disabled={!canCommit} onClick={() => void commit()}>
-              Commit{checkedFiles.length ? ` ${checkedFiles.length} ${tr("files", "file")}` : ""}
+              Commit{checkedFiles.length ? ` ${checkedFiles.length} ${tr("git.files")}` : ""}
             </button>
           </div>
           {confirmDiscardAll && (
             <div className="error-box">
-              {tr("⚠ Discard ALL uncommitted changes? Every modified file returns to HEAD and new files are deleted — can't be undone.", "⚠ Bỏ tất cả thay đổi chưa commit? Mọi file đã sửa quay về đúng HEAD và các file mới sẽ bị xoá — không hoàn tác được.")}
+              {tr("git.discardAllUncommittedChangesEveryModified")}
               <div className="toolbar">
                 <span className="grow" />
-                <button onClick={() => setConfirmDiscardAll(false)}>{tr("Cancel", "Huỷ")}</button>
-                <button className="primary danger" onClick={doDiscardAll}>{tr("Discard all", "Bỏ tất cả")}</button>
+                <button onClick={() => setConfirmDiscardAll(false)}>{tr("git.cancel")}</button>
+                <button className="primary danger" onClick={doDiscardAll}>{tr("git.discardAll")}</button>
               </div>
             </div>
           )}
           {confirmUndo && (
             <div className="error-box">
-              {tr("⚠ Undo commit", "⚠ Bỏ commit")} <b>{confirmUndo.short}</b> “{confirmUndo.subject}”? {tr("The commit leaves the branch; its changes stay in Staged for you to edit and commit again.", "Commit biến mất khỏi nhánh, thay đổi của nó vẫn ở Staged để bạn sửa rồi commit lại.")}
+              {tr("git.undoCommit3")} <b>{confirmUndo.short}</b> “{confirmUndo.subject}”? {tr("git.theCommitLeavesTheBranchIts")}
               <div className="toolbar">
                 <span className="grow" />
-                <button onClick={() => setConfirmUndo(null)}>{tr("Cancel", "Huỷ")}</button>
-                <button className="primary danger" onClick={() => undoCommit(confirmUndo)}>{tr("Undo commit", "Bỏ commit")}</button>
+                <button onClick={() => setConfirmUndo(null)}>{tr("git.cancel")}</button>
+                <button className="primary danger" onClick={() => undoCommit(confirmUndo)}>{tr("git.undoCommit2")}</button>
               </div>
             </div>
           )}
           {confirmIgnore && (
             <div className="error-box">
-              ⚠ <span className="mono">{confirmIgnore.file.path}</span> {tr("is tracked by git. Ignoring with", "đang được git theo dõi. Bỏ qua bằng")}{" "}
-              <span className="mono">{confirmIgnore.pattern}</span> {tr("adds to .gitignore and", "sẽ thêm vào .gitignore và")} <b>{tr("untracks", "bỏ theo dõi")}</b> {tr("this file (file stays on disk).", "file này (file vẫn còn trên đĩa).")}
+              ⚠ <span className="mono">{confirmIgnore.file.path}</span> {tr("git.isTrackedByGitIgnoringWith")}{" "}
+              <span className="mono">{confirmIgnore.pattern}</span> {tr("git.addsToGitignoreAnd")} <b>{tr("git.untracks")}</b> {tr("git.thisFileFileStaysOnDisk")}
               <div className="toolbar">
                 <span className="grow" />
-                <button onClick={() => setConfirmIgnore(null)}>{tr("Cancel", "Huỷ")}</button>
+                <button onClick={() => setConfirmIgnore(null)}>{tr("git.cancel")}</button>
                 <button className="primary danger" onClick={() => doIgnore(confirmIgnore.file, confirmIgnore.scope, true)}>
-                  {tr("Ignore & untrack", "Bỏ qua & bỏ theo dõi")}
+                  {tr("git.ignoreUntrack")}
                 </button>
               </div>
             </div>
@@ -797,7 +797,7 @@ function RepoView({ tab }: { tab: Tab }) {
             {selected?.type === "commit" && <>Commit {selected.commit.short} · {selected.commit.subject}</>}
             {!selected && "Diff"}
           </div>
-          {selected ? <DiffView text={diff} /> : <div className="empty">{tr("Pick a file or commit to see changes", "Chọn một file hoặc commit để xem thay đổi")}</div>}
+          {selected ? <DiffView text={diff} /> : <div className="empty">{tr("git.pickAFileOrCommitTo")}</div>}
         </div>
       </div>
 
@@ -825,13 +825,13 @@ function RepoView({ tab }: { tab: Tab }) {
       )}
       {branchAction && (
         <Modal
-          title={branchAction.kind === "rename" ? tr("Rename branch", "Đổi tên nhánh") : tr(`Delete branch ${branchAction.b.name}`, `Xoá nhánh ${branchAction.b.name}`)}
+          title={branchAction.kind === "rename" ? tr("git.renameBranch3") : tr("git.deleteBranch3", { name: branchAction.b.name })}
           width={460}
           onClose={() => setBranchAction(null)}
         >
           {branchAction.kind === "rename" ? (
             <div className="form account-form">
-              <div className="muted small">{tr(<>Rename local branch <b>{branchAction.b.name}</b>.</>, <>Đổi tên nhánh local <b>{branchAction.b.name}</b>.</>)}</div>
+              <div className="muted small">{rich(tr("git.renameLocalBranchRich"), { name: <b>{branchAction.b.name}</b> })}</div>
               <input
                 autoFocus
                 value={branchAction.name}
@@ -844,13 +844,13 @@ function RepoView({ tab }: { tab: Tab }) {
               />
               <div className="toolbar">
                 <span className="grow" />
-                <button onClick={() => setBranchAction(null)}>{tr("Cancel", "Huỷ")}</button>
+                <button onClick={() => setBranchAction(null)}>{tr("git.cancel")}</button>
                 <button
                   className="primary"
                   disabled={!branchAction.name.trim() || branchAction.name.trim() === branchAction.b.name}
                   onClick={() => doRenameBranch(branchAction.b, branchAction.name.trim())}
                 >
-                  {tr("Rename", "Đổi tên")}
+                  {tr("git.rename")}
                 </button>
               </div>
             </div>
@@ -858,21 +858,21 @@ function RepoView({ tab }: { tab: Tab }) {
             <div className="form account-form">
               <div className="muted small">
                 {branchAction.b.remote ? (
-                  tr(<>⚠ Delete branch <b>{branchAction.b.name}</b> on the <b>remote</b>. This pushes to the server and cannot be undone.</>, <>⚠ Xoá nhánh <b>{branchAction.b.name}</b> trên <b>remote</b>. Thao tác này đẩy lên server và không hoàn tác được.</>)
+                  rich(tr("git.deleteRemoteBranchRich"), { name: <b>{branchAction.b.name}</b>, remote: <b>remote</b> })
                 ) : branchAction.force ? (
-                  tr(<>⚠ Branch <b>{branchAction.b.name}</b> is <b>not merged</b>. Force delete will lose commits that only exist on this branch.</>, <>⚠ Nhánh <b>{branchAction.b.name}</b> <b>chưa được merge</b>. Xoá ép sẽ mất các commit chỉ có trên nhánh này.</>)
+                  rich(tr("git.branchNotMergedRich"), { name: <b>{branchAction.b.name}</b>, notMerged: <b>{tr("git.notMerged")}</b> })
                 ) : (
-                  tr(<>Delete local branch <b>{branchAction.b.name}</b>?</>, <>Xoá nhánh local <b>{branchAction.b.name}</b>?</>)
+                  rich(tr("git.deleteLocalBranchRich"), { name: <b>{branchAction.b.name}</b> })
                 )}
               </div>
               <div className="toolbar">
                 <span className="grow" />
-                <button onClick={() => setBranchAction(null)}>{tr("Cancel", "Huỷ")}</button>
+                <button onClick={() => setBranchAction(null)}>{tr("git.cancel")}</button>
                 <button
                   className="primary danger"
                   onClick={() => doDeleteBranch(branchAction.b, branchAction.force || branchAction.b.remote)}
                 >
-                  {branchAction.force ? tr("Force delete", "Xoá ép") : tr("Delete", "Xoá")}
+                  {branchAction.force ? tr("git.forceDelete") : tr("git.delete")}
                 </button>
               </div>
             </div>
@@ -880,32 +880,24 @@ function RepoView({ tab }: { tab: Tab }) {
         </Modal>
       )}
       {switchDirty && (
-        <Modal title={tr("Uncommitted changes", "Còn thay đổi chưa commit")} width={480} onClose={() => setSwitchDirty(null)}>
+        <Modal title={tr("git.uncommittedChanges")} width={480} onClose={() => setSwitchDirty(null)}>
           <div className="form account-form">
             <div className="muted small">
-              {tr(
-                <>Branch <b>{status?.branch}</b> has uncommitted changes, so it can't switch directly to <b>{switchDirty.branch}</b>.
-                Do you want to <b>bring these changes along</b> to that branch? (equivalent to stash → switch → re-apply).</>,
-                <>Nhánh <b>{status?.branch}</b> đang có thay đổi chưa commit nên không chuyển thẳng sang <b>{switchDirty.branch}</b> được.
-                Bạn có muốn <b>mang các thay đổi này theo</b> sang nhánh đó không? (tương đương stash → đổi nhánh → áp lại).</>
-              )}
+              {rich(tr("git.switchDirtyRich"), { cur: <b>{status?.branch}</b>, target: <b>{switchDirty.branch}</b>, bring: <b>{tr("git.bringTheseChangesAlong")}</b> })}
             </div>
             <div className="toolbar">
               <span className="grow" />
-              <button onClick={() => setSwitchDirty(null)}>{tr("Cancel", "Huỷ")}</button>
-              <button className="primary" onClick={() => doSwitchBring(switchDirty)}>{tr("Bring along & switch", "Mang theo & chuyển")}</button>
+              <button onClick={() => setSwitchDirty(null)}>{tr("git.cancel")}</button>
+              <button className="primary" onClick={() => doSwitchBring(switchDirty)}>{tr("git.bringAlongSwitch")}</button>
             </div>
           </div>
         </Modal>
       )}
       {mergeOpen && (
-        <Modal title={tr(`⇄ Merge into ${status?.branch ?? "current branch"}`, `⇄ Merge vào ${status?.branch ?? "nhánh hiện tại"}`)} width={520} onClose={() => setMergeOpen(false)}>
+        <Modal title={tr("git.mergeInto", { branch: status?.branch ?? tr("git.currentBranch") })} width={520} onClose={() => setMergeOpen(false)}>
           <div className="form account-form">
             <div className="muted small">
-              {tr(
-                <>Pick a source branch to merge into <b>{status?.branch}</b>. If there are conflicts, the merge will stop for you to resolve.</>,
-                <>Chọn nhánh nguồn để hợp nhất vào <b>{status?.branch}</b>. Nếu có xung đột, merge sẽ dừng để bạn giải quyết.</>
-              )}
+              {rich(tr("git.pickMergeSourceRich"), { branch: <b>{status?.branch}</b> })}
             </div>
             <div className="merge-list">
               {[...localBranches, ...remoteBranches].filter((b) => !b.current).map((b) => (
@@ -966,7 +958,7 @@ const HistoryList = memo(function HistoryList({
           <span className="muted small time">{ago(c.time)}</span>
         </div>
       ))}
-      {loaded && !history.length && <div className="muted small pad">{tr("No commits yet", "Chưa có commit nào")}</div>}
+      {loaded && !history.length && <div className="muted small pad">{tr("git.noCommitsYet")}</div>}
     </div>
   );
 });
@@ -1013,7 +1005,7 @@ function FileGroup(props: {
                 checked={props.isChecked?.(f) ?? true}
                 onClick={(e) => e.stopPropagation()}
                 onChange={() => props.onToggleCheck!(f)}
-                title={tr("Include this file in the commit", "Đưa file này vào commit")}
+                title={tr("git.includeThisFileInTheCommit")}
               />
             )}
             <span className={`st st-${code}`}>{code}</span>
@@ -1045,17 +1037,17 @@ const DiffView = memo(function DiffView({ text }: { text: string }) {
           : "";
         return <div key={i} className={cls}>{l || " "}</div>;
       })}
-      {lines.length > MAX_DIFF_LINES && <div className="meta">{tr(`… ${lines.length - MAX_DIFF_LINES} more lines (diff too large)`, `… còn ${lines.length - MAX_DIFF_LINES} dòng (diff quá lớn)`)}</div>}
+      {lines.length > MAX_DIFF_LINES && <div className="meta">{tr("git.moreLinesDiffTooLarge", { p: lines.length - MAX_DIFF_LINES })}</div>}
     </div>
   );
 });
 
 function ago(unix: number) {
   const s = Math.floor(Date.now() / 1000) - unix;
-  if (s < 60) return t("just now", "vừa xong");
-  if (s < 3600) return `${Math.floor(s / 60)} ${t("min", "phút")}`;
-  if (s < 86400) return `${Math.floor(s / 3600)} ${t("h", "giờ")}`;
-  if (s < 86400 * 30) return `${Math.floor(s / 86400)} ${t("d", "ngày")}`;
+  if (s < 60) return t("git.justNow");
+  if (s < 3600) return `${Math.floor(s / 60)} ${t("git.min")}`;
+  if (s < 86400) return `${Math.floor(s / 3600)} ${t("git.h")}`;
+  if (s < 86400 * 30) return `${Math.floor(s / 86400)} ${t("git.d")}`;
   return new Date(unix * 1000).toLocaleDateString(getLang() === "vi" ? "vi-VN" : "en-US");
 }
 
@@ -1079,13 +1071,13 @@ function CloneView({ onClose }: { onClose: () => void }) {
   }, [url]);
 
   const chooseParent = async () => {
-    const dir = await openDialog({ directory: true, title: t("Pick a folder to hold the repo", "Chọn thư mục chứa repo") });
+    const dir = await openDialog({ directory: true, title: t("git.pickAFolderToHoldThe") });
     if (typeof dir === "string") setParent(dir);
   };
 
   const clone = async () => {
-    if (!url.trim()) return setError(tr("Enter a repo URL", "Nhập URL repo"));
-    if (!parent.trim()) return setError(tr("Pick a destination folder", "Chọn thư mục đích"));
+    if (!url.trim()) return setError(tr("git.enterARepoUrl"));
+    if (!parent.trim()) return setError(tr("git.pickADestinationFolder"));
     setBusy(true);
     setError("");
     setProgress("");
@@ -1123,29 +1115,26 @@ function CloneView({ onClose }: { onClose: () => void }) {
           />
         </label>
         <label>
-          {tr("Destination folder", "Thư mục đích")}
+          {tr("git.destinationFolder")}
           <div className="form-row">
             <input className="grow mono" value={parent} placeholder="vd. D:\projects" onChange={(e) => setParent(e.target.value)} />
-            <button onClick={chooseParent}>{tr("Browse…", "Chọn…")}</button>
+            <button onClick={chooseParent}>{tr("git.browse")}</button>
           </div>
         </label>
         <label>
-          {tr("Subfolder name", "Tên thư mục con")}
-          <input className="mono" value={folder} placeholder={suggested || tr("auto from URL", "tự lấy từ URL")} onChange={(e) => setFolder(e.target.value)} />
+          {tr("git.subfolderName")}
+          <input className="mono" value={folder} placeholder={suggested || tr("git.autoFromUrl")} onChange={(e) => setFolder(e.target.value)} />
         </label>
         {parent && (folder || suggested) && (
           <div className="muted small mono">→ {parent}\{folder || suggested}</div>
         )}
         <div className="toolbar">
-          <button className="primary" disabled={busy} onClick={() => void clone()}>{busy ? tr("Cloning…", "Đang clone…") : "Clone"}</button>
+          <button className="primary" disabled={busy} onClick={() => void clone()}>{busy ? tr("git.cloning") : "Clone"}</button>
           {busy && <span className="muted small ellipsis progress-text">⏳ {progress}</span>}
         </div>
         {error && <div className="error-box pre">⚠ {error}</div>}
         <div className="muted small">
-          {tr(
-            <>Private repos show the Git Credential Manager login window. If you've never logged in, open <b>Git account</b> (the ⚙ button in the repo list) to save your account first.</>,
-            <>Repo riêng tư sẽ hiện cửa sổ đăng nhập của Git Credential Manager. Chưa đăng nhập bao giờ thì vào <b> Tài khoản Git</b> (nút ⚙ trong danh sách repo) để lưu tài khoản trước.</>
-          )}
+          {rich(tr("git.privateRepoLoginRich"), { account: <b>{tr("git.gitAccountLabel")}</b> })}
         </div>
     </div>
   );
@@ -1204,7 +1193,7 @@ function AccountView() {
     try {
       await git.signOut(host.trim(), account?.username ?? "");
       setCredMsg(null);
-      log(`[git] ${tr("sign out", "đăng xuất")} ${host.trim()}`);
+      log(`[git] ${tr("git.signOut")} ${host.trim()}`);
       await loadAccount(host);
     } catch (e) {
       setError(errText(e));
@@ -1214,8 +1203,8 @@ function AccountView() {
   const saveIdentity = async () => {
     try {
       await git.setIdentity(name, email);
-      setSavedIdent(tr("✓ Saved name & email (global)", "✓ Đã lưu tên & email (global)"));
-      log(`[git] ${tr("update user.name / user.email", "cập nhật user.name / user.email")}`);
+      setSavedIdent(tr("git.savedNameEmailGlobal"));
+      log(`[git] ${tr("git.updateUserNameUserEmail")}`);
       void load();
     } catch (e) {
       setError(errText(e));
@@ -1232,12 +1221,12 @@ function AccountView() {
   };
 
   const saveCredential = async () => {
-    if (!username.trim() || !token) return setCredMsg({ ok: false, text: tr("Username and token are required", "Cần username và token") });
+    if (!username.trim() || !token) return setCredMsg({ ok: false, text: tr("git.usernameAndTokenAreRequired") });
     try {
       const login = await git.storeCredential(host.trim(), username.trim(), token);
       setToken("");
-      setCredMsg({ ok: true, text: tr(`✓ Signed in: ${login}`, `✓ Đăng nhập thành công: ${login}`) });
-      log(`[git] ${tr("sign in", "đăng nhập")} ${host.trim()} ${tr("as", "với")} ${login}`);
+      setCredMsg({ ok: true, text: tr("git.signedIn", { login }) });
+      log(`[git] ${tr("git.signIn")} ${host.trim()} ${tr("git.as")} ${login}`);
       await loadAccount(host);
     } catch (e) {
       setCredMsg({ ok: false, text: errText(e) });
@@ -1251,24 +1240,24 @@ function AccountView() {
 
   return (
     <div className="form account-form">
-        <h3>{tr("Identity (used for commits)", "Danh tính (dùng cho commit)")}</h3>
+        <h3>{tr("git.identityUsedForCommits")}</h3>
         <div className="form-row">
-          <label className="grow">{tr("Name", "Tên")}<input value={name} onChange={(e) => setName(e.target.value)} placeholder="Nguyen Van A" /></label>
+          <label className="grow">{tr("git.name")}<input value={name} onChange={(e) => setName(e.target.value)} placeholder="Nguyen Van A" /></label>
           <label className="grow">Email<input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="a@example.com" /></label>
         </div>
         <div className="toolbar">
-          <button className="primary" onClick={() => void saveIdentity()}>{tr("Save identity", "Lưu danh tính")}</button>
+          <button className="primary" onClick={() => void saveIdentity()}>{tr("git.saveIdentity")}</button>
           {savedIdent && <span className="muted small">{savedIdent}</span>}
         </div>
 
         <div className="form-sep" />
 
-        <h3>{tr("Sign in (push / pull / clone private repos)", "Đăng nhập (push / pull / clone repo riêng tư)")}</h3>
+        <h3>{tr("git.signInPushPullClonePrivate")}</h3>
 
         {/* Thẻ tài khoản đang đăng nhập cho host hiện tại. */}
         <div className="account-card">
           {accLoading ? (
-            <span className="muted small">{tr("Checking", "Đang kiểm tra")} {host}…</span>
+            <span className="muted small">{tr("git.checking")} {host}…</span>
           ) : account?.signedIn ? (
             <>
               <span className="account-avatar">{(account.login ?? account.username ?? "?").slice(0, 1).toUpperCase()}</span>
@@ -1282,41 +1271,38 @@ function AccountView() {
                   {account.note && <span className="danger-text"> · {account.note}</span>}
                 </div>
               </span>
-              <button onClick={() => void signOut()}>{tr("Sign out", "Đăng xuất")}</button>
+              <button onClick={() => void signOut()}>{tr("git.signOut2")}</button>
             </>
           ) : (
-            <span className="muted small grow">{tr(<>Not signed in to <b className="mono">{host}</b>. Enter a token below to sign in.</>, <>Chưa đăng nhập với <b className="mono">{host}</b>. Nhập token bên dưới để đăng nhập.</>)}</span>
+            <span className="muted small grow">{rich(tr("git.notSignedInRich"), { host: <b className="mono">{host}</b> })}</span>
           )}
-          <button className="icon-btn" title={tr("Re-check", "Kiểm tra lại")} onClick={() => void loadAccount(host)}>↻</button>
+          <button className="icon-btn" title={tr("git.reCheck")} onClick={() => void loadAccount(host)}>↻</button>
         </div>
 
         <div className="muted small">
           {ident?.helper
-            ? tr(<>Credential helper: <b className="mono">{ident.helper}</b> — your password/token will be remembered.</>, <>Credential helper: <b className="mono">{ident.helper}</b> — mật khẩu/token sẽ được nhớ.</>)
-            : tr(<>⚠ No credential helper enabled, so git won't remember your login. <button className="link" onClick={() => void enableManager()}>Enable Git Credential Manager</button></>, <>⚠ Chưa bật credential helper nên git sẽ không nhớ đăng nhập. <button className="link" onClick={() => void enableManager()}>Bật Git Credential Manager</button></>)}
+            ? rich(tr("git.credentialHelperRich"), { helper: <b className="mono">{ident.helper}</b> })
+            : rich(tr("git.noCredentialHelperRich"), { enable: <button className="link" onClick={() => void enableManager()}>{tr("git.enableGitCredentialManager")}</button> })}
         </div>
         <div className="form-row">
           <label style={{ width: 180 }}>Host<input className="mono" value={host} onChange={(e) => setHost(e.target.value)} /></label>
-          <label className="grow">Username<input value={username} onChange={(e) => setUsername(e.target.value)} placeholder={tr("git username", "tên đăng nhập git")} /></label>
+          <label className="grow">Username<input value={username} onChange={(e) => setUsername(e.target.value)} placeholder={tr("git.gitUsername")} /></label>
         </div>
         <label>
           Personal Access Token
-          <input type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder={tr("paste token here", "dán token vào đây")} />
+          <input type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder={tr("git.pasteTokenHere")} />
         </label>
         {tokenUrl && (
           <div className="muted small">
-            {tr("Create a token at:", "Tạo token tại:")} <span className="mono">{tokenUrl}</span> ({tr("scope", "quyền")} <span className="mono">repo</span>). {tr("Use the token instead of a password.", "Dùng token thay mật khẩu.")}
+            {tr("git.createATokenAt")} <span className="mono">{tokenUrl}</span> ({tr("git.scope")} <span className="mono">repo</span>). {tr("git.useTheTokenInsteadOfA")}
           </div>
         )}
         <div className="toolbar">
-          <button className="primary" onClick={() => void saveCredential()}>{account?.signedIn ? tr("Sign in again", "Đăng nhập lại") : tr("Sign in", "Đăng nhập")}</button>
+          <button className="primary" onClick={() => void saveCredential()}>{account?.signedIn ? tr("git.signInAgain") : tr("git.signIn2")}</button>
           {credMsg && <span className={credMsg.ok ? "muted small" : "danger-text small"}>{credMsg.text}</span>}
         </div>
         <div className="muted small">
-          {tr(
-            <>The token is passed straight to <span className="mono">git credential approve</span> and stored by your machine's credential helper (Windows Credential Manager). DevStation never writes the token to any file.</>,
-            <>Token được chuyển thẳng cho <span className="mono">git credential approve</span> và lưu bởi credential helper của máy (Windows Credential Manager). DevStation không ghi token ra file nào.</>
-          )}
+          {rich(tr("git.tokenStorageRich"), { cmd: <span className="mono">git credential approve</span> })}
         </div>
         {error && <div className="error-box pre">⚠ {error}</div>}
     </div>
@@ -1337,7 +1323,7 @@ function GitEmpty() {
       <h1>🌿 Git</h1>
       {repos.length > 0 ? (
         <>
-          <p className="muted">{tr("Pick a repository to open:", "Chọn một repository để mở:")}</p>
+          <p className="muted">{tr("git.pickARepositoryToOpen")}</p>
           <div className="empty-repo-list">
             {repos.map((r) => (
               <button key={r.path} className="empty-repo" onClick={() => openRepo(r)} title={r.path}>
@@ -1347,12 +1333,12 @@ function GitEmpty() {
           </div>
         </>
       ) : (
-        <p className="muted">{tr("No repositories yet.", "Chưa có repository nào.")}</p>
+        <p className="muted">{tr("git.noRepositoriesYet")}</p>
       )}
       <div className="toolbar">
-        <button onClick={() => void addRepos().catch(() => {})}>{tr("＋ Add existing repo", "＋ Thêm repo có sẵn")}</button>
-        <button className="primary" onClick={openClone}>{tr("⬇ Clone from URL", "⬇ Clone từ URL")}</button>
-        <button onClick={openAccount}>{tr("⚙ Git account", "⚙ Tài khoản Git")}</button>
+        <button onClick={() => void addRepos().catch(() => {})}>{tr("git.addExistingRepo2")}</button>
+        <button className="primary" onClick={openClone}>{tr("git.cloneFromUrl2")}</button>
+        <button onClick={openAccount}>{tr("git.gitAccount2")}</button>
       </div>
     </div>
   );
@@ -1367,12 +1353,12 @@ function GitRoot() {
     <>
       <TabbedLayout appId="git" TabView={GitTab} empty={<GitEmpty />} />
       {accOpen && (
-        <Modal title={tr("⚙ Git account", "⚙ Tài khoản Git")} width={560} onClose={closeAccount}>
+        <Modal title={tr("git.gitAccount2")} width={560} onClose={closeAccount}>
           <AccountView />
         </Modal>
       )}
       {cloneOpen && (
-        <Modal title={tr("⬇ Clone repository", "⬇ Clone repository")} width={620} onClose={closeClone}>
+        <Modal title={tr("git.cloneRepository")} width={620} onClose={closeClone}>
           <CloneView onClose={closeClone} />
         </Modal>
       )}
@@ -1383,13 +1369,13 @@ function GitRoot() {
 const gitApp: AppModule = {
   View: GitRoot,
   commands: () => [
-    { id: "git.add", group: "Git", title: t("Add existing repo", "Thêm repo có sẵn"), run: () => void addRepos().catch(() => {}) },
-    { id: "git.clone", group: "Git", title: t("Clone repository from URL", "Clone repository từ URL"), run: openClone },
-    { id: "git.account", group: "Git", title: t("Git account (login, identity)", "Tài khoản Git (đăng nhập, danh tính)"), run: openAccount },
+    { id: "git.add", group: "Git", title: t("git.addExistingRepo3"), run: () => void addRepos().catch(() => {}) },
+    { id: "git.clone", group: "Git", title: t("git.cloneRepositoryFromUrl"), run: openClone },
+    { id: "git.account", group: "Git", title: t("git.gitAccountLoginIdentity"), run: openAccount },
     ...useRepos.getState().repos.map((r) => ({
       id: `git.open.${r.path}`,
       group: "Git",
-      title: `${t("Open repo:", "Mở repo:")} ${r.name}`,
+      title: `${t("git.openRepo")} ${r.name}`,
       run: () => openRepo(r),
     })),
   ],

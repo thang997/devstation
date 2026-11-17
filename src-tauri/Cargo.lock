@@ -980,9 +980,10 @@ dependencies = [
 
 [[package]]
 name = "devstation"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
+ "bytes",
  "futures-util",
  "keyring",
  "portable-pty",
@@ -991,7 +992,9 @@ dependencies = [
  "scylla",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
+ "tar",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

@@ -67,14 +67,15 @@ interface WorkbenchState {
   log: (line: string) => void;
 }
 
-const touch = (mounted: AppId[], id: AppId) => [...mounted.filter((m) => m !== id), id];
+/** Thứ tự tab app ổn định như trình duyệt: app mới thêm vào cuối, app đã mở giữ nguyên chỗ. */
+const touch = (mounted: AppId[], id: AppId) => (mounted.includes(id) ? mounted : [...mounted, id]);
 const ownerOf = (apps: Record<AppId, AppState>, tabId: string) =>
   (Object.keys(apps) as AppId[]).find((a) => apps[a].tabs.some((t) => t.id === tabId));
 
 export const useWorkbench = create<WorkbenchState>((set) => ({
   activeApp: null,
   mounted: [],
-  apps: { git: freshApp("git"), http: freshApp("http"), ssh: freshApp("ssh"), tools: freshApp("tools"), db: freshApp("db"), redis: freshApp("redis") },
+  apps: { git: freshApp("git"), http: freshApp("http"), ssh: freshApp("ssh"), tools: freshApp("tools"), db: freshApp("db"), redis: freshApp("redis"), registry: freshApp("registry") },
   panelOpen: false,
   launcherOpen: false,
   logs: [],
@@ -83,9 +84,10 @@ export const useWorkbench = create<WorkbenchState>((set) => ({
   goHome: () => set({ activeApp: null, launcherOpen: false }),
   unloadApp: (id) =>
     set((s) => {
+      const idx = s.mounted.indexOf(id);
       const mounted = s.mounted.filter((m) => m !== id);
-      // Đóng app đang xem → quay về app dùng gần nhất, hết app thì về màn hình chính.
-      const activeApp = s.activeApp === id ? (mounted[mounted.length - 1] ?? null) : s.activeApp;
+      // Đóng tab app đang xem → sang tab bên phải (hết thì bên trái), không còn app thì về màn hình chính.
+      const activeApp = s.activeApp === id ? (mounted[idx] ?? mounted[idx - 1] ?? null) : s.activeApp;
       return { activeApp, mounted, apps: { ...s.apps, [id]: freshApp(id) } };
     }),
   toggleSidebar: () =>

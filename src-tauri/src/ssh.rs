@@ -71,17 +71,76 @@ pub(crate) struct PwState {
     buffer: Vec<u8>,
     /// Mật khẩu vừa nhập/điền, chờ xác nhận đúng rồi mới lưu.
     candidate: Option<String>,
+    /// Các bộ thông tin đăng nhập theo thứ tự xác thực: [jump host…, máy đích]. `key`/`saved` ở trên là
+    /// của bộ đang xử lý (`active`). Có jump host thì OpenSSH hỏi mật khẩu jump trước rồi mới tới đích.
+    creds: Vec<Cred>,
+    active: usize,
+    /// Đã qua một bước (vd. jump host) nhưng chưa tới bước cuối: đếm số đoạn output không phải dấu nhắc —
+    /// đủ nhiều nghĩa là bước sau đăng nhập bằng key (không hỏi mật khẩu) → coi như xong.
+    quiet_after_stage: u8,
+}
+
+/// Một bộ thông tin đăng nhập (khoá keyring `user@host:port` + mật khẩu đã lưu).
+#[derive(Default, Clone)]
+struct Cred {
+    user: String,
+    host: String,
+    key: String,
+    saved: Option<String>,
+}
+
+impl Cred {
+    fn from_key(key: String, saved: Option<String>) -> Self {
+        let (user, rest) = key.split_once('@').unwrap_or(("", key.as_str()));
+        let host = rest.rsplit_once(':').map(|(h, _)| h).unwrap_or(rest);
+        Cred { user: user.to_lowercase(), host: host.to_lowercase(), key: key.clone(), saved }
+    }
+}
+
+/// "ubuntu@10.0.0.1's password:" → ("ubuntu", "10.0.0.1"). Dấu nhắc không có user@host → None.
+fn prompt_user_host(low: &str) -> Option<(String, String)> {
+    let i = low.find("'s password")?;
+    let who = low[..i].split_whitespace().last()?;
+    let (u, h) = who.rsplit_once('@')?;
+    Some((u.to_string(), h.trim_matches(|c| c == '[' || c == ']').to_string()))
 }
 
 impl PwState {
     /// Tạo state cho một phiên với mật khẩu đã lưu (nếu có) để tự điền.
     pub(crate) fn new(key: String, saved: Option<String>) -> Self {
-        PwState { saved, key, ..Default::default() }
+        PwState { creds: vec![Cred::from_key(key.clone(), saved.clone())], saved, key, ..Default::default() }
+    }
+    /// Thêm jump host (xác thực TRƯỚC máy đích): mật khẩu jump được tự điền/học riêng theo khoá của nó.
+    pub(crate) fn with_jump(mut self, key: String, saved: Option<String>) -> Self {
+        self.creds.insert(0, Cred::from_key(key, saved));
+        self.active = 0;
+        self.key = self.creds[0].key.clone();
+        self.saved = self.creds[0].saved.clone();
+        self
     }
     /// Đang ở dấu nhắc mật khẩu nhưng KHÔNG có mật khẩu lưu để tự điền
     /// (panel SFTP không có nơi gõ → coi là bế tắc, báo lỗi rõ).
     pub(crate) fn stuck_without_password(&self) -> bool {
         self.capturing && self.saved.is_none()
+    }
+    fn set_saved(&mut self, v: Option<String>) {
+        self.saved = v.clone();
+        if let Some(c) = self.creds.get_mut(self.active) {
+            c.saved = v;
+        }
+    }
+    fn switch_to(&mut self, i: usize) {
+        if i == self.active || i >= self.creds.len() {
+            return;
+        }
+        self.active = i;
+        self.key = self.creds[i].key.clone();
+        self.saved = self.creds[i].saved.clone();
+    }
+    /// Dấu nhắc mật khẩu thuộc bộ thông tin nào (theo user@host); None = không nhận ra (giữ bộ hiện tại).
+    fn cred_for_prompt(&self, low: &str) -> Option<usize> {
+        let (u, h) = prompt_user_host(low)?;
+        self.creds.iter().position(|c| c.user == u && c.host == h)
     }
 }
 
@@ -110,14 +169,28 @@ fn keyring_delete(key: &str) {
 /// Ta chép/convert key sang thư mục riêng của app rồi siết quyền chỉ cho user hiện tại
 /// (không đụng file gốc, nhất là khi gốc nằm trên OneDrive), và dùng bản sao đó.
 pub(crate) fn prepared_key(key_path: &str) -> Result<String, String> {
+    // Cache theo (đường dẫn, mtime, kích thước) của file gốc: mở một phiên SSH gọi hàm này 3 lần
+    // (terminal + stats + sftp), mỗi lần trước đây chép key + chạy icacls 2 lần (~100-300ms).
+    // File gốc không đổi và bản sao còn đó → dùng lại ngay.
+    type Stamp = (std::time::SystemTime, u64);
+    static CACHE: std::sync::OnceLock<Mutex<HashMap<String, (Stamp, String)>>> = std::sync::OnceLock::new();
+    let stamp: Option<Stamp> = std::fs::metadata(key_path).ok().and_then(|m| Some((m.modified().ok()?, m.len())));
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(st) = stamp {
+        if let Some((cached_st, dest)) = cache.lock().unwrap().get(key_path) {
+            if *cached_st == st && std::path::Path::new(dest).is_file() {
+                return Ok(dest.clone());
+            }
+        }
+    }
     #[cfg(windows)]
-    {
-        sanitize_key_windows(key_path)
-    }
+    let out = sanitize_key_windows(key_path)?;
     #[cfg(not(windows))]
-    {
-        prepare_key_unix(key_path)
+    let out = prepare_key_unix(key_path)?;
+    if let Some(st) = stamp {
+        cache.lock().unwrap().insert(key_path.to_string(), (st, out.clone()));
     }
+    Ok(out)
 }
 
 /// Linux/macOS: OpenSSH đọc trực tiếp key OpenSSH có quyền 600. Chỉ cần đổi định dạng khi key là
@@ -435,12 +508,32 @@ pub(crate) fn handle_output(pw: &Arc<Mutex<PwState>>, writer: &SharedWriter, chu
     if s.authed {
         return;
     }
+    let prompt = is_password_prompt(&low);
+    // Đã qua bước jump host, chờ bước sau: nhiều đoạn output mà không có dấu nhắc → bước sau dùng key → xong.
+    if s.quiet_after_stage > 0 && !s.awaiting_result && !prompt && !low.trim().is_empty() {
+        s.quiet_after_stage += 1;
+        if s.quiet_after_stage > 4 {
+            s.authed = true;
+        }
+        return;
+    }
     if s.awaiting_result {
-        if low.contains("permission denied") || is_password_prompt(&low) {
+        // Dấu nhắc mật khẩu của BỘ KHÁC (vd. jump host xong → tới máy đích) = bước trước đã đúng.
+        let other = prompt && s.cred_for_prompt(&low).is_some_and(|i| i != s.active);
+        if other {
+            if let Some(c) = s.candidate.take() {
+                keyring_set(&s.key, &c);
+                s.set_saved(Some(c));
+            }
+            s.awaiting_result = false;
+            s.injected = false;
+            s.injected_saved = false;
+            // rơi xuống dưới để xử lý dấu nhắc của bước mới.
+        } else if low.contains("permission denied") || prompt {
             // Sai mật khẩu: nếu là mật khẩu đã lưu thì xoá đi để lần sau hỏi lại.
             if s.injected_saved {
                 keyring_delete(&s.key);
-                s.saved = None;
+                s.set_saved(None);
             }
             s.candidate = None;
             s.awaiting_result = false;
@@ -452,17 +545,31 @@ pub(crate) fn handle_output(pw: &Arc<Mutex<PwState>>, writer: &SharedWriter, chu
             // (Nếu vội coi là thành công ở đây sẽ lưu nhầm mật khẩu sai → lần sau tự điền gây "permission denied".)
             return;
         } else {
-            // Có nội dung thật, không hỏi lại, không "permission denied" → đăng nhập thành công.
+            // Có nội dung thật, không hỏi lại, không "permission denied" → bước này đăng nhập thành công.
             if let Some(c) = s.candidate.take() {
                 keyring_set(&s.key, &c);
-                s.saved = Some(c);
+                s.set_saved(Some(c));
             }
-            s.authed = true;
             s.awaiting_result = false;
+            s.injected = false;
+            s.injected_saved = false;
+            if s.active + 1 >= s.creds.len() {
+                s.authed = true;
+            } else {
+                // Còn bước sau (máy đích sau jump host): chuyển sang bộ kế, chờ dấu nhắc của nó.
+                let next = s.active + 1;
+                s.switch_to(next);
+                s.quiet_after_stage = 1;
+            }
             return;
         }
     }
-    if is_password_prompt(&low) {
+    if prompt {
+        // Chọn đúng bộ thông tin theo user@host trong dấu nhắc (jump host hay máy đích).
+        if let Some(i) = s.cred_for_prompt(&low) {
+            s.switch_to(i);
+        }
+        s.quiet_after_stage = 0;
         if let Some(p) = s.saved.clone() {
             if !s.injected {
                 if let Ok(mut w) = writer.lock() {
@@ -509,11 +616,92 @@ pub struct ConnectCfg {
     command: Option<String>,
     /// Ép cấp TTY từ xa (`ssh -tt`) — cần cho `docker exec -it` tương tác.
     tty: Option<bool>,
+    /// Jump host (bastion) — đi qua máy trung gian (OpenSSH ProxyJump).
+    jump: Option<JumpCfg>,
+}
+
+/// Jump host (bastion): máy trung gian để tới máy đích (OpenSSH `-J` / ProxyJump).
+#[derive(Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct JumpCfg {
+    pub(crate) host: String,
+    pub(crate) port: u16,
+    pub(crate) user: String,
+    pub(crate) key_path: Option<String>,
+}
+
+/// Thư mục dữ liệu riêng của app (Windows: %LOCALAPPDATA%\DevStation; khác: thư mục tạm).
+fn app_data_dir() -> std::path::PathBuf {
+    std::env::var_os("LOCALAPPDATA")
+        .map(std::path::PathBuf::from)
+        .map(|p| p.join("DevStation"))
+        .unwrap_or_else(|| std::env::temp_dir().join("devstation"))
+}
+
+/// Tham số ssh/sftp để đi qua jump host.
+/// - Jump KHÔNG có key riêng: `-J user@host:port` (dùng ssh-agent / key mặc định / mật khẩu — tự điền qua PwState).
+/// - Jump CÓ key riêng: ghi file ssh_config tạm (Host alias + IdentityFile đã chuẩn hoá quyền/PPK) rồi `-F file -J alias`.
+///   OpenSSH truyền nguyên `-F` cho tiến trình ssh của jump; file `Include` lại ~/.ssh/config của người dùng
+///   (vì `-F` thay thế file cấu hình mặc định). Giới hạn: đường dẫn thư mục người dùng có dấu cách có thể làm
+///   ProxyJump của OpenSSH tách sai tham số `-F`.
+pub(crate) fn jump_args(j: &JumpCfg) -> Result<Vec<String>, String> {
+    let key = j.key_path.as_deref().map(str::trim).filter(|k| !k.is_empty());
+    let Some(k) = key else {
+        return Ok(vec!["-J".into(), format!("{}@{}:{}", j.user, j.host, j.port)]);
+    };
+    let ident = prepared_key(k)?.replace('\\', "/");
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (&j.user, &j.host, j.port, &ident).hash(&mut h);
+    let alias = format!("ds-jump-{:016x}", h.finish());
+    let dir = app_data_dir().join("ssh");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(format!("{alias}.conf"));
+    let mut conf = format!(
+        "Host {alias}\n  HostName {}\n  Port {}\n  User {}\n  IdentityFile \"{ident}\"\n  IdentitiesOnly yes\n  StrictHostKeyChecking accept-new\n  ServerAliveInterval 30\n",
+        j.host, j.port, j.user
+    );
+    let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(std::path::PathBuf::from);
+    if let Some(user_conf) = home.map(|h| h.join(".ssh").join("config")).filter(|p| p.is_file()) {
+        conf.push_str(&format!("\nMatch all\nInclude \"{}\"\n", user_conf.to_string_lossy().replace('\\', "/")));
+    }
+    std::fs::write(&path, conf).map_err(|e| format!("Không ghi được cấu hình jump host: {e}"))?;
+    Ok(vec!["-F".into(), path.to_string_lossy().into_owned(), "-J".into(), alias])
+}
+
+/// Máy trạng thái mật khẩu cho một kết nối (+ jump host nếu có: mật khẩu jump lưu/tự điền riêng theo khoá của nó).
+pub(crate) fn pw_state_for(user: &str, host: &str, port: u16, jump: Option<&JumpCfg>) -> PwState {
+    let key = format!("{user}@{host}:{port}");
+    let st = PwState::new(key.clone(), keyring_get(&key));
+    match jump.filter(|j| !j.host.trim().is_empty()) {
+        Some(j) => {
+            let jk = format!("{}@{}:{}", j.user, j.host, j.port);
+            let saved = keyring_get(&jk);
+            st.with_jump(jk, saved)
+        }
+        None => st,
+    }
+}
+
+/// Thêm tham số jump host (nếu có) vào lệnh ssh/sftp.
+pub(crate) fn add_jump(cmd: &mut CommandBuilder, jump: Option<&JumpCfg>) -> Result<(), String> {
+    if let Some(j) = jump.filter(|j| !j.host.trim().is_empty()) {
+        for a in jump_args(j)? {
+            cmd.arg(a);
+        }
+    }
+    Ok(())
 }
 
 /// Kết nối SSH: mở ConPTY, chạy ssh.exe, stream output qua event `ssh-data`. Trả về id phiên.
 #[tauri::command]
-pub fn ssh_connect(app: AppHandle, state: State<SshState>, cfg: ConnectCfg) -> Result<String, String> {
+pub async fn ssh_connect(
+    app: AppHandle,
+    window: tauri::Window,
+    state: State<'_, SshState>,
+    cfg: ConnectCfg,
+    on_data: tauri::ipc::Channel,
+) -> Result<String, String> {
     let pair = native_pty_system()
         .openpty(PtySize { rows: cfg.rows.unwrap_or(24), cols: cfg.cols.unwrap_or(80), pixel_width: 0, pixel_height: 0 })
         .map_err(|e| e.to_string())?;
@@ -533,6 +721,7 @@ pub fn ssh_connect(app: AppHandle, state: State<SshState>, cfg: ConnectCfg) -> R
         cmd.arg("-i");
         cmd.arg(prepared_key(k)?);
     }
+    add_jump(&mut cmd, cfg.jump.as_ref())?;
     cmd.arg(format!("{}@{}", cfg.user, cfg.host));
     if let Some(c) = cfg.command.as_deref().filter(|s| !s.trim().is_empty()) {
         cmd.arg(c);
@@ -549,8 +738,7 @@ pub fn ssh_connect(app: AppHandle, state: State<SshState>, cfg: ConnectCfg) -> R
     let writer: SharedWriter = Arc::new(Mutex::new(pair.master.take_writer().map_err(|e| e.to_string())?));
 
     // Trạng thái mật khẩu: nạp sẵn mật khẩu đã lưu cho host này (nếu có) để tự điền.
-    let key = format!("{}@{}:{}", cfg.user, cfg.host, cfg.port);
-    let pw = Arc::new(Mutex::new(PwState { saved: keyring_get(&key), key, ..Default::default() }));
+    let pw = Arc::new(Mutex::new(pw_state_for(&cfg.user, &cfg.host, cfg.port, cfg.jump.as_ref())));
 
     let id = format!("s{}", next_id());
     {
@@ -569,8 +757,9 @@ pub fn ssh_connect(app: AppHandle, state: State<SshState>, cfg: ConnectCfg) -> R
                     Ok(0) => break,
                     Ok(n) => {
                         handle_output(&pw, &writer, &buf[..n]);
-                        let data = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
-                        let _ = app.emit("ssh-data", serde_json::json!({ "id": id, "data": data }));
+                        // Byte thô qua Channel riêng của phiên (ArrayBuffer phía JS): không base64/JSON,
+                        // không phát tới MỌI cửa sổ như event toàn cục.
+                        let _ = on_data.send(tauri::ipc::InvokeResponseBody::Raw(buf[..n].to_vec()));
                         // Cập nhật dòng hiện tại; gặp CR/LF thì sang dòng mới.
                         for ch in crate::sftp::strip_ansi(&String::from_utf8_lossy(&buf[..n])).chars() {
                             if ch == '\n' || ch == '\r' {
@@ -600,6 +789,7 @@ pub fn ssh_connect(app: AppHandle, state: State<SshState>, cfg: ConnectCfg) -> R
         id.clone(),
         Arc::new(Term { master: Mutex::new(pair.master), writer, child: Mutex::new(child), pw, cmdline: Mutex::new(CmdLine::default()) }),
     );
+    crate::owners::track(&app, window.label(), crate::owners::Kind::Term, &id);
     Ok(id)
 }
 
@@ -609,7 +799,7 @@ fn term_of(state: &SshState, id: &str) -> Result<Arc<Term>, String> {
 
 /// Gửi phím/dữ liệu người dùng gõ vào terminal.
 #[tauri::command]
-pub fn ssh_send(app: AppHandle, state: State<SshState>, id: String, data: String) -> Result<(), String> {
+pub async fn ssh_send(app: AppHandle, state: State<'_, SshState>, id: String, data: String) -> Result<(), String> {
     let term = term_of(&state, &id)?;
     // Nếu đang ở dấu nhắc mật khẩu và chưa có mật khẩu lưu: ghi lại những gì gõ để học (kiểu MobaXterm).
     let capturing = {
@@ -696,7 +886,7 @@ pub fn ssh_has_password(user: String, host: String, port: u16) -> Result<bool, S
 
 /// Đổi kích thước terminal (số cột/hàng) theo khung hiển thị.
 #[tauri::command]
-pub fn ssh_resize(state: State<SshState>, id: String, cols: u16, rows: u16) -> Result<(), String> {
+pub async fn ssh_resize(state: State<'_, SshState>, id: String, cols: u16, rows: u16) -> Result<(), String> {
     let term = term_of(&state, &id)?;
     let res = term
         .master
@@ -733,7 +923,7 @@ pub struct TunnelCfg {
 
 /// Mở tunnel bằng `ssh -N`. BatchMode=yes để không treo chờ mật khẩu (tunnel cần key/agent).
 #[tauri::command]
-pub fn ssh_tunnel_open(app: AppHandle, state: State<SshState>, cfg: TunnelCfg) -> Result<(), String> {
+pub async fn ssh_tunnel_open(app: AppHandle, window: tauri::Window, state: State<'_, SshState>, cfg: TunnelCfg) -> Result<(), String> {
     let (flag, spec) = match cfg.kind.as_str() {
         "D" => ("-D", cfg.local_port.to_string()),
         "L" | "R" => {
@@ -783,6 +973,10 @@ pub fn ssh_tunnel_open(app: AppHandle, state: State<SshState>, cfg: TunnelCfg) -
         });
     }
 
+    // Tunnel phụ của kết nối DB/Redis đi theo cửa sổ mở nó; tunnel người dùng tạo trong app SSH thì chạy nền tới khi tắt app.
+    if cfg.id.starts_with("db:") || cfg.id.starts_with("redis:") {
+        crate::owners::track(&app, window.label(), crate::owners::Kind::Tunnel, &cfg.id);
+    }
     state.tunnels.lock().unwrap().insert(cfg.id.clone(), child);
     Ok(())
 }
@@ -796,12 +990,21 @@ pub fn ssh_tunnel_close(state: State<SshState>, id: String) -> Result<(), String
     Ok(())
 }
 
+/// Id các tunnel đang chạy (tiến trình ssh còn sống). Mỗi cửa sổ app có state JS riêng →
+/// cửa sổ SSH mở sau dùng lệnh này để biết tunnel nào cửa sổ khác (vd. autostart) đã mở.
+#[tauri::command]
+pub fn ssh_tunnel_running(state: State<SshState>) -> Vec<String> {
+    let mut map = state.tunnels.lock().unwrap();
+    map.retain(|_, child| matches!(child.try_wait(), Ok(None)));
+    map.keys().cloned().collect()
+}
+
 /* ── Thống kê server (CPU/RAM/net/disk), kiểu MobaXterm ──────────────────────────
    Chạy một phiên ssh ẩn với vòng lặp đọc /proc + df mỗi ~2s; Rust parse rồi phát `ssh-stat`.
    Chỉ dùng cho server Linux (có /proc). */
 
 /// Lệnh remote in một khối thống kê mỗi 2s. Dùng sh thuần cho tương thích rộng.
-const STAT_CMD: &str = "while :; do echo __DSSTAT__; grep '^cpu ' /proc/stat 2>/dev/null; echo __MEM__; grep -E '^(MemTotal|MemAvailable):' /proc/meminfo 2>/dev/null; echo __NET__; cat /proc/net/dev 2>/dev/null; echo __DISK__; df -P -k / 2>/dev/null | tail -1; echo __LOAD__; cat /proc/loadavg 2>/dev/null; echo __UP__; cat /proc/uptime 2>/dev/null; echo __END__; sleep 2; done";
+const STAT_CMD: &str = "while :; do echo __DSSTAT__ || exit; grep '^cpu ' /proc/stat 2>/dev/null; echo __MEM__; grep -E '^(MemTotal|MemAvailable):' /proc/meminfo 2>/dev/null; echo __NET__; cat /proc/net/dev 2>/dev/null; echo __DISK__; df -P -k / 2>/dev/null | tail -1; echo __LOAD__; cat /proc/loadavg 2>/dev/null; echo __UP__; cat /proc/uptime 2>/dev/null; echo __END__ || exit; sleep 2; done";
 
 fn parse_cpu(line: &str) -> Option<(u64, u64)> {
     let mut it = line.split_whitespace();
@@ -834,7 +1037,7 @@ fn parse_net(lines: &[&str]) -> (u64, u64) {
 
 /// Mở phiên thống kê; phát event `ssh-stat` { id, cpu, memUsed, memTotal, netRx, netTx, diskUsed, diskTotal, load }.
 #[tauri::command]
-pub fn ssh_stat_start(app: AppHandle, state: State<SshState>, cfg: ConnectCfg) -> Result<String, String> {
+pub async fn ssh_stat_start(app: AppHandle, window: tauri::Window, state: State<'_, SshState>, cfg: ConnectCfg) -> Result<String, String> {
     let pair = native_pty_system()
         .openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })
         .map_err(|e| e.to_string())?;
@@ -850,6 +1053,7 @@ pub fn ssh_stat_start(app: AppHandle, state: State<SshState>, cfg: ConnectCfg) -
         cmd.arg("-i");
         cmd.arg(prepared_key(k)?);
     }
+    add_jump(&mut cmd, cfg.jump.as_ref())?;
     cmd.arg(format!("{}@{}", cfg.user, cfg.host));
     cmd.arg(STAT_CMD);
 
@@ -858,8 +1062,7 @@ pub fn ssh_stat_start(app: AppHandle, state: State<SshState>, cfg: ConnectCfg) -
 
     let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer: SharedWriter = Arc::new(Mutex::new(pair.master.take_writer().map_err(|e| e.to_string())?));
-    let key = format!("{}@{}:{}", cfg.user, cfg.host, cfg.port);
-    let pw = Arc::new(Mutex::new(PwState { saved: keyring_get(&key), key, ..Default::default() }));
+    let pw = Arc::new(Mutex::new(pw_state_for(&cfg.user, &cfg.host, cfg.port, cfg.jump.as_ref())));
 
     let id = next_session_id("m");
     {
@@ -904,6 +1107,7 @@ pub fn ssh_stat_start(app: AppHandle, state: State<SshState>, cfg: ConnectCfg) -
         id.clone(),
         Arc::new(StatSession { child: Mutex::new(child), _master: Mutex::new(pair.master) }),
     );
+    crate::owners::track(&app, window.label(), crate::owners::Kind::Stat, &id);
     Ok(id)
 }
 
@@ -980,6 +1184,20 @@ fn parse_block(
     Some(m)
 }
 
+/// Tắt app: kill mọi tiến trình ssh con. Windows KHÔNG tự kill tiến trình con khi app thoát →
+/// tunnel `ssh -N` (và phiên ssh) sẽ mồ côi, giữ kết nối tới server và chiếm cổng local cho lần mở sau.
+pub fn kill_all(state: &SshState) {
+    for (_, t) in state.terms.lock().unwrap().drain() {
+        let _ = t.child.lock().unwrap().kill();
+    }
+    for (_, mut c) in state.tunnels.lock().unwrap().drain() {
+        let _ = c.kill();
+    }
+    for (_, s) in state.stats.lock().unwrap().drain() {
+        let _ = s.child.lock().unwrap().kill();
+    }
+}
+
 /// Dừng phiên thống kê.
 #[tauri::command]
 pub fn ssh_stat_stop(state: State<SshState>, id: String) -> Result<(), String> {
@@ -1008,6 +1226,21 @@ const DOCKER_DELIM: &str = "<%DS%>";
 const DOCKER_PS_FMT: &str =
     "docker ps --no-trunc --format '{{.ID}}<%DS%>{{.Names}}<%DS%>{{.Image}}<%DS%>{{.Status}}<%DS%>{{.Ports}}' 2>&1";
 
+/// Dấu nhắc mật khẩu sudo riêng của app (để nhận ra và tự điền, không lẫn với output).
+const SUDO_PROMPT: &str = "__DS_SUDO__:";
+/// Đặt trước lệnh docker: user không dùng được docker trực tiếp (không thuộc nhóm `docker`) mà có sudo
+/// → hàm shell `docker` gọi qua `sudo` (dấu nhắc mật khẩu = SUDO_PROMPT, tự điền mật khẩu SSH đã lưu).
+const DOCKER_SUDO_PRE: &str = "if ! command docker ps -q >/dev/null 2>&1 && command -v sudo >/dev/null 2>&1; then docker() { sudo -p __DS_SUDO__: docker \"$@\"; }; fi; ";
+
+/// Lệnh docker kèm phần tự chuyển sang sudo.
+fn with_docker_sudo(cmd: &str) -> String {
+    if cmd.trim_start().starts_with("docker ") {
+        format!("{DOCKER_SUDO_PRE}{cmd}")
+    } else {
+        cmd.to_string()
+    }
+}
+
 /// Chạy một lệnh ssh **một-lần** (không tương tác) trong ConPTY, tự điền mật khẩu đã lưu qua `PwState`,
 /// trả stdout đã lọc ANSI. Có timeout: quá hạn thì kill tiến trình và báo lỗi.
 fn ssh_run_once(cfg: &ConnectCfg, command: &str, timeout: std::time::Duration, max_bytes: usize) -> Result<String, String> {
@@ -1027,6 +1260,7 @@ fn ssh_run_once(cfg: &ConnectCfg, command: &str, timeout: std::time::Duration, m
         cmd.arg("-i");
         cmd.arg(prepared_key(k)?);
     }
+    add_jump(&mut cmd, cfg.jump.as_ref())?;
     cmd.arg(format!("{}@{}", cfg.user, cfg.host));
     // Marker báo "đã xong" để KHÔNG phụ thuộc EOF của ConPTY (ConPTY thường không trả EOF ngay
     // khi lệnh từ xa kết thúc → sẽ treo tới hết timeout). Thấy marker là dừng ngay.
@@ -1038,9 +1272,10 @@ fn ssh_run_once(cfg: &ConnectCfg, command: &str, timeout: std::time::Duration, m
 
     let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer: SharedWriter = Arc::new(Mutex::new(pair.master.take_writer().map_err(|e| e.to_string())?));
-    let key = format!("{}@{}:{}", cfg.user, cfg.host, cfg.port);
-    let pw = Arc::new(Mutex::new(PwState { saved: keyring_get(&key), key, ..Default::default() }));
+    let pw = Arc::new(Mutex::new(pw_state_for(&cfg.user, &cfg.host, cfg.port, cfg.jump.as_ref())));
 
+    // Mật khẩu cho sudo (nếu lệnh phải chạy qua sudo): dùng mật khẩu SSH đã lưu của máy đích.
+    let sudo_pw = keyring_get(&format!("{}@{}:{}", cfg.user, cfg.host, cfg.port));
     let (tx, rx) = std::sync::mpsc::channel::<String>();
     {
         let pw = pw.clone();
@@ -1049,12 +1284,27 @@ fn ssh_run_once(cfg: &ConnectCfg, command: &str, timeout: std::time::Duration, m
             let mut reader = reader;
             let mut buf = [0u8; 8192];
             let mut acc = String::new();
+            let mut sudo_sent = 0usize;
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) | Err(_) => break, // EOF (fallback)
                     Ok(n) => {
                         handle_output(&pw, &writer, &buf[..n]); // tự điền mật khẩu lúc auth
                         acc.push_str(&crate::sftp::strip_ansi(&String::from_utf8_lossy(&buf[..n])));
+                        // sudo hỏi mật khẩu: lần đầu điền mật khẩu SSH đã lưu; hỏi lại = sai → dừng, báo lỗi.
+                        let asks = acc.matches(SUDO_PROMPT).count();
+                        if asks > sudo_sent {
+                            match (&sudo_pw, sudo_sent) {
+                                (Some(p), 0) => {
+                                    sudo_sent = asks;
+                                    let mut w = writer.lock().unwrap();
+                                    let _ = w.write_all(format!("{p}\r").as_bytes());
+                                    let _ = w.flush();
+                                }
+                                (Some(_), _) => { acc = "\u{0}SUDO_BAD".into(); break; }
+                                (None, _) => { acc = "\u{0}SUDO_NOPW".into(); break; }
+                            }
+                        }
                         // Xong khi thấy marker (bỏ marker + phần sau). Chỉ tính marker do `echo` in ra —
                         // không tính lần marker lặp trong dòng lệnh echo nếu PTY có vọng (hiếm): lấy lần CUỐI.
                         if let Some(i) = acc.rfind(MARKER) {
@@ -1075,6 +1325,14 @@ fn ssh_run_once(cfg: &ConnectCfg, command: &str, timeout: std::time::Duration, m
 
     let out = rx.recv_timeout(timeout);
     let _ = child.kill();
+    match out.as_deref() {
+        Ok("\u{0}SUDO_NOPW") => return Err(
+            "Docker cần sudo nhưng chưa có mật khẩu để điền: host dùng key / chưa lưu mật khẩu SSH.              Hãy thêm user vào nhóm docker (sudo usermod -aG docker <user>), cấu hình sudo NOPASSWD cho docker,              hoặc đăng nhập terminal bằng mật khẩu một lần để lưu.".into()),
+        Ok("\u{0}SUDO_BAD") => return Err(
+            "sudo từ chối mật khẩu SSH đã lưu (mật khẩu sudo khác mật khẩu đăng nhập?).              Thêm user vào nhóm docker hoặc cấu hình sudo NOPASSWD cho docker.".into()),
+        _ => {}
+    }
+    let out = out.map(|s| s.replace(SUDO_PROMPT, ""));
     out.map_err(|_| {
         "Hết thời gian chờ server phản hồi (server chậm, hoặc host dùng mật khẩu nhưng chưa lưu — \
          hãy mở terminal đăng nhập một lần để lưu mật khẩu, hoặc dùng key)."
@@ -1091,8 +1349,11 @@ fn parse_docker_ps(out: &str) -> Result<Vec<DockerContainer>, String> {
     if low.contains("cannot connect to the docker daemon") {
         return Err("Docker daemon không chạy trên server.".into());
     }
+    if low.contains("not in the sudoers") || low.contains("is not allowed to run sudo") || low.contains("may not run sudo") {
+        return Err("User không thuộc nhóm docker và cũng không có quyền sudo — nhờ admin thêm vào nhóm docker (usermod -aG docker <user>).".into());
+    }
     if low.contains("permission denied") && low.contains(".sock") {
-        return Err("Không có quyền truy cập Docker (user không thuộc nhóm docker — cần sudo/root).".into());
+        return Err("Không có quyền truy cập Docker (user không thuộc nhóm docker, server không có sudo).".into());
     }
     let mut v = Vec::new();
     for line in out.lines() {
@@ -1140,7 +1401,7 @@ fn parse_docker_ps(out: &str) -> Result<Vec<DockerContainer>, String> {
 #[tauri::command]
 pub async fn ssh_docker_ps(cfg: ConnectCfg) -> Result<Vec<DockerContainer>, String> {
     let out = tauri::async_runtime::spawn_blocking(move || {
-        ssh_run_once(&cfg, DOCKER_PS_FMT, std::time::Duration::from_secs(20), 4_000_000)
+        ssh_run_once(&cfg, &with_docker_sudo(DOCKER_PS_FMT), std::time::Duration::from_secs(20), 4_000_000)
     })
     .await
     .map_err(|e| e.to_string())??;
@@ -1157,7 +1418,7 @@ fn shq(s: &str) -> String {
 /// Chạy một lệnh qua ssh (một-lần) — wrapper async cho `ssh_run_once`.
 async fn ssh_run_cmd(cfg: ConnectCfg, command: String, secs: u64, max_bytes: usize) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        ssh_run_once(&cfg, &command, std::time::Duration::from_secs(secs), max_bytes)
+        ssh_run_once(&cfg, &with_docker_sudo(&command), std::time::Duration::from_secs(secs), max_bytes)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1365,5 +1626,48 @@ mod ppk_tests {
         let _ = std::fs::remove_file(&out);
         assert!(o.status.success() && stdout.starts_with("ecdsa") || stdout.starts_with("ssh-"),
             "ssh-keygen từ chối key đã convert:\nSTDOUT: {stdout}\nSTDERR: {stderr}");
+    }
+}
+
+#[cfg(test)]
+mod jump_tests {
+    use super::*;
+
+    #[test]
+    fn prompt_user_host_parsing() {
+        assert_eq!(prompt_user_host("ubuntu@10.64.4.10's password: "), Some(("ubuntu".into(), "10.64.4.10".into())));
+        assert_eq!(prompt_user_host("\r\nroot@db-01's password:"), Some(("root".into(), "db-01".into())));
+        assert_eq!(prompt_user_host("password:"), None);
+    }
+
+    #[test]
+    fn jump_then_target_order_and_prompt_selection() {
+        let s = PwState::new("root@10.0.0.5:22".into(), Some("target-pw".into()))
+            .with_jump("ubuntu@10.64.4.10:22".into(), None);
+        // Jump host xác thực TRƯỚC → bộ đang xử lý là jump.
+        assert_eq!(s.key, "ubuntu@10.64.4.10:22");
+        assert_eq!(s.saved, None);
+        assert_eq!(s.cred_for_prompt("ubuntu@10.64.4.10's password:"), Some(0));
+        assert_eq!(s.cred_for_prompt("root@10.0.0.5's password:"), Some(1));
+        assert_eq!(s.cred_for_prompt("someone@else's password:"), None);
+    }
+
+    #[test]
+    fn switching_credentials_keeps_each_saved_password() {
+        let mut s = PwState::new("root@t:22".into(), Some("T".into())).with_jump("u@j:2222".into(), Some("J".into()));
+        assert_eq!(s.saved.as_deref(), Some("J"));
+        s.switch_to(1);
+        assert_eq!((s.key.as_str(), s.saved.as_deref()), ("root@t:22", Some("T")));
+        s.set_saved(Some("T2".into()));
+        s.switch_to(0);
+        assert_eq!(s.saved.as_deref(), Some("J"));
+        s.switch_to(1);
+        assert_eq!(s.saved.as_deref(), Some("T2"));
+    }
+
+    #[test]
+    fn jump_args_without_key_uses_plain_proxyjump() {
+        let j = JumpCfg { host: "bastion".into(), port: 2222, user: "ops".into(), key_path: None };
+        assert_eq!(jump_args(&j).unwrap(), vec!["-J".to_string(), "ops@bastion:2222".to_string()]);
     }
 }

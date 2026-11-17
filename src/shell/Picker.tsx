@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { useT } from "../store/lang";
 
 export interface PickerItem {
   id: string;
@@ -28,7 +29,7 @@ export function Picker({
   onItemContextMenu,
   title,
   disabled,
-  filterPlaceholder = "Lọc…",
+  filterPlaceholder,
 }: {
   label: ReactNode;
   items: PickerItem[];
@@ -41,10 +42,11 @@ export function Picker({
   disabled?: boolean;
   filterPlaceholder?: string;
 }) {
+  const tr = useT();
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   /** Vị trí menu (viewport) — menu render qua portal để không bị khung overflow (modal/sidebar) cắt. */
-  const [pos, setPos] = useState<{ left: number; top: number; width: number } | null>(null);
+  const [pos, setPos] = useState<{ left: number; top?: number; bottom?: number; width: number; maxHeight: number } | null>(null);
   const box = useRef<HTMLDivElement>(null);
   const menu = useRef<HTMLDivElement>(null);
 
@@ -52,10 +54,15 @@ export function Picker({
     const r = box.current?.getBoundingClientRect();
     if (!r) return;
     const w = Math.max(r.width, 200);
+    // Thiếu chỗ bên dưới (vd. thanh phân trang sát đáy cửa sổ) → mở LÊN trên; chiều cao theo chỗ trống.
+    const below = window.innerHeight - r.bottom - 8;
+    const above = r.top - 8;
+    const up = below < 240 && above > below;
     setPos({
       left: Math.max(4, Math.min(r.left, window.innerWidth - w - 8)),
-      top: r.bottom + 4,
+      ...(up ? { bottom: window.innerHeight - r.top + 4 } : { top: r.bottom + 4 }),
       width: w,
+      maxHeight: Math.max(120, Math.min(420, (up ? above : below) - 4)),
     });
   };
 
@@ -118,13 +125,13 @@ export function Picker({
         <div
           ref={menu}
           className="picker-menu"
-          style={{ position: "fixed", left: pos.left, top: pos.top, minWidth: pos.width }}
+          style={{ position: "fixed", left: pos.left, top: pos.top, bottom: pos.bottom, minWidth: pos.width, maxHeight: pos.maxHeight }}
         >
           {items.length > 8 && (
             <input
               autoFocus
               className="picker-filter"
-              placeholder={filterPlaceholder}
+              placeholder={filterPlaceholder ?? tr("shell.filter")}
               value={q}
               onChange={(e) => setQ(e.target.value)}
               onKeyDown={(e) => {
@@ -161,7 +168,7 @@ export function Picker({
                     {it.removable && onRemove && (
                       <button
                         className="picker-x"
-                        title="Bỏ khỏi danh sách"
+                        title={tr("shell.removeFromList")}
                         onClick={(e) => { e.stopPropagation(); onRemove(it.id); }}
                       >
                         ×
@@ -171,7 +178,7 @@ export function Picker({
                 ))}
               </div>
             ))}
-            {!shown.length && <div className="muted small pad">Không có mục nào khớp</div>}
+            {!shown.length && <div className="muted small pad">{tr("shell.noMatchingItems")}</div>}
           </div>
         </div>,
         document.body,

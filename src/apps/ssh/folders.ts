@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { t } from "../../store/lang";
 import { uid } from "./hosts";
 
 /** Thư mục nhóm các host SSH (phẳng một cấp; host trỏ vào folder bằng folderId). */
@@ -36,7 +37,7 @@ export function useFolders(): SavedFolder[] {
   return useSyncExternalStore((cb) => { subs.add(cb); return () => { subs.delete(cb); }; }, () => folders);
 }
 
-export function addFolder(name = "Thư mục mới"): string {
+export function addFolder(name = t("ssh.newFolderName")): string {
   const f: SavedFolder = { id: uid("f"), name, open: true };
   commit([...folders, f]);
   return f.id;

@@ -68,11 +68,15 @@ button {
   transition: background .12s, border-color .12s;
 }
 button:hover { background: var(--line); border-color: #8b949e; }
-button:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+/* Không vẽ vòng focus (outline/glow) khi hover/bấm — chỉ đổi nền/viền. */
+button:focus, button:focus-visible, [tabindex]:focus, [tabindex]:focus-visible { outline: none; }
 button.primary { background: var(--primary); border-color: #0000; color: #fff; }
 button.primary:hover { background: var(--primary-hover); border-color: #0000; }
 button.danger { background: var(--danger-bg); border-color: #0000; color: #fff; }
 button.danger:hover { background: var(--danger); border-color: #0000; }
+/* Nút icon xoá (×/🗑): chữ đỏ, rê chuột nền đỏ — không đặc nền như nút chữ. */
+.icon-btn.danger { background: none; color: var(--danger); }
+.icon-btn.danger:hover { background: var(--danger-bg); color: #fff; }
 button.block { width: 100%; }
 button:disabled { opacity: .5; cursor: default; }
 button:disabled:hover { background: var(--bg-3); border-color: var(--line); }
@@ -86,7 +90,7 @@ input, select, textarea {
   background: #010409; border: 1px solid var(--line); border-radius: 3px; padding: 4px 8px;
 }
 input:focus, textarea:focus, select:focus {
-  outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px #2f81f74d;
+  outline: none; border-color: var(--accent); box-shadow: none;
 }
 input::placeholder, textarea::placeholder { color: #6e7681; }
 [hidden] { display: none !important; }
@@ -119,12 +123,17 @@ input::placeholder, textarea::placeholder { color: #6e7681; }
 
 .stage { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .apps { flex: 1; min-height: 0; position: relative; }
-.app-host { position: absolute; inset: 0; display: flex; }
+.app-host { position: absolute; inset: 0; display: flex; isolation: isolate; } /* isolate: modal của app (z 60) không đè launcher/hộp thoại cấp Shell */
+/* Lớp modal riêng của app (ModalLayerContext): chỉ phủ vùng app, thanh tab app + status bar vẫn bấm được. */
+.app-modal-layer { position: absolute; inset: 0; pointer-events: none; z-index: 60; flex: none !important; }
+.app-modal-layer > .modal-backdrop { position: absolute; pointer-events: auto; }
 .app-host > * { flex: 1; }
 .tabbed { display: flex; min-width: 0; height: 100%; }
 
 .sidebar { width: 260px; background: var(--bg-2); border-right: 1px solid var(--line); overflow: auto; }
 .side-list { display: flex; flex-direction: column; }
+/* Danh sách giãn hết sidebar → chuột phải vào chỗ trống bên dưới vẫn trúng danh sách. */
+.side-list.fill { flex: 1 0 auto; min-height: 100%; }
 .side-head {
   display: flex; justify-content: space-between; align-items: center;
   padding: 10px 10px 4px; font-size: 11px; font-weight: 600; color: var(--muted); letter-spacing: .5px;
@@ -135,6 +144,8 @@ input::placeholder, textarea::placeholder { color: #6e7681; }
 .side-item:hover { background: var(--bg-3); }
 /* Click 1 lần = chọn hàng (double-click mới mở) — hiện đang chọn host/kết nối nào. */
 .side-item.sel { background: var(--sel); }
+.side-item:focus { outline: none; }
+.side-item:focus-visible { box-shadow: inset 2px 0 0 var(--primary); }
 /* Kéo-thả sắp vị trí (kết nối / host / request). */
 .side-item.dragging, .tree-row.dragging { opacity: .4; }
 .side-item.drop-before, .tree-row.drop-before { box-shadow: inset 0 2px 0 var(--primary); }
@@ -173,6 +184,9 @@ input::placeholder, textarea::placeholder { color: #6e7681; }
 
 .workspace { flex: 1; min-height: 0; background: var(--bg-2); position: relative; }
 .tab-host { position: absolute; inset: 0; overflow: auto; }
+/* Tab ẩn: KHÔNG display:none (hiện lại phải tính layout từ đầu → khựng với bảng kết quả lớn) mà content-visibility:hidden
+   — giữ nguyên trạng thái layout, hiện lại gần như tức thì; lúc ẩn trình duyệt bỏ qua layout/paint của nội dung. */
+.tab-host[hidden] { display: block !important; content-visibility: hidden; visibility: hidden; pointer-events: none; z-index: -1; }
 
 .panel { height: 180px; border-top: 1px solid var(--line); background: var(--bg); display: flex; flex-direction: column; }
 .panel .log { flex: 1; margin: 0; padding: 6px 10px; overflow: auto; font-size: 12px; }
@@ -492,6 +506,8 @@ kbd {
 
 /* ── Form chung ──────────────────────────────── */
 .form { display: flex; flex-direction: column; gap: 10px; max-width: 520px; padding: 8px; }
+/* Trong modal: form giãn hết bề ngang modal (giới hạn 520px chỉ dành cho form đặt giữa trang). */
+.modal-body .form { max-width: none; }
 .form h3 { margin: 0; font-weight: 600; }
 .form label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12px; font-weight: 600; }
 .form label input, .form label select { color: var(--fg); font-size: 13px; font-weight: 400; }
@@ -716,3 +732,102 @@ button.link:hover { background: none; border: none; color: #79c0ff; }
 .update-bar > div { height: 100%; background: var(--primary); transition: width .2s; }
 .statusbar .sb-version { color: var(--muted); font-size: 11px; }
 .home-version { margin-left: 10px; font-size: 13px; font-weight: 400; color: var(--muted); vertical-align: middle; }
+
+
+/* Sửa dữ liệu trên bảng kết quả (kiểu Navicat) */
+.grid td.editable { cursor: cell; }
+.grid td.edited { background: color-mix(in srgb, var(--warn) 22%, transparent); }
+.grid td.editing { padding: 0; }
+.cell-input { width: 100%; min-width: 140px; box-sizing: border-box; border: 1px solid var(--primary); border-radius: 0; background: var(--bg); color: var(--fg); font: inherit; padding: 2px 7px; outline: none; }
+.grid-hint { font-size: 11px; font-weight: 400; margin-left: 4px; }
+.grid-dirty { color: var(--warn); margin-left: 4px; font-weight: 600; }
+.grid-note { margin: 4px 8px 0; font-size: 12px; }
+
+/* Khung thông tin bảng đang chọn (dưới danh sách bảng, kiểu "Object info" của Navicat) */
+.db-table-info { flex: 0 0 auto; max-height: 45%; overflow: auto; border-top: 1px solid var(--line); background: var(--bg); padding: 6px 8px 8px; font-size: 12px; }
+.db-table-info-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.db-table-info-list { margin: 0; }
+.db-table-info-row { display: flex; gap: 8px; padding: 2px 0; border-bottom: 1px dashed var(--line-muted); }
+.db-table-info-row dt { flex: 0 0 42%; color: var(--muted); }
+.db-table-info-row dd { margin: 0; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.db-table-info-actions { display: flex; gap: 6px; margin-top: 8px; }
+
+/* Thanh phân trang dưới bảng kết quả */
+.grid-pager { display: flex; align-items: center; gap: 4px; padding: 4px 8px; border-top: 1px solid var(--line); background: var(--bg-2); font-size: 12px; flex: 0 0 auto; }
+.grid-pager-page { padding: 0 6px; font-variant-numeric: tabular-nums; }
+.grid-pager-spin { width: 12px; height: 12px; border-width: 2px; margin-left: 4px; }
+.grid-wrap.busy { opacity: .55; pointer-events: none; }
+
+/* Kéo thả file vào sidebar HTTP (collection Postman / file curl) */
+.side-list.file-drop { position: relative; outline: 2px dashed var(--primary); outline-offset: -4px; background: color-mix(in srgb, var(--primary) 8%, transparent); }
+.file-drop-hint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; padding: 16px; color: var(--primary); font-weight: 600; pointer-events: none; z-index: 5; }
+
+/* Struct sync: danh sách thay đổi chọn được + tiến trình */
+.sync-progress { display: flex; flex-direction: column; gap: 3px; }
+.sync-pick { border: 1px solid var(--line); background: var(--bg-2); }
+.sync-pick-head { display: flex !important; flex-direction: row !important; align-items: center; gap: 8px; padding: 6px 8px; border-bottom: 1px solid var(--line); color: var(--fg) !important; }
+.sync-pick-list { max-height: 300px; overflow: auto; }
+.sync-pick-table { display: flex; align-items: center; gap: 8px; padding: 4px 8px; cursor: pointer; }
+.sync-pick-table:hover { background: var(--bg-3); }
+.sync-pick-item { display: flex !important; flex-direction: row !important; align-items: center; gap: 8px; padding: 3px 8px 3px 44px; font-weight: 400 !important; color: var(--fg) !important; cursor: pointer; }
+.sync-pick-item:hover { background: var(--bg-3); }
+.sync-pick-item code { font-size: 11px; }
+.sync-item-name { flex: 0 0 auto; }
+.sync-badge { font-size: 10px; font-weight: 700; padding: 0 5px; border: 1px solid currentColor; }
+.sync-badge.new { color: var(--ok); }
+.sync-badge.alter { color: var(--warn); }
+.sync-act { width: 12px; text-align: center; font-weight: 700; }
+.sync-act.add { color: var(--ok); }
+.sync-act.modify { color: var(--warn); }
+.sync-act.drop { color: var(--danger); }
+
+.db-progress { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); max-width: 360px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.db-progress .update-bar { display: inline-block; width: 80px; margin: 0; flex: 0 0 auto; }
+.db-progress .update-bar > span { display: block; height: 100%; background: var(--primary); transition: width .2s; }
+
+/* Wizard nhiều bước (Struct sync) */
+.wizard-steps { display: flex; gap: 0; border-bottom: 1px solid var(--line); margin-bottom: 4px; }
+.wizard-step { display: inline-flex; align-items: center; gap: 6px; background: none; border: none; border-bottom: 2px solid transparent; border-radius: 0; padding: 6px 14px; color: var(--muted); font-weight: 600; }
+.wizard-step.on { color: var(--fg); border-bottom-color: var(--primary); }
+.wizard-step.done { color: var(--ok); }
+.wizard-step:disabled { opacity: 1; cursor: default; }
+.wizard-step:not(:disabled):hover { color: var(--fg); background: var(--bg-3); }
+.wizard-num { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; border: 1px solid currentColor; font-size: 11px; }
+.wizard-step.on .wizard-num { background: var(--primary); border-color: var(--primary); color: #fff; }
+
+/* Gợi ý SQL: đoạn khớp */
+.sql-sug .sug-hl { color: var(--primary); font-weight: 700; }
+
+/* App Registry (Harbor) */
+.reg-session { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.reg-top { padding: 6px 10px; border-bottom: 1px solid var(--line); gap: 8px; }
+.reg-body { display: flex; flex: 1; min-height: 0; }
+.reg-pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; flex-shrink: 0; }
+.reg-pane.grow { flex: 1; }
+.reg-list { flex: 1; overflow: auto; min-height: 0; }
+.reg-row { display: flex; align-items: center; gap: 6px; padding: 5px 10px; cursor: pointer; border-left: 2px solid transparent; }
+.reg-row:hover { background: var(--bg-3); }
+.reg-row.on { background: var(--sel); border-left-color: var(--primary); }
+.reg-grid { width: 100%; }
+.reg-grid td { vertical-align: middle; }
+.reg-grid tr:hover td { background: var(--bg-3); }
+.reg-tag { display: inline-block; padding: 0 6px; margin: 1px 4px 1px 0; border: 1px solid var(--line); border-radius: 10px; font-size: 12px; font-family: var(--mono, monospace); }
+.reg-actions { white-space: nowrap; text-align: right; }
+.reg-actions button { padding: 2px 8px; margin-left: 4px; }
+.reg-jobs { border-top: 1px solid var(--line); max-height: 180px; overflow: auto; padding: 4px 10px; }
+.reg-job { display: flex; align-items: center; gap: 10px; padding: 3px 0; }
+.reg-job-name { width: 32%; min-width: 160px; }
+.reg-job-stat { width: 34%; min-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reg-repo-title { display: flex; align-items: center; gap: 6px; }
+.reg-repo-title input[type=checkbox], .reg-row input[type=checkbox] { margin: 0; flex: 0 0 auto; }
+.reg-bulk { padding: 1px 8px; font-size: 12px; }
+.reg-list { display: flex; flex-direction: column; }
+.reg-loading-full { min-height: 120px; }
+.reg-loading-more { flex: 0 0 auto; padding: 8px; }
+.reg-list > * { flex-shrink: 0; }
+.reg-list > .reg-loading-full { flex: 1 0 auto; }
+/* Kéo-thả sắp thứ tự app trong launcher. */
+.launcher-app[draggable=true] { cursor: grab; }
+.launcher-app.dragging { opacity: .45; }
+.launcher-app.drop-before { box-shadow: inset 0 2px 0 var(--primary); }
+.launcher-list.drop-end { box-shadow: inset 0 -2px 0 var(--primary); }

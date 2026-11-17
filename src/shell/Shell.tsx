@@ -1,18 +1,18 @@
-import { useEffect, useState } from "react";
-import { APPS, appById } from "../apps/registry";
+import { useEffect } from "react";
+import { appById, orderedApps } from "../apps/registry";
 import { useWorkbench } from "../store/workbench";
 import { toggleTheme, useTheme } from "../store/theme";
-import { toggleLang, useLang, useT } from "../store/lang";
+import { toggleLang, useLang, useT, type TKey } from "../store/lang";
 import { AppHost } from "./AppHost";
 import { Launcher } from "./Launcher";
-import { ContextMenu, type CtxItem } from "./ContextMenu";
 import { ConfirmHost } from "./confirm";
 import { UpdateButton, UpdateHost, VersionLabel, checkForUpdate } from "./updater";
+import { closeThisWindow, isMainWindow, launchApp, registerWindowApp, windowAppParam } from "./windows";
 
 /**
- * Mỗi mini app chiếm toàn bộ cửa sổ. Không có thanh chọn app cố định:
- * Ctrl+K mở launcher (danh sách app + tìm kiếm), Ctrl+1..9 vào thẳng app.
- * App chỉ được tải khi vào lần đầu; app đã vào được giữ trong DOM (ẩn) để không mất trạng thái.
+ * Mỗi app một CỬA SỔ Windows riêng (xem shell/windows.ts) → chuyển qua lại bằng Alt+Tab.
+ * Cửa sổ chính mở lên là màn hình chính (launcher); chọn app thì cửa sổ đó thành app.
+ * Trong app: Ctrl+K / Ctrl+1..9 mở app khác (đã có cửa sổ thì đưa lên, chưa có thì mở cửa sổ mới).
  */
 export function Shell() {
   const activeApp = useWorkbench((s) => s.activeApp);
@@ -24,18 +24,25 @@ export function Shell() {
   const theme = useTheme();
   const lang = useLang();
   const tr = useT();
-  const { setLauncher, togglePanel, goHome, unloadApp } = useWorkbench.getState();
-  /** Menu "các app đang chạy" ở thanh trạng thái. */
-  const [runMenu, setRunMenu] = useState<{ x: number; y: number } | null>(null);
+  const { togglePanel, setLauncher } = useWorkbench.getState();
 
-  // Kiểm tra bản mới 3s sau khi mở app, rồi mỗi 30 phút (app mở cả ngày → không cần restart mới thấy bản mới).
+  // Kiểm tra bản mới 3s sau khi mở, rồi mỗi 30 phút — CHỈ ở cửa sổ chính (tránh mỗi cửa sổ tự tải một bản).
   useEffect(() => {
-    const t = setTimeout(() => void checkForUpdate(), 3000);
-    const iv = setInterval(() => void checkForUpdate(), 30 * 60 * 1000);
+    let t: ReturnType<typeof setTimeout> | undefined;
+    let iv: ReturnType<typeof setInterval> | undefined;
+    void isMainWindow().then((main) => {
+      if (!main) return;
+      t = setTimeout(() => void checkForUpdate(), 3000);
+      iv = setInterval(() => void checkForUpdate(), 30 * 60 * 1000);
+    });
     return () => { clearTimeout(t); clearInterval(iv); };
   }, []);
 
-  const closeAll = () => [...useWorkbench.getState().mounted].forEach((id) => useWorkbench.getState().unloadApp(id));
+  // Ghi nhận cửa sổ này đang chứa app nào (+ tiêu đề cửa sổ). Cửa sổ mở riêng cho một app mà app bị tắt → đóng cửa sổ.
+  useEffect(() => {
+    void registerWindowApp(activeApp);
+    if (windowAppParam && !activeApp && !mounted.length) void closeThisWindow();
+  }, [activeApp, mounted.length]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -45,8 +52,8 @@ export function Shell() {
       // Dùng e.code để không phụ thuộc bố cục bàn phím / Unikey.
       const digit = /^Digit([1-9])$/.exec(e.code)?.[1];
       if (mod && digit && !e.shiftKey && !e.altKey) {
-        const app = APPS[Number(digit) - 1];
-        if (app) { e.preventDefault(); s.openApp(app.id); }
+        const app = orderedApps()[Number(digit) - 1];
+        if (app) { e.preventDefault(); void launchApp(app.id); }
       }
       else if (mod && key === "k") {
         e.preventDefault();
@@ -59,7 +66,7 @@ export function Shell() {
       else if (mod && e.key === "PageDown") { e.preventDefault(); s.cycleTab(1); }
       else if (mod && e.key === "PageUp") { e.preventDefault(); s.cycleTab(-1); }
       else if (mod && e.shiftKey && key === "w" && s.activeApp) {
-        // Ctrl+Shift+W: tắt hẳn app đang chạy (đóng mọi tab, giải phóng bộ nhớ).
+        // Ctrl+Shift+W: tắt hẳn app (đóng mọi tab; cửa sổ riêng của app thì đóng luôn cửa sổ).
         e.preventDefault();
         s.unloadApp(s.activeApp);
       }
@@ -91,41 +98,28 @@ export function Shell() {
               OUTPUT <span className="grow" />
               <button className="icon-btn" onClick={togglePanel}>×</button>
             </div>
-            <pre className="mono log">{logs.join("\n") || "Chưa có log."}</pre>
+            <pre className="mono log">{logs.join("\n") || tr("shell.noLogsYet")}</pre>
           </section>
         )}
       </div>
 
       <footer className="statusbar">
-        <button title={tr("Home", "Về màn hình chính")} onClick={goHome}>🏠</button>
-        <button title={tr("Switch app (Ctrl+K)", "Đổi app (Ctrl+K)")} onClick={() => (activeApp ? setLauncher(true) : goHome())}>
-          {current ? <>{current.iconNode ?? current.icon} {current.title}</> : tr("Home", "Màn hình chính")} ▾
-        </button>
         {current && (
-          <button className="sb-close" title={tr("Close running app (Ctrl+Shift+W)", "Tắt app đang chạy (Ctrl+Shift+W)")} onClick={() => unloadApp(activeApp!)}>×</button>
+          <button title={tr("shell.openAnotherAppWindow")} onClick={() => setLauncher(true)}>
+            {current.iconNode ?? current.icon} {tr(`apps.${current.id}.title` as TKey)} ▾
+          </button>
         )}
         <span className="grow" />
         <UpdateButton />
-        <button
-          className="sb-running"
-          disabled={!mounted.length}
-          title={tr("Running apps — click to close", "Các app đang chạy — bấm để tắt")}
-          onClick={(e) => {
-            const r = e.currentTarget.getBoundingClientRect();
-            setRunMenu({ x: r.left, y: r.top - 4 });
-          }}
-        >
-          {mounted.length}/{APPS.length} {tr("running", "app đang chạy")} ▴
-        </button>
         {current && <span>{tabCount} tab</span>}
-        <button className="sb-lang" title={tr("Switch to Vietnamese", "Chuyển sang tiếng Anh")} onClick={toggleLang}>
+        <button className="sb-lang" title={tr("shell.switchToVietnamese")} onClick={toggleLang}>
           {lang === "en" ? "EN" : "VI"}
         </button>
         <button
           className={`theme-btn ${theme === "dark" ? "sun" : "moon"}`}
-          title={theme === "dark" ? tr("Light theme", "Chuyển sang nền sáng") : tr("Dark theme", "Chuyển sang nền tối")}
+          title={theme === "dark" ? tr("shell.lightTheme") : tr("shell.darkTheme")}
           onClick={toggleTheme}
-          aria-label={tr("Toggle theme", "Đổi nền sáng/tối")}
+          aria-label={tr("shell.toggleTheme")}
         >
           <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
             <path
@@ -139,30 +133,6 @@ export function Shell() {
         <VersionLabel />
         <button onClick={togglePanel}>Output {logs.length ? `(${logs.length})` : ""}</button>
       </footer>
-
-      {runMenu && (
-        <ContextMenu
-          x={runMenu.x}
-          y={runMenu.y}
-          onClose={() => setRunMenu(null)}
-          items={((): CtxItem[] => {
-            const items: CtxItem[] = mounted.map((id) => {
-              const a = appById(id);
-              return {
-                id,
-                label: `${tr("Close", "Tắt")} ${a.icon} ${a.title}${id === activeApp ? tr(" (viewing)", " (đang xem)") : ""}`,
-                danger: true,
-                action: () => unloadApp(id),
-              };
-            });
-            if (mounted.length > 1) {
-              items.push({ id: "sep", sep: true }, { id: "all", label: tr("Close all apps", "Tắt tất cả app"), danger: true, action: closeAll });
-            }
-            if (!mounted.length) items.push({ id: "none", label: tr("No apps running", "Không có app nào đang chạy"), disabled: true });
-            return items;
-          })()}
-        />
-      )}
 
       {launcherOpen && activeApp && <Launcher />}
       <ConfirmHost />

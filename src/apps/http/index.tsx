@@ -10,6 +10,7 @@ import { confirmDialog } from "../../shell/confirm";
 import { Picker } from "../../shell/Picker";
 import { sendHttp, readFile, readDir, errText, NO_AUTH, type Auth, type Header, type HttpResp } from "./api";
 import { looksLikeCurl, parseCurl, parseCurlFile, type ParsedCurl } from "./curl";
+import { looksLikePostman, parsePostman, type PmNode } from "./postman";
 import { getVars, removeVar, runPreScript, runScript, setVar, substitute, useVars } from "./vars";
 import {
   addFolder, addRequest, ensureFolder, flattenFolders, moveNode, removeNode, renameNode, toggleFolder, updateRequest, useTree,
@@ -24,7 +25,7 @@ export function newRequest(init?: { method?: string; url?: string; name?: string
   useWorkbench.getState().openTab({
     id: `http:new-${++untitled}`,
     appId: "http",
-    title: `⚡ ${init?.name ?? t("New request", "Request mới")}`,
+    title: `⚡ ${init?.name ?? t("http.newRequest")}`,
     payload: { method: init?.method ?? "GET", url: init?.url ?? "" },
   });
 }
@@ -151,6 +152,25 @@ function toCurl(r: ReqState): string {
 /* ── Sidebar: collections (folder + request, import file/thư mục) ── */
 
 /** Thêm các request từ 1 file curl vào `parent`. Nhiều lệnh → bọc trong 1 folder theo tên file. */
+/** Import một file collection Postman → thư mục mới mang tên collection; biến collection thêm vào 🔑 (không ghi đè biến đã có). */
+function importPostmanText(text: string): string {
+  const pm = parsePostman(text);
+  const root = addFolder(null, pm.name);
+  const walk = (nodes: PmNode[], parent: string) => {
+    for (const n of nodes) {
+      if (n.kind === "folder") walk(n.children, addFolder(parent, n.name));
+      else addRequest(parent, n.name, n.req);
+    }
+  };
+  walk(pm.nodes, root);
+  const cur = getVars();
+  let added = 0;
+  for (const [k, v] of Object.entries(pm.vars)) if (!(k in cur)) { setVar(k, v); added++; }
+  return t("http.importedPostman", { n: pm.total, name: pm.name })
+    + (added ? t("http.importedPostmanVars", { n: added }) : "")
+    + (pm.unsupportedBodies ? " " + t("http.importedPostmanMultipart", { n: pm.unsupportedBodies }) : "");
+}
+
 function importReqsInto(parent: string | null, reqs: ParsedCurl[], folderName: string) {
   if (reqs.length === 1) return void addRequest(parent, reqName(reqs[0]), toSaved(reqs[0]));
   const fid = addFolder(parent, folderName);
@@ -167,16 +187,49 @@ function Sidebar() {
   const [sel, setSel] = useState<string | null>(null);
   const [varsOpen, setVarsOpen] = useState(false);
   const vars = useVars();
+  /** Đang kéo file từ ngoài vào sidebar (hiện vùng thả). */
+  const [fileOver, setFileOver] = useState(false);
+
+  const importPostmanFile = async () => {
+    setMsg("");
+    try {
+      const f = await openDialog({ multiple: false, title: tr("http.choosePostmanFile"), filters: [{ name: "Postman collection", extensions: ["json"] }] });
+      if (typeof f !== "string") return;
+      setMsg(importPostmanText(await readFile(f)));
+    } catch (e) {
+      setMsg(errText(e));
+    }
+  };
+
+  /** Kéo thả file vào sidebar: collection Postman (.json) hoặc file lệnh curl. */
+  const importDropped = async (files: File[]) => {
+    const notes: string[] = [];
+    for (const file of files) {
+      try {
+        const text = await file.text();
+        if (looksLikePostman(text)) { notes.push(importPostmanText(text)); continue; }
+        const reqs = parseCurlFile(text);
+        if (reqs.length) {
+          importReqsInto(null, reqs, file.name);
+          notes.push(tr("http.importedRequestsFrom", { reqsLength: reqs.length, p: file.name }));
+        } else notes.push(tr("http.notCollectionOrCurl", { name: file.name }));
+      } catch (e) {
+        notes.push(`${file.name}: ${errText(e)}`);
+      }
+    }
+    setMsg(notes.join("\n"));
+  };
+  const isFileDrag = (e: React.DragEvent) => Array.from(e.dataTransfer.types).includes("Files");
 
   const importFile = async () => {
     setMsg("");
     try {
-      const f = await openDialog({ multiple: false, title: tr("Choose a file with curl commands", "Chọn file chứa lệnh curl") });
+      const f = await openDialog({ multiple: false, title: tr("http.chooseAFileWithCurlCommands") });
       if (typeof f !== "string") return;
       const reqs = parseCurlFile(await readFile(f));
-      if (!reqs.length) return setMsg(tr("No curl commands found in the file", "Không thấy lệnh curl nào trong file"));
+      if (!reqs.length) return setMsg(tr("http.noCurlCommandsFoundInThe"));
       importReqsInto(null, reqs, baseName(f));
-      setMsg(tr(`Imported ${reqs.length} requests from ${baseName(f)}`, `Đã import ${reqs.length} request từ ${baseName(f)}`));
+      setMsg(tr("http.importedRequestsFrom", { reqsLength: reqs.length, p: baseName(f) }));
     } catch (e) {
       setMsg(errText(e));
     }
@@ -185,7 +238,7 @@ function Sidebar() {
   const importFolder = async () => {
     setMsg("");
     try {
-      const dir = await openDialog({ directory: true, title: tr("Choose a folder of command files", "Chọn thư mục chứa các file lệnh") });
+      const dir = await openDialog({ directory: true, title: tr("http.chooseAFolderOfCommandFiles") });
       if (typeof dir !== "string") return;
       const files = await readDir(dir);
       let count = 0;
@@ -200,27 +253,39 @@ function Sidebar() {
         importReqsInto(parent, reqs, fileName);
         count += reqs.length;
       }
-      setMsg(count ? tr(`Imported ${count} requests from ${baseName(dir)}`, `Đã import ${count} request từ ${baseName(dir)}`) : tr("No curl commands found in the folder", "Không thấy lệnh curl nào trong thư mục"));
+      setMsg(count ? tr("http.importedRequestsFrom2", { count, p: baseName(dir) }) : tr("http.noCurlCommandsFoundInThe2"));
     } catch (e) {
       setMsg(errText(e));
     }
   };
 
   return (
-    <div className="side-list">
+    <div
+      className={`side-list fill${fileOver ? " file-drop" : ""}`}
+      onDragOver={(e) => { if (isFileDrag(e)) { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; setFileOver(true); } }}
+      onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFileOver(false); }}
+      onDrop={(e) => {
+        if (!isFileDrag(e)) return;
+        e.preventDefault();
+        setFileOver(false);
+        void importDropped(Array.from(e.dataTransfer.files));
+      }}
+    >
+      {fileOver && <div className="file-drop-hint">⬇ {tr("http.dropToImport")}</div>}
       <div className="side-head">
         <span>COLLECTIONS</span>
         <span className="side-actions">
-          <button className="icon-btn" title={tr("New request", "Request mới")} onClick={() => newRequest()}>＋</button>
-          <button className="icon-btn" title={tr("New folder", "Thư mục mới")} onClick={() => setEditing(addFolder(null))}>🗂</button>
-          <button className="icon-btn" title={tr("Import curl command file", "Import file lệnh curl")} onClick={() => void importFile()}>📄</button>
-          <button className="icon-btn" title={tr("Import a whole folder of commands", "Import cả thư mục lệnh")} onClick={() => void importFolder()}>📁</button>
-          <button className="icon-btn" title={`${tr("Environment variables", "Biến môi trường")}${Object.keys(vars).length ? ` (${Object.keys(vars).length})` : ""}`} onClick={() => setVarsOpen(true)}>🔑</button>
+          <button className="icon-btn" title={tr("http.newRequest")} onClick={() => newRequest()}>＋</button>
+          <button className="icon-btn" title={tr("http.newFolder")} onClick={() => setEditing(addFolder(null))}>🗂</button>
+          <button className="icon-btn" title={tr("http.importPostman")} onClick={() => void importPostmanFile()}>📦</button>
+          <button className="icon-btn" title={tr("http.importCurlCommandFile")} onClick={() => void importFile()}>📄</button>
+          <button className="icon-btn" title={tr("http.importAWholeFolderOfCommands")} onClick={() => void importFolder()}>📁</button>
+          <button className="icon-btn" title={`${tr("http.environmentVariables")}${Object.keys(vars).length ? ` (${Object.keys(vars).length})` : ""}`} onClick={() => setVarsOpen(true)}>🔑</button>
         </span>
       </div>
       {varsOpen && <VarsModal onClose={() => setVarsOpen(false)} />}
-      {msg && <div className="muted small pad">{msg}</div>}
-      {tree.length === 0 && <div className="muted small pad">{tr("Nothing yet. Create a folder, or import a file/folder of curl commands.", "Chưa có gì. Tạo thư mục, hoặc import file/thư mục chứa lệnh curl.")}</div>}
+      {msg && <div className="muted small pad" style={{ whiteSpace: "pre-line" }}>{msg}</div>}
+      {tree.length === 0 && <div className="muted small pad">{tr("http.nothingYetCreateAFolderOr")}</div>}
       <div
         className="tree"
         onDragOver={(e) => { if (dragId) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; } }}
@@ -255,18 +320,18 @@ function Sidebar() {
 }
 
 function nodeMenu(node: TreeNode, setEditing: (id: string) => void): CtxItem[] {
-  const items: CtxItem[] = [{ id: "rename", label: t("Rename", "Đổi tên"), action: () => setEditing(node.id) }];
+  const items: CtxItem[] = [{ id: "rename", label: t("http.rename"), action: () => setEditing(node.id) }];
   if (node.kind === "folder") {
     items.push(
-      { id: "newReqHere", label: t("New request here", "Request mới trong đây"), action: () => setEditing(addRequestHere(node.id)) },
-      { id: "newFolderHere", label: t("Subfolder", "Thư mục con"), action: () => setEditing(addFolder(node.id)) },
+      { id: "newReqHere", label: t("http.newRequestHere"), action: () => setEditing(addRequestHere(node.id)) },
+      { id: "newFolderHere", label: t("http.subfolder"), action: () => setEditing(addFolder(node.id)) },
     );
   } else {
-    items.push({ id: "open", label: t("Open request", "Mở request"), action: () => openSavedRequest(node.id, node.name, node.req) });
+    items.push({ id: "open", label: t("http.openRequest"), action: () => openSavedRequest(node.id, node.name, node.req) });
   }
   items.push({ id: "s", sep: true }, {
-    id: "del", label: t("Delete", "Xoá"), danger: true,
-    action: () => void confirmDialog({ message: t(`Delete “${node.name}”${node.kind === "folder" ? " and everything inside" : ""}?`, `Xoá “${node.name}”${node.kind === "folder" ? " và mọi thứ bên trong" : ""}?`) }).then((ok) => ok && removeNode(node.id)),
+    id: "del", label: t("http.delete"), danger: true,
+    action: () => void confirmDialog({ message: t(node.kind === "folder" ? "http.deleteFolderNamed" : "http.deleteNodeNamed", { name: node.name }) }).then((ok) => ok && removeNode(node.id)),
   });
   return items;
 }
@@ -376,10 +441,10 @@ function KVEditor({ rows, onChange, addLabel }: { rows: Header[]; onChange: (r: 
     <div className="kv">
       {rows.map((r, i) => (
         <div className="kv-row" key={i}>
-          <input type="checkbox" checked={r.on} title={tr("On/off", "Bật/tắt")} onChange={(e) => set(i, { on: e.target.checked })} />
-          <input className="kv-k" value={r.name} placeholder={tr("Name", "Tên")} onChange={(e) => set(i, { name: e.target.value })} />
-          <input className="kv-v" value={r.value} placeholder={tr("Value", "Giá trị")} onChange={(e) => set(i, { value: e.target.value })} />
-          <button className="icon-btn" title={tr("Delete", "Xoá")} onClick={() => onChange(rows.filter((_, j) => j !== i))}>×</button>
+          <input type="checkbox" checked={r.on} title={tr("http.onOff")} onChange={(e) => set(i, { on: e.target.checked })} />
+          <input className="kv-k" value={r.name} placeholder={tr("http.name")} onChange={(e) => set(i, { name: e.target.value })} />
+          <input className="kv-v" value={r.value} placeholder={tr("http.value")} onChange={(e) => set(i, { value: e.target.value })} />
+          <button className="icon-btn danger" title={tr("http.delete")} onClick={() => onChange(rows.filter((_, j) => j !== i))}>×</button>
         </div>
       ))}
       <button className="kv-add" onClick={() => onChange([...rows, { name: "", value: "", on: true }])}>＋ {addLabel}</button>
@@ -404,8 +469,8 @@ function SelectPicker({
     <div className={className}>
       <Picker
         title={title}
-        filterPlaceholder={filter ?? t("Filter…", "Lọc…")}
-        label={<span className={`ellipsis ${current?.className ?? ""}`}>{current?.label ?? t("Choose…", "Chọn…")}</span>}
+        filterPlaceholder={filter ?? t("http.filter")}
+        label={<span className={`ellipsis ${current?.className ?? ""}`}>{current?.label ?? t("http.choose")}</span>}
         items={options.map((o) => ({ id: o.id, label: o.label, selected: o.id === value, className: o.className }))}
         onPick={onPick}
       />
@@ -418,7 +483,7 @@ function SelectPicker({
 function AuthEditor({ auth, onChange }: { auth: Auth; onChange: (a: Auth) => void }) {
   const tr = useT();
   const AUTH_TYPES = [
-    { id: "none", label: tr("None", "Không") },
+    { id: "none", label: tr("http.none") },
     { id: "bearer", label: "Bearer Token" },
     { id: "basic", label: "Basic Auth" },
     { id: "apikey", label: "API Key (header)" },
@@ -427,11 +492,11 @@ function AuthEditor({ auth, onChange }: { auth: Auth; onChange: (a: Auth) => voi
   return (
     <div className="form auth-editor">
       <div className="field">
-        <span className="field-cap">{tr("Auth type", "Kiểu xác thực")}</span>
-        <SelectPicker value={auth.type} options={AUTH_TYPES} onPick={(id) => set({ type: id as Auth["type"] })} title={tr("Auth type", "Kiểu xác thực")} />
+        <span className="field-cap">{tr("http.authType")}</span>
+        <SelectPicker value={auth.type} options={AUTH_TYPES} onPick={(id) => set({ type: id as Auth["type"] })} title={tr("http.authType")} />
       </div>
       {auth.type === "bearer" && (
-        <label>Token<input value={auth.token} placeholder={tr("token or {{token}}", "token hoặc {{token}}")} onChange={(e) => set({ token: e.target.value })} /></label>
+        <label>Token<input value={auth.token} placeholder={tr("http.tokenOr")} onChange={(e) => set({ token: e.target.value })} /></label>
       )}
       {auth.type === "basic" && (
         <div className="form-row">
@@ -441,12 +506,12 @@ function AuthEditor({ auth, onChange }: { auth: Auth; onChange: (a: Auth) => voi
       )}
       {auth.type === "apikey" && (
         <div className="form-row">
-          <label className="grow">{tr("Header name", "Tên header")}<input value={auth.key} placeholder="X-API-Key" onChange={(e) => set({ key: e.target.value })} /></label>
-          <label className="grow">{tr("Value", "Giá trị")}<input value={auth.value} placeholder="{{apiKey}}" onChange={(e) => set({ value: e.target.value })} /></label>
+          <label className="grow">{tr("http.headerName")}<input value={auth.key} placeholder="X-API-Key" onChange={(e) => set({ key: e.target.value })} /></label>
+          <label className="grow">{tr("http.value")}<input value={auth.value} placeholder="{{apiKey}}" onChange={(e) => set({ value: e.target.value })} /></label>
         </div>
       )}
       {auth.type !== "none" && (
-        <div className="muted small">{tr("The auth header is inserted when sending. You can use", "Header xác thực được chèn khi gửi. Dùng được biến")} <span className="mono">{"{{name}}"}</span> {tr("variables (Vars button in sidebar).", "(nút Biến ở sidebar).")}</div>
+        <div className="muted small">{tr("http.theAuthHeaderIsInsertedWhen")} <span className="mono">{"{{name}}"}</span> {tr("http.variablesVarsButtonInSidebar")}</div>
       )}
     </div>
   );
@@ -462,21 +527,21 @@ function VarsModal({ onClose }: { onClose: () => void }) {
   const [v, setV] = useState("");
   const add = () => { if (k.trim()) { setVar(k.trim(), v); setK(""); setV(""); } };
   return (
-    <Modal title={tr("🔑 Environment variables", "🔑 Biến môi trường")} width={520} onClose={onClose}>
+    <Modal title={tr("http.environmentVariables2")} width={520} onClose={onClose}>
       <div className="form save-form">
-        <div className="muted small">{tr("Use", "Dùng")} <span className="mono">{"{{name}}"}</span> {tr("in URL / header / body / auth. Scripts can set with", "trong URL / header / body / auth. Script có thể đặt bằng")} <span className="mono">setVar</span>.</div>
-        {rows.length === 0 && <div className="muted small">{tr("No variables yet.", "Chưa có biến nào.")}</div>}
+        <div className="muted small">{tr("http.use")} <span className="mono">{"{{name}}"}</span> {tr("http.inUrlHeaderBodyAuthScripts")} <span className="mono">setVar</span>.</div>
+        {rows.length === 0 && <div className="muted small">{tr("http.noVariablesYet")}</div>}
         {rows.map(([name, val]) => (
           <div className="var-row" key={name}>
             <span className="mono var-k ellipsis" title={name}>{name}</span>
             <input value={val} onChange={(e) => setVar(name, e.target.value)} />
-            <button className="icon-btn" title={tr("Delete", "Xoá")} onClick={() => removeVar(name)}>×</button>
+            <button className="icon-btn danger" title={tr("http.delete")} onClick={() => removeVar(name)}>×</button>
           </div>
         ))}
         <div className="var-row">
-          <input placeholder={tr("variable name", "tên biến")} value={k} onChange={(e) => setK(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} />
-          <input placeholder={tr("value", "giá trị")} value={v} onChange={(e) => setV(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} />
-          <button className="primary" disabled={!k.trim()} onClick={add}>{tr("Add", "Thêm")}</button>
+          <input placeholder={tr("http.variableName")} value={k} onChange={(e) => setK(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} />
+          <input placeholder={tr("http.value2")} value={v} onChange={(e) => setV(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} />
+          <button className="primary" disabled={!k.trim()} onClick={add}>{tr("http.add")}</button>
         </div>
       </div>
     </Modal>
@@ -512,13 +577,13 @@ function ParamsEditor({ url, onUrl }: { url: string; onUrl: (u: string) => void 
     <div className="kv">
       {rows.map((r, i) => (
         <div className="kv-row" key={i}>
-          <input type="checkbox" checked={r.on} title={tr("On/off", "Bật/tắt")} onChange={(e) => set(i, { on: e.target.checked })} />
-          <input className="kv-k" value={r.k} placeholder={tr("Param", "Tham số")} onChange={(e) => set(i, { k: e.target.value })} />
-          <input className="kv-v" value={r.v} placeholder={tr("Value", "Giá trị")} onChange={(e) => set(i, { v: e.target.value })} />
-          <button className="icon-btn" title={tr("Delete", "Xoá")} onClick={() => apply(rows.filter((_, j) => j !== i))}>×</button>
+          <input type="checkbox" checked={r.on} title={tr("http.onOff")} onChange={(e) => set(i, { on: e.target.checked })} />
+          <input className="kv-k" value={r.k} placeholder={tr("http.param")} onChange={(e) => set(i, { k: e.target.value })} />
+          <input className="kv-v" value={r.v} placeholder={tr("http.value")} onChange={(e) => set(i, { v: e.target.value })} />
+          <button className="icon-btn danger" title={tr("http.delete")} onClick={() => apply(rows.filter((_, j) => j !== i))}>×</button>
         </div>
       ))}
-      <button className="kv-add" onClick={() => apply([...rows, { k: "", v: "", on: true }])}>＋ {tr("Add param", "Thêm tham số")}</button>
+      <button className="kv-add" onClick={() => apply([...rows, { k: "", v: "", on: true }])}>＋ {tr("http.addParam")}</button>
     </div>
   );
 }
@@ -571,7 +636,7 @@ function TabView({ tab }: { tab: Tab }) {
 
   const applyCurl = (text: string) => {
     const p = parseCurl(text);
-    if (!p) return setError(tr("Couldn't parse a URL from the pasted curl command", "Không tách được URL từ lệnh curl đã dán"));
+    if (!p) return setError(tr("http.couldnTParseAUrlFrom"));
     setReq((r) => ({
       ...r,
       method: p.method,
@@ -587,7 +652,7 @@ function TabView({ tab }: { tab: Tab }) {
 
   const send = async () => {
     const url = req.url.trim();
-    if (!url) return setError(tr("Enter a URL", "Nhập URL"));
+    if (!url) return setError(tr("http.enterAUrl"));
     // Dán nguyên lệnh curl vào ô URL rồi bấm Send → tách trước.
     if (looksLikeCurl(url)) return applyCurl(url);
     setSending(true);
@@ -659,7 +724,7 @@ function TabView({ tab }: { tab: Tab }) {
       patch({ body: JSON.stringify(JSON.parse(req.body), null, min ? 0 : 2) });
       setError("");
     } catch {
-      setError(tr("Body is not valid JSON to format", "Body không phải JSON hợp lệ để format"));
+      setError(tr("http.bodyIsNotValidJsonTo"));
     }
   };
 
@@ -671,7 +736,7 @@ function TabView({ tab }: { tab: Tab }) {
     if (savedId) {
       updateRequest(savedId, asSaved());
       flashSaved();
-      log(`[http] cập nhật request đã lưu`);
+      log(t("http.logUpdatedSavedRequest"));
     } else {
       const u = req.url.trim();
       const path = (() => { try { return new URL(/:\/\//.test(u) ? u : `https://${u}`).pathname; } catch { return u; } })();
@@ -686,7 +751,7 @@ function TabView({ tab }: { tab: Tab }) {
     setSavedId(id);
     setSaveOpen(false);
     flashSaved();
-    log(`[http] lưu request “${name}” vào collection`);
+    log(t("http.logSavedRequest", { name }));
   };
 
   const urlIsCurl = looksLikeCurl(req.url);
@@ -715,12 +780,12 @@ function TabView({ tab }: { tab: Tab }) {
           value={req.method}
           options={METHODS.map((m) => ({ id: m, label: m, className: `m-${m}` }))}
           onPick={(id) => patch({ method: id })}
-          title={tr("Method", "Phương thức")}
+          title={tr("http.method")}
         />
         <input
           className="grow url"
           value={req.url}
-          placeholder={tr("https://api… or paste a whole curl command here", "https://api… hoặc dán nguyên lệnh curl vào đây")}
+          placeholder={tr("http.httpsApiOrPasteAWhole")}
           onChange={(e) => patch({ url: e.target.value })}
           onPaste={(e) => {
             const text = e.clipboardData.getData("text");
@@ -728,39 +793,39 @@ function TabView({ tab }: { tab: Tab }) {
           }}
           onKeyDown={(e) => e.key === "Enter" && void send()}
         />
-        {urlIsCurl && <button onClick={() => applyCurl(req.url)} title={tr("Parse curl command into a request", "Tách lệnh curl thành request")}>⤵ {tr("Parse curl", "Tách curl")}</button>}
-        <button className="primary" disabled={sending} onClick={() => void send()}>{sending ? tr("Sending…", "Đang gửi…") : "Send"}</button>
+        {urlIsCurl && <button onClick={() => applyCurl(req.url)} title={tr("http.parseCurlCommandIntoARequest")}>⤵ {tr("http.parseCurl")}</button>}
+        <button className="primary" disabled={sending} onClick={() => void send()}>{sending ? tr("http.sending") : "Send"}</button>
         <button
           onClick={onSave}
-          title={savedId ? tr("Overwrite the saved request", "Ghi đè vào request đã lưu") : tr("Save this request into a folder", "Lưu request này vào một folder")}
+          title={savedId ? tr("http.overwriteTheSavedRequest") : tr("http.saveThisRequestIntoAFolder")}
         >
-          {savedFlash ? tr("✓ Saved", "✓ Đã lưu") : savedId ? tr("Save", "Lưu") : tr("💾 Save", "💾 Lưu")}
+          {savedFlash ? tr("http.saved") : savedId ? tr("http.save") : tr("http.save2")}
         </button>
-        <button onClick={copyCurl} title={tr("Copy this request as a curl command", "Copy request này thành lệnh curl")}>{copied ? tr("✓ Copied", "✓ Đã copy") : "Copy curl"}</button>
+        <button onClick={copyCurl} title={tr("http.copyThisRequestAsACurl")}>{copied ? tr("http.copied") : "Copy curl"}</button>
       </div>
 
       {saveOpen && (
-        <Modal title={tr("💾 Save request to collection", "💾 Lưu request vào collection")} width={560} onClose={() => setSaveOpen(false)}>
+        <Modal title={tr("http.saveRequestToCollection")} width={560} onClose={() => setSaveOpen(false)}>
           <div className="form save-form">
-            <label>{tr("Name", "Tên")}
+            <label>{tr("http.name")}
               <input autoFocus value={saveName} onChange={(e) => setSaveName(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter") confirmSave(); if (e.key === "Escape") setSaveOpen(false); }} />
             </label>
             <div className="field">
-              <span className="field-cap">{tr("Folder", "Thư mục")}</span>
+              <span className="field-cap">{tr("http.folder")}</span>
               <SelectPicker
                 value={saveFolder}
-                options={[{ id: "", label: tr("(Collections root)", "(Gốc collections)") }, ...folders.map((f) => ({ id: f.id, label: f.label }))]}
+                options={[{ id: "", label: tr("http.collectionsRoot") }, ...folders.map((f) => ({ id: f.id, label: f.label }))]}
                 onPick={setSaveFolder}
-                title={tr("Choose folder", "Chọn thư mục")}
-                filter={tr("Filter folders…", "Lọc thư mục…")}
+                title={tr("http.chooseFolder")}
+                filter={tr("http.filterFolders")}
               />
             </div>
-            <div className="muted small">{tr("Tip: create a folder in the sidebar first if you want to group.", "Mẹo: tạo thư mục ở sidebar trước nếu muốn gom nhóm.")}</div>
+            <div className="muted small">{tr("http.tipCreateAFolderInThe")}</div>
             <div className="toolbar">
               <span className="grow" />
-              <button onClick={() => setSaveOpen(false)}>{tr("Cancel", "Huỷ")}</button>
-              <button className="primary" disabled={!saveName.trim()} onClick={confirmSave}>{tr("Save", "Lưu")}</button>
+              <button onClick={() => setSaveOpen(false)}>{tr("http.cancel")}</button>
+              <button className="primary" disabled={!saveName.trim()} onClick={confirmSave}>{tr("http.save")}</button>
             </div>
           </div>
         </Modal>
@@ -780,38 +845,38 @@ function TabView({ tab }: { tab: Tab }) {
             </button>
           ))}
           <span className="grow" />
-          <label className="insecure" title={tr("Skip TLS certificate check (dev self-signed servers)", "Bỏ qua kiểm tra chứng chỉ TLS (server dev self-signed)")}>
-            <input type="checkbox" checked={req.insecure} onChange={(e) => patch({ insecure: e.target.checked })} /> {tr("Skip TLS", "Bỏ qua TLS")}
+          <label className="insecure" title={tr("http.skipTlsCertificateCheckDevSelf")}>
+            <input type="checkbox" checked={req.insecure} onChange={(e) => patch({ insecure: e.target.checked })} /> {tr("http.skipTls")}
           </label>
         </div>
         <div className="req-body">
           {reqTab === "Params" && <ParamsEditor url={req.url} onUrl={(u) => patch({ url: u })} />}
-          {reqTab === "Headers" && <KVEditor rows={req.headers} onChange={(h) => patch({ headers: h })} addLabel={tr("Add header", "Thêm header")} />}
+          {reqTab === "Headers" && <KVEditor rows={req.headers} onChange={(h) => patch({ headers: h })} addLabel={tr("http.addHeader")} />}
           {reqTab === "Auth" && <AuthEditor auth={req.auth} onChange={(a) => patch({ auth: a })} />}
           {reqTab === "Script" && (
             <div className="script-editor">
               <div className="script-section">
-                <div className="script-title">{tr("Pre-request", "Trước khi gửi")}</div>
+                <div className="script-title">{tr("http.preRequest")}</div>
                 <div className="muted small script-help">
-                  {tr("Runs before sending (compute → setVar → used via {{var}}). Available:", "Chạy trước khi gửi (tính toán → setVar → dùng qua {{var}}). Có sẵn:")} <span className="mono">req</span>, <span className="mono">vars</span>, <span className="mono">setVar</span>, <span className="mono">getVar</span>.
+                  {tr("http.runsBeforeSendingComputeSetvarUsed")} <span className="mono">req</span>, <span className="mono">vars</span>, <span className="mono">setVar</span>, <span className="mono">getVar</span>.
                 </div>
                 <textarea
                   className="req-raw mono script-pre"
                   value={req.preScript}
-                  placeholder={tr('// e.g. timestamp + signature\nsetVar("ts", Date.now())', '// vd. timestamp + chữ ký\nsetVar("ts", Date.now())')}
+                  placeholder={tr("http.eGTimestampSignatureSetvarTs")}
                   onChange={(e) => patch({ preScript: e.target.value })}
                 />
               </div>
               <div className="script-section">
-                <div className="script-title">{tr("After response", "Sau response")}</div>
+                <div className="script-title">{tr("http.afterResponse")}</div>
                 <div className="muted small script-help">
-                  {tr("Runs after the response. Available:", "Chạy sau khi nhận response. Có sẵn:")} <span className="mono">json</span>, <span className="mono">resp</span>
+                  {tr("http.runsAfterTheResponseAvailable")} <span className="mono">json</span>, <span className="mono">resp</span>
                   {" "}(status/headers/body), <span className="mono">setVar(name, value)</span>, <span className="mono">getVar(name)</span>.
                 </div>
                 <textarea
                   className="req-raw mono script-post"
                   value={req.script}
-                  placeholder={tr('// Save token from response into {{token}}\nsetVar("token", json.access_token)', '// Lưu token từ response vào biến {{token}}\nsetVar("token", json.access_token)')}
+                  placeholder={tr("http.saveTokenFromResponseIntoSetvar")}
                   onChange={(e) => patch({ script: e.target.value })}
                 />
               </div>
@@ -820,18 +885,18 @@ function TabView({ tab }: { tab: Tab }) {
           )}
           {reqTab === "Body" && (
             BODYLESS.has(req.method) ? (
-              <div className="empty">{tr(`${req.method} sends no request body`, `${req.method} không gửi thân request`)}</div>
+              <div className="empty">{tr("http.sendsNoRequestBody", { method: req.method })}</div>
             ) : (
               <>
                 <div className="body-toolbar">
-                  <span className="muted small grow">{req.body.trim() ? tr(`${req.body.length} chars`, `${req.body.length} ký tự`) : tr("Request body", "Thân request")}</span>
-                  <button className="link" disabled={!bodyIsJson} title={tr("Format JSON for readability", "Định dạng JSON cho dễ đọc")} onClick={() => formatBody(false)}>✨ Format JSON</button>
-                  <button className="link" disabled={!bodyIsJson} title={tr("Collapse JSON to one line", "Thu gọn JSON về một dòng")} onClick={() => formatBody(true)}>Minify</button>
+                  <span className="muted small grow">{req.body.trim() ? tr("http.chars", { bodyLength: req.body.length }) : tr("http.requestBody")}</span>
+                  <button className="link" disabled={!bodyIsJson} title={tr("http.formatJsonForReadability")} onClick={() => formatBody(false)}>✨ Format JSON</button>
+                  <button className="link" disabled={!bodyIsJson} title={tr("http.collapseJsonToOneLine")} onClick={() => formatBody(true)}>Minify</button>
                 </div>
                 <textarea
                   className="req-raw mono"
                   value={req.body}
-                  placeholder={tr('Request body (JSON, form…)\nExample: {"email":"a@b.c"}', 'Thân request (JSON, form…)\nVí dụ: {"email":"a@b.c"}')}
+                  placeholder={tr("http.requestBodyJsonFormExample")}
                   onChange={(e) => patch({ body: e.target.value })}
                 />
               </>
@@ -846,7 +911,7 @@ function TabView({ tab }: { tab: Tab }) {
             <button key={t} className={t === resTab ? "on" : ""} onClick={() => setResTab(t)}>{t}</button>
           ))}
           {isJson && resTab === "Body" && (
-            <button className={pretty ? "on" : ""} onClick={() => setPretty((v) => !v)} title={tr("Toggle JSON formatting", "Bật/tắt định dạng JSON")}>{pretty ? "Pretty" : "Raw"}</button>
+            <button className={pretty ? "on" : ""} onClick={() => setPretty((v) => !v)} title={tr("http.toggleJsonFormatting")}>{pretty ? "Pretty" : "Raw"}</button>
           )}
           <span className="grow" />
           {resp ? (
@@ -855,22 +920,22 @@ function TabView({ tab }: { tab: Tab }) {
               <span className="muted small">{resp.timeMs} ms · {fmtSize(resp.bodyBytes)}</span>
             </span>
           ) : (
-            <span className="muted small">{sending ? tr("Sending…", "Đang gửi…") : tr("Not sent", "Chưa gửi")}</span>
+            <span className="muted small">{sending ? tr("http.sending") : tr("http.notSent")}</span>
           )}
         </div>
         {!resp ? (
-          <div className="empty">{sending ? tr("⏳ Waiting for response…", "⏳ Đang chờ phản hồi…") : tr("Click Send to send the request", "Bấm Send để gửi request")}</div>
+          <div className="empty">{sending ? tr("http.waitingForResponse") : tr("http.clickSendToSendTheRequest")}</div>
         ) : resTab === "Body" ? (
           <>
-            {resp.truncated && <div className="muted small pad">{tr(`⚠ Response too large, showing first ${fmtSize(8 * 1024 * 1024)}.`, `⚠ Phản hồi quá lớn, chỉ hiện ${fmtSize(8 * 1024 * 1024)} đầu.`)}</div>}
-            <pre className="res-raw mono">{shownBody || tr("(empty body)", "(thân rỗng)")}</pre>
+            {resp.truncated && <div className="muted small pad">{tr("http.responseTooLargeShowingFirst", { p: fmtSize(8 * 1024 * 1024) })}</div>}
+            <pre className="res-raw mono">{shownBody || tr("http.emptyBody")}</pre>
           </>
         ) : (
           <div className="res-headers mono">
             {resp.headers.map(([k, v], i) => (
               <div key={i} className="res-h"><span className="res-hk">{k}</span><span className="res-hv">{v}</span></div>
             ))}
-            {!resp.headers.length && <div className="muted small pad">Không có header</div>}
+            {!resp.headers.length && <div className="muted small pad">{t("http.noHeaders")}</div>}
           </div>
         )}
       </div>
@@ -894,7 +959,7 @@ function HttpRoot() {
 
 const httpApp: AppModule = {
   View: HttpRoot,
-  commands: () => [{ id: "http.new", group: "HTTP", title: t("New request", "Request mới"), hint: "Ctrl+N", run: () => newRequest() }],
+  commands: () => [{ id: "http.new", group: "HTTP", title: t("http.newRequest"), hint: "Ctrl+N", run: () => newRequest() }],
 };
 
 function HttpEmpty() {
@@ -902,9 +967,9 @@ function HttpEmpty() {
   return (
     <div className="welcome">
       <h1>⚡ HTTP Client</h1>
-      <p className="muted">{tr("Send real requests via Rust (no CORS). Paste a curl command into the URL box to turn it into a runnable request.", "Gửi request thật qua Rust (không dính CORS). Dán lệnh curl vào ô URL là tự tách thành request chạy được.")}</p>
+      <p className="muted">{tr("http.sendRealRequestsViaRustNo")}</p>
       <div className="toolbar">
-        <button className="primary" onClick={() => newRequest()}>＋ {tr("New request", "Request mới")}</button>
+        <button className="primary" onClick={() => newRequest()}>＋ {tr("http.newRequest")}</button>
       </div>
     </div>
   );

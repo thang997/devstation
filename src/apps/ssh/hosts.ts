@@ -13,6 +13,15 @@ export interface SavedHost {
   prod: boolean;
   /** Id thư mục chứa host ("" = ngoài thư mục). */
   folderId: string;
+  /** Jump host: id một host đã lưu khác dùng làm máy trung gian (bastion). Rỗng = kết nối thẳng. */
+  jumpHostId?: string;
+}
+
+/** Cấu hình jump host của một host (tra theo jumpHostId trong danh sách host đã lưu). */
+export function jumpCfgFor(h: SavedHost | undefined, all: SavedHost[]): { host: string; port: number; user: string; keyPath: string } | undefined {
+  if (!h?.jumpHostId || h.jumpHostId === h.id) return undefined;
+  const j = all.find((x) => x.id === h.jumpHostId);
+  return j && j.host.trim() ? { host: j.host.trim(), port: j.port || 22, user: j.user.trim(), keyPath: j.keyPath } : undefined;
 }
 
 const KEY = "devstation.ssh.hosts";

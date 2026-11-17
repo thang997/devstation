@@ -1,4 +1,5 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { t } from "../../store/lang";
 
 /** Một dòng header trong trình soạn request. `on`=false thì không gửi. */
 export interface Header {
@@ -38,10 +39,10 @@ export interface HttpResp {
   truncated: boolean;
 }
 
-const needApp = new Error("Cần chạy trong app (npm run app:dev).");
+const needApp = new Error(t("http.needApp"));
 
 export function sendHttp(req: HttpReq): Promise<HttpResp> {
-  if (!isTauri()) return Promise.reject(new Error("Cần chạy trong app (npm run app:dev) — trình duyệt bị chặn CORS, không gửi được."));
+  if (!isTauri()) return Promise.reject(new Error(t("http.needAppCors")));
   return invoke<HttpResp>("http_send", { req });
 }
 

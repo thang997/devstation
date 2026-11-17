@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { t } from "../../store/lang";
 
 /** Thư mục gom nhiều kết nối DB (phẳng một cấp; kết nối trỏ vào folder bằng folderId). */
 export interface DbFolder {
@@ -37,7 +38,7 @@ export function useDbFolders(): DbFolder[] {
   return useSyncExternalStore((cb) => { subs.add(cb); return () => { subs.delete(cb); }; }, () => folders);
 }
 
-export function addDbFolder(name = "Thư mục mới"): string {
+export function addDbFolder(name = t("db.newFolderName")): string {
   const f: DbFolder = { id: uid(), name, open: true };
   commit([...folders, f]);
   return f.id;
