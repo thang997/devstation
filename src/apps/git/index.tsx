@@ -10,6 +10,7 @@ import { ContextMenu, type CtxItem } from "../../shell/ContextMenu";
 import { Modal } from "../../shell/Modal";
 import { Splitter, useSplitSize } from "../../shell/Resizable";
 import { git, errText, type Branch, type Commit, type FileChange, type GitAccount, type RemoteOp, type Status } from "./api";
+import { CommitView, FileDiff } from "./DiffParts";
 import { refreshAllSummaries, refreshSummary, repoName, useRepos, type Repo } from "./repos";
 
 function openRepo(r: Repo) {
@@ -34,7 +35,7 @@ async function addRepos(): Promise<string> {
 }
 
 /* Các thao tác cần nhập thêm (tài khoản, clone) mở dạng MODAL, không phải tab.
-   Mỗi cái một cờ nhỏ dùng chung cho mọi nơi gọi (sidebar, màn trống, lệnh Ctrl+K). */
+   Mỗi cái một cờ nhỏ dùng chung cho mọi nơi gọi (sidebar, màn trống, lệnh Ctrl+G). */
 function makeToggle() {
   let open = false;
   const subs = new Set<() => void>();
@@ -214,7 +215,8 @@ function RepoView({ tab }: { tab: Tab }) {
 
   // Nạp diff cho mục đang chọn; file biến mất khỏi danh sách thì bỏ chọn.
   useEffect(() => {
-    if (!selected) return setDiff("");
+    setDiff("");
+    if (!selected) return;
     let alive = true;
     const p =
       selected.type === "commit"
@@ -792,12 +794,15 @@ function RepoView({ tab }: { tab: Tab }) {
         </div>
         <Splitter axis="x" onResize={(d) => setChangesW((w) => w + d)} onReset={() => setChangesW(280)} />
         <div className="pane">
-          <div className="pane-title ellipsis">
-            {selected?.type === "file" && <>{selected.file.orig ? `${selected.file.orig} → ` : ""}{selected.file.path}</>}
-            {selected?.type === "commit" && <>Commit {selected.commit.short} · {selected.commit.subject}</>}
-            {!selected && "Diff"}
-          </div>
-          {selected ? <DiffView text={diff} /> : <div className="empty">{tr("git.pickAFileOrCommitTo")}</div>}
+          {selected?.type !== "commit" && (
+            <div className="pane-title ellipsis">
+              {selected?.type === "file" ? <>{selected.file.orig ? `${selected.file.orig} → ` : ""}{selected.file.path}</> : "Diff"}
+            </div>
+          )}
+          {!selected ? <div className="empty">{tr("git.pickAFileOrCommitTo")}</div>
+            : !diff ? <div className="sftp-center"><span className="spinner" /></div>
+            : selected.type === "commit" ? <CommitView text={diff} commit={selected.commit} onCopy={(h) => void navigator.clipboard.writeText(h)} />
+            : <FileDiff text={diff} />}
         </div>
       </div>
 
@@ -1019,28 +1024,6 @@ function FileGroup(props: {
     </div>
   );
 }
-
-const MAX_DIFF_LINES = 4000;
-
-const DiffView = memo(function DiffView({ text }: { text: string }) {
-  const tr = useT();
-  const lines = useMemo(() => text.split("\n"), [text]);
-  const shown = lines.slice(0, MAX_DIFF_LINES);
-  return (
-    <div className="diff mono">
-      {shown.map((l, i) => {
-        const cls =
-          l.startsWith("+++") || l.startsWith("---") || l.startsWith("diff ") || l.startsWith("index ") ? "meta"
-          : l.startsWith("+") ? "add"
-          : l.startsWith("-") ? "del"
-          : l.startsWith("@@") ? "hunk"
-          : "";
-        return <div key={i} className={cls}>{l || " "}</div>;
-      })}
-      {lines.length > MAX_DIFF_LINES && <div className="meta">{tr("git.moreLinesDiffTooLarge", { p: lines.length - MAX_DIFF_LINES })}</div>}
-    </div>
-  );
-});
 
 function ago(unix: number) {
   const s = Math.floor(Date.now() / 1000) - unix;

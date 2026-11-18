@@ -13,7 +13,7 @@ export interface Tab {
 
 export type AppId = "git" | "http" | "ssh" | "tools" | "db" | "redis" | "registry";
 
-/** Một dòng trong launcher (Ctrl+K). */
+/** Một dòng trong launcher (Ctrl+G). */
 export interface Command {
   id: string;
   title: string;

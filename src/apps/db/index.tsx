@@ -16,6 +16,9 @@ import { removeQuery, renameQuery, saveQuery, useSavedQueries } from "./queries"
 import { assembleSync, planMysqlSync, type SyncItem, type SyncKind, type SyncPlan, type SyncTable } from "./mysqlSync";
 import { buildUpdates, countSql, isPageable, pagedSql, parseSourceTable, quoteIdent, stripSql, type GridDriver, type GridEdits } from "./gridEdit";
 import { t, useT } from "../../store/lang";
+import { lazy, Suspense } from "react";
+// Sơ đồ ER tải lười (chỉ khi mở) để không làm nặng chunk app DB.
+const ErDiagram = lazy(() => import("./ErDiagram").then((m) => ({ default: m.ErDiagram })));
 
 async function pickDbKey(set: (p: string) => void) {
   const f = await openDialog({ multiple: false, title: t("db.chooseSshPrivateKey") });
@@ -647,6 +650,8 @@ function Session({ tab }: { tab: Tab }) {
   /** Modal tạo database mới / sửa charset-collation database. */
   const [newDbOpen, setNewDbOpen] = useState(false);
   const [alterDb, setAlterDb] = useState<string | null>(null);
+  /** Database đang mở sơ đồ quan hệ khoá ngoại (MySQL). */
+  const [erDb, setErDb] = useState<{ db: string; focus?: string } | null>(null);
   /** Query đã lưu (theo kết nối) + modal lưu/đổi tên + menu chuột phải. */
   const connId = String(tab.payload.connId);
   const savedAll = useSavedQueries();
@@ -1225,6 +1230,7 @@ function Session({ tab }: { tab: Tab }) {
       items.push({ id: "closedb", label: tr("db.closeDatabaseDisconnect"), action: () => closeDb(db) });
     }
     if (conn.driver === "mysql") {
+      items.push({ id: "er", label: tr("db.erMenu"), action: () => setErDb({ db }) });
       items.push({ id: "edit", label: tr("db.editCharsetCollation"), action: () => setAlterDb(db) });
     }
     if (conn.driver === "mysql" || conn.driver === "postgres") {
@@ -1306,6 +1312,7 @@ function Session({ tab }: { tab: Tab }) {
       { id: "new", label: tr("db.newTable"), action: () => setNewTable({ schema: t.schema }) },
       { id: "col", label: tr("db.addColumn"), action: () => setDdl({ kind: "col", t }) },
       { id: "idx", label: tr("db.addIndex"), action: () => setDdl({ kind: "idx", t }) },
+      ...(conn.driver === "mysql" ? [{ id: "er", label: tr("db.erMenu"), action: () => setErDb({ db: t.schema || activeDb || conn.database.trim(), focus: t.name }) }] : []),
       { id: "s2", sep: true },
       { id: "dumpStruct", label: tr("db.dumpSqlStructure"), disabled: dumping, action: () => void dumpTable(t, false) },
       { id: "dumpAll", label: tr("db.dumpSqlStructureData"), disabled: dumping, action: () => void dumpTable(t, true) },
@@ -1533,7 +1540,15 @@ function Session({ tab }: { tab: Tab }) {
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
         />
-        <div className="db-table-list">
+        <div
+          className="db-table-list"
+          onContextMenu={(e) => {
+            // Hàng con (bảng, routine, nhóm…) đã tự mở menu riêng (preventDefault) → không mở thêm menu database đè lên.
+            if (!singleDb || e.defaultPrevented) return;
+            e.preventDefault();
+            setDbMenu({ x: e.clientX, y: e.clientY, db: singleDb });
+          }}
+        >
           {singleDb ? (
             // Đã chỉ đích danh db trong cấu hình → hiện nhóm (Tables/Views/…), không có node database.
             loadingDbs.has(singleDb) && !tablesByDb[singleDb]
@@ -1724,6 +1739,18 @@ function Session({ tab }: { tab: Tab }) {
           onClose={() => setNewDbOpen(false)}
           onRun={(q) => { void exec(q).then(() => void reloadDbs()); }}
         />
+      )}
+      {erDb && dbId && (
+        <Suspense fallback={null}>
+          <ErDiagram
+            dbId={dbId}
+            connKey={conn.id}
+            db={erDb.db}
+            focus={erDb.focus}
+            onClose={() => setErDb(null)}
+            onOpenTable={(name) => { const db = erDb.db; setErDb(null); openTable({ schema: db, name, kind: "table" }); }}
+          />
+        </Suspense>
       )}
       {alterDb !== null && (
         <AlterDbModal

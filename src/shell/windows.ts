@@ -7,7 +7,7 @@ import { t, type TKey } from "../store/lang";
  * Mỗi app một CỬA SỔ Windows riêng (kiểu "New Window" của VS Code) → chuyển qua lại bằng Alt+Tab.
  *
  * - Cửa sổ đầu tiên (label "main") mở lên là màn hình chính; chọn app ở đó thì CHÍNH cửa sổ này thành app đó.
- * - Đang ở trong một app mà mở app khác (Ctrl+K / Ctrl+1..9) → app đó đã có cửa sổ thì đưa lên trước,
+ * - Đang ở trong một app mà mở app khác (Ctrl+G / Ctrl+1..9) → app đó đã có cửa sổ thì đưa lên trước,
  *   chưa có thì mở cửa sổ mới `index.html?app=<id>` (label `app-<id>`).
  * - Sổ đăng ký cửa sổ→app nằm ở localStorage (dùng chung mọi cửa sổ, cùng origin); luôn kiểm tra lại
  *   cửa sổ còn tồn tại trước khi dùng (sổ có thể còn mục cũ nếu app bị tắt ngang).

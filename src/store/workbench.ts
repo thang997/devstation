@@ -38,7 +38,7 @@ interface WorkbenchState {
   mounted: AppId[];
   apps: Record<AppId, AppState>;
   panelOpen: boolean;
-  /** Launcher dạng overlay (Ctrl+K) khi đang ở trong một app. */
+  /** Launcher dạng overlay (Ctrl+G) khi đang ở trong một app. */
   launcherOpen: boolean;
   /** Dòng log hiện ở panel dưới (output của pull/push, request, ssh...). */
   logs: string[];

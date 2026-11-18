@@ -12,7 +12,7 @@ import { closeThisWindow, isMainWindow, launchApp, registerWindowApp, windowAppP
 /**
  * Mỗi app một CỬA SỔ Windows riêng (xem shell/windows.ts) → chuyển qua lại bằng Alt+Tab.
  * Cửa sổ chính mở lên là màn hình chính (launcher); chọn app thì cửa sổ đó thành app.
- * Trong app: Ctrl+K / Ctrl+1..9 mở app khác (đã có cửa sổ thì đưa lên, chưa có thì mở cửa sổ mới).
+ * Trong app: Ctrl+G / Ctrl+1..9 mở app khác (đã có cửa sổ thì đưa lên, chưa có thì mở cửa sổ mới).
  */
 export function Shell() {
   const activeApp = useWorkbench((s) => s.activeApp);
@@ -55,7 +55,7 @@ export function Shell() {
         const app = orderedApps()[Number(digit) - 1];
         if (app) { e.preventDefault(); void launchApp(app.id); }
       }
-      else if (mod && key === "k") {
+      else if (mod && !e.shiftKey && !e.altKey && (e.code === "KeyG" || key === "g")) {
         e.preventDefault();
         // Ở màn hình chính launcher đã hiện sẵn.
         if (s.activeApp) s.setLauncher(!s.launcherOpen);

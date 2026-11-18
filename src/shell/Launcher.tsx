@@ -32,7 +32,7 @@ type Item = { kind: "app"; app: AppManifest } | { kind: "cmd"; cmd: Command };
 /**
  * Launcher: danh sách app + ô tìm kiếm.
  * - `inline`: màn hình chính khi chưa vào app nào.
- * - overlay (Ctrl+K) khi đang ở trong app: chọn app khác hoặc chạy lệnh.
+ * - overlay (Ctrl+G) khi đang ở trong app: chọn app khác hoặc chạy lệnh.
  */
 export function Launcher({ inline = false }: { inline?: boolean }) {
   const mounted = useWorkbench((s) => s.mounted);
@@ -185,7 +185,7 @@ export function Launcher({ inline = false }: { inline?: boolean }) {
         <p className="muted">{tr("shell.pickAnAppToStartApps")}</p>
         {box}
         <p className="muted small">
-          <kbd>Ctrl</kbd>+<kbd>K</kbd> {tr("shell.opensTheAppListAnytime")} · <kbd>Ctrl</kbd>+<kbd>1</kbd>…<kbd>9</kbd> {tr("shell.jumpsStraightToAnApp")}
+          <kbd>Ctrl</kbd>+<kbd>G</kbd> {tr("shell.opensTheAppListAnytime")} · <kbd>Ctrl</kbd>+<kbd>1</kbd>…<kbd>9</kbd> {tr("shell.jumpsStraightToAnApp")}
         </p>
       </div>
     );

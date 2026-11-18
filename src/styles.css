@@ -481,7 +481,7 @@ kbd {
   border-radius: 3px; padding: 0 5px; font-size: 11px; font-family: inherit; color: var(--fg);
 }
 
-/* ── Launcher (màn hình chính + Ctrl+K) ────── */
+/* ── Launcher (màn hình chính + Ctrl+G) ────── */
 .home { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; padding-top: 12vh; gap: 6px; background: var(--bg); }
 .home h1 { margin: 0; font-weight: 600; }
 .launcher-backdrop { position: fixed; inset: 0; background: #010409b3; display: flex; justify-content: center; padding-top: 80px; z-index: 10; }
@@ -831,3 +831,85 @@ button.link:hover { background: none; border: none; color: #79c0ff; }
 .launcher-app.dragging { opacity: .45; }
 .launcher-app.drop-before { box-shadow: inset 0 2px 0 var(--primary); }
 .launcher-list.drop-end { box-shadow: inset 0 -2px 0 var(--primary); }
+/* Sơ đồ quan hệ khoá ngoại (ER) — app DB. */
+.er { display: flex; flex-direction: column; height: 78vh; min-height: 420px; margin: -14px; }
+.er-bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.er-bar button { padding: 2px 10px; }
+.er-zoom { width: 40px; text-align: right; }
+.er-search { position: relative; width: 220px; }
+.er-search .side-search { width: 100%; }
+.er-sug { position: absolute; top: 100%; left: 0; right: 0; z-index: 5; background: var(--bg-2); border: 1px solid var(--line); max-height: 260px; overflow: auto; }
+.er-sug-item { padding: 4px 8px; cursor: pointer; }
+.er-sug-item:hover { background: var(--sel); }
+.er-canvas { flex: 1; min-height: 0; position: relative; overflow: hidden; background: var(--bg); cursor: grab;
+  background-image: radial-gradient(var(--line) 1px, transparent 1px); background-size: 22px 22px; }
+.er-canvas svg { display: block; user-select: none; }
+body.er-dragging, body.er-dragging * { cursor: grabbing !important; user-select: none; }
+.er-foot { padding: 5px 10px; border-top: 1px solid var(--line); display: flex; gap: 6px; flex-wrap: wrap; }
+/* ── Git: xem diff / commit kiểu GitHub Desktop (DiffParts.tsx) ── */
+.dv { flex: 1; min-height: 0; overflow: auto; font-size: 12px; line-height: 19px; background: var(--bg); }
+.dv-inner { display: inline-block; min-width: 100%; padding-bottom: 6px; }
+.dv-l { display: flex; white-space: pre; tab-size: 4; }
+.dv-g { flex: 0 0 auto; padding: 0 8px 0 4px; text-align: right; color: var(--muted); opacity: .7; user-select: none; box-sizing: content-box; }
+.dv-s { flex: 0 0 auto; width: 16px; text-align: center; user-select: none; color: var(--muted); }
+.dv-t { flex: 1; padding-right: 16px; }
+.dv-add { background: #2ea04326; }
+.dv-add .dv-g { background: #2ea0433d; color: var(--fg); }
+.dv-add .dv-s { color: #3fb950; }
+.dv-del { background: #f8514926; }
+.dv-del .dv-g { background: #f851493d; color: var(--fg); }
+.dv-del .dv-s { color: #f85149; }
+.dv-hunk { background: #388bfd1a; color: var(--muted); }
+.dv-hunk .dv-g { background: #388bfd26; }
+.dv-hunk .dv-t { padding-left: 16px; font-style: italic; }
+.dv-note .dv-t { color: var(--muted); padding-left: 10px; font-style: italic; }
+.dv-raw { white-space: pre-wrap; padding: 8px 10px; }
+.dv-fhead { padding: 5px 10px; border-bottom: 1px solid var(--line); background: var(--bg-2); font-size: 12px; font-weight: 600; flex: 0 0 auto; }
+.dv-multi { flex: 1; overflow: auto; }
+.dv-multi .dv { overflow: visible; }
+:root[data-theme="light"] .dv-add { background: #dafbe1; }
+:root[data-theme="light"] .dv-add .dv-g { background: #aceebb; }
+:root[data-theme="light"] .dv-del { background: #ffebe9; }
+:root[data-theme="light"] .dv-del .dv-g { background: #ffcecb; }
+:root[data-theme="light"] .dv-hunk { background: #ddf4ff; }
+:root[data-theme="light"] .dv-hunk .dv-g { background: #b6e3ff; }
+
+.cv { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.cv-head { padding: 10px 14px; border-bottom: 1px solid var(--line); background: var(--bg-2); flex: 0 0 auto; }
+.cv-subject { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+.cv-body { white-space: pre-wrap; color: var(--muted); font-size: 12.5px; max-height: 140px; overflow: auto; margin-bottom: 6px; }
+.cv-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.cv-avatar { width: 20px; height: 20px; border-radius: 50%; background: var(--primary); color: #fff; display: inline-grid; place-items: center; font-size: 11px; font-weight: 700; }
+.cv-author { color: var(--fg); }
+.cv-hash { cursor: pointer; }
+.cv-hash:hover { color: var(--primary); }
+.cv-add { color: #3fb950; font-weight: 600; }
+.cv-del { color: #f85149; font-weight: 600; }
+:root[data-theme="light"] .cv-add { color: #1a7f37; }
+:root[data-theme="light"] .cv-del { color: #cf222e; }
+.cv-split { flex: 1; min-height: 0; display: flex; }
+.cv-files { flex: 0 0 auto; overflow: auto; border-right: 1px solid var(--line); background: var(--bg); }
+.cv-file { display: flex; align-items: center; gap: 8px; padding: 4px 10px; cursor: pointer; }
+.cv-file:hover { background: var(--bg-3); }
+.cv-file.on { background: var(--sel); }
+.cv-fname { font-weight: 500; }
+.cv-counts { flex: 0 0 auto; font-family: var(--mono, monospace); }
+.cv-st { flex: 0 0 auto; width: 16px; height: 16px; display: inline-grid; place-items: center; font-size: 10px; font-weight: 700; border: 1px solid currentColor; border-radius: 3px; }
+.cv-st.st-A { color: #3fb950; }
+.cv-st.st-M { color: #d29922; }
+.cv-st.st-D { color: #f85149; }
+.cv-st.st-R, .cv-st.st-C { color: #58a6ff; }
+.cv-diff { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+/* Thông tin commit thu gọn được (mặc định thu gọn: một dòng). */
+.cv-head { padding: 6px 12px; }
+.cv-head.open { padding: 10px 14px; }
+.cv-subject-row { display: flex; align-items: center; gap: 8px; cursor: pointer; min-width: 0; user-select: none; }
+.cv-subject-row:hover .cv-caret { color: var(--fg); }
+.cv-caret { flex: 0 0 auto; width: 12px; color: var(--muted); font-size: 11px; }
+.cv-head .cv-subject { margin-bottom: 0; font-size: 13px; min-width: 0; }
+.cv-head:not(.open) .cv-subject { flex: 1 1 auto; }
+.cv-head.open .cv-subject { font-size: 14px; flex: 1; }
+.cv-head.open .cv-body { margin: 6px 0 6px 20px; }
+.cv-head.open .cv-meta { margin-left: 20px; }
+.cv-mini { flex: 0 0 auto; display: flex; gap: 5px; align-items: center; white-space: nowrap; }
+.cv-more { padding: 0 4px; border: 1px solid var(--line); border-radius: 3px; line-height: 12px; }

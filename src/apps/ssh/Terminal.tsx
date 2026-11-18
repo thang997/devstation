@@ -37,7 +37,7 @@ export function SshTerminal({ cfg, onStatus, onCd }: { cfg: Omit<ConnectCfg, "co
     try { fit.fit(); } catch { /* chưa có kích thước */ }
 
     // Nhả các phím tắt CẤP APP ra ngoài (không gửi vào shell) để Shell xử lý khi đang focus terminal:
-    // Ctrl+K (launcher), Ctrl+1..9, Ctrl+B, Ctrl+`, Ctrl+Tab, Ctrl+PageUp/Down, Ctrl+Shift+W.
+    // Ctrl+G (launcher), Ctrl+1..9, Ctrl+B, Ctrl+`, Ctrl+Tab, Ctrl+PageUp/Down, Ctrl+Shift+W.
     // Các phím khác (Ctrl+C, Ctrl+W xoá từ, Ctrl+L...) vẫn thuộc về terminal.
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== "keydown") return true;
@@ -45,7 +45,7 @@ export function SshTerminal({ cfg, onStatus, onCd }: { cfg: Omit<ConnectCfg, "co
       if (!mod) return true;
       const k = e.key.toLowerCase();
       const appShortcut =
-        k === "k" || k === "b" ||
+        k === "g" || e.code === "KeyG" || k === "b" ||
         e.key === "`" || e.key === "Tab" || e.key === "PageUp" || e.key === "PageDown" ||
         /^Digit[1-9]$/.test(e.code) ||
         (e.shiftKey && k === "w");
