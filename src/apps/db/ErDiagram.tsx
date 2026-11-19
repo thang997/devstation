@@ -2,7 +2,10 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { invoke } from "@tauri-apps/api/core";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { Modal } from "../../shell/Modal";
+import { viewerHtml } from "../../shell/svgViewer";
+import { Loading } from "../../shell/Loading";
 import { useT } from "../../store/lang";
+import { FileDown, ImageDown, LayoutGrid, Link, Maximize, ZoomIn, ZoomOut } from "lucide-react";
 
 /**
  * Sơ đồ quan hệ (ER) cha–con theo KHOÁ NGOẠI của một database MySQL/MariaDB.
@@ -475,53 +478,7 @@ export function ErDiagram({ dbId, connKey, db, focus: focusTable, onClose, onOpe
     if (!svg) return;
     const path = await saveDialog({ title: tr("db.erExportHtml"), defaultPath: `${db}-er.html`, filters: [{ name: "HTML", extensions: ["html"] }] });
     if (typeof path !== "string") return;
-    const x = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-    const html = `<!doctype html><html><head><meta charset="utf-8"><title>${x(db)} — ER</title><style>
-html,body{margin:0;height:100%;overflow:hidden;background:${pal.bg};color:${pal.fg};font:13px system-ui,sans-serif}
-#v{position:fixed;inset:0;cursor:grab}#v.drag{cursor:grabbing}#v svg{display:block;user-select:none}
-#bar{position:fixed;top:10px;left:10px;display:flex;gap:6px;align-items:center;background:${pal.box};border:1px solid ${pal.line};padding:6px 8px;z-index:2}
-#bar input{background:${pal.bg};color:${pal.fg};border:1px solid ${pal.line};padding:3px 6px;width:200px}
-#bar button{background:${pal.head};color:${pal.fg};border:1px solid ${pal.line};padding:3px 10px;cursor:pointer}
-#bar span{color:${pal.muted};font-size:12px}#sug{position:absolute;top:100%;left:8px;background:${pal.box};border:1px solid ${pal.line};max-height:280px;overflow:auto;min-width:200px}
-#sug div{padding:4px 8px;cursor:pointer;font-family:Consolas,monospace}#sug div:hover,#sug div.a{background:${pal.head}}
-svg.hl .e{stroke-opacity:.12}svg.hl .e.on{stroke:${pal.primary};stroke-opacity:1;stroke-width:2}svg.hl .t{opacity:.35}svg.hl .t.on{opacity:1}
-.t.sel .hd,.t.sel>rect:first-child{stroke:${pal.primary};stroke-width:2}.t{cursor:pointer}
-</style></head><body><div id="v">${svg}</div>
-<div id="bar"><b>${x(db)}</b><input id="q" placeholder="${x(tr("db.erFindTable"))}" autocomplete="off"><button id="fit">${x(tr("db.erFit"))}</button><button id="zi">＋</button><button id="zo">－</button><span id="z"></span><span>${x(tr("db.erHtmlHelp"))}</span><div id="sug" hidden></div></div>
-<script>
-const box=document.getElementById('v'),svg=box.querySelector('svg'),vb=svg.viewBox.baseVal,full={x:vb.x,y:vb.y,w:vb.width,h:vb.height};
-const zl=document.getElementById('z');
-function show(){zl.textContent=Math.round(full.w/vb.width*100)+'%'}
-function setVb(x,y,w,h){vb.x=x;vb.y=y;vb.width=w;vb.height=h;show()}
-function fit(){setVb(full.x,full.y,full.w,full.h)}
-function pt(cx,cy){const p=new DOMPoint(cx,cy).matrixTransform(svg.getScreenCTM().inverse());return p}
-function zoomAt(cx,cy,f){const minW=full.w/80,maxW=full.w*3;const w=Math.min(maxW,Math.max(minW,vb.width*f));f=w/vb.width;const p=pt(cx,cy);setVb(p.x-(p.x-vb.x)*f,p.y-(p.y-vb.y)*f,vb.width*f,vb.height*f)}
-box.addEventListener('wheel',e=>{e.preventDefault();zoomAt(e.clientX,e.clientY,Math.exp(e.deltaY*0.0015))},{passive:false});
-let d=null;
-box.addEventListener('mousedown',e=>{if(e.button!==0)return;d={sx:e.clientX,sy:e.clientY,x:vb.x,y:vb.y,k:svg.getScreenCTM().a,m:0};box.classList.add('drag')});
-addEventListener('mousemove',e=>{if(!d)return;const dx=e.clientX-d.sx,dy=e.clientY-d.sy;d.m=Math.max(d.m,Math.abs(dx)+Math.abs(dy));setVb(d.x-dx/d.k,d.y-dy/d.k,vb.width,vb.height)});
-addEventListener('mouseup',()=>{setTimeout(()=>{d=null},0);box.classList.remove('drag')});
-box.addEventListener('dblclick',e=>{if(!e.target.closest('.t'))fit()});
-document.getElementById('fit').onclick=fit;
-document.getElementById('zi').onclick=()=>{const r=box.getBoundingClientRect();zoomAt(r.width/2,r.height/2,1/1.3)};
-document.getElementById('zo').onclick=()=>{const r=box.getBoundingClientRect();zoomAt(r.width/2,r.height/2,1.3)};
-const tables=[...svg.querySelectorAll('.t')],edges=[...svg.querySelectorAll('.e')];
-let sel=null;
-function light(n){svg.classList.toggle('hl',!!n);const rel=new Set(n?[n]:[]);for(const e of edges){const on=!!n&&(e.dataset.f===n||e.dataset.t===n);e.classList.toggle('on',on);if(on){rel.add(e.dataset.f);rel.add(e.dataset.t);e.parentNode.appendChild(e)}}for(const t of tables)t.classList.toggle('on',rel.has(t.dataset.n))}
-for(const t of tables){t.addEventListener('mouseenter',()=>{if(!d)light(t.dataset.n)});t.addEventListener('mouseleave',()=>{if(!d)light(sel)});
-t.addEventListener('click',()=>{if(d&&d.m>4)return;if(sel)tables.find(x=>x.dataset.n===sel)?.classList.remove('sel');sel=sel===t.dataset.n?null:t.dataset.n;if(sel)t.classList.add('sel');light(sel)})}
-box.addEventListener('click',e=>{if(d&&d.m>4)return;if(!e.target.closest('.t')&&sel){tables.find(x=>x.dataset.n===sel)?.classList.remove('sel');sel=null;light(null)}});
-function centerOn(n){const t=tables.find(x=>x.dataset.n===n);if(!t)return;const [bx,by,bw,bh]=t.dataset.b.split(",").map(Number);const cx=bx+bw/2,cy=by+bh/2;
-const w=Math.max(Math.min(full.w,bw*5),Math.min(full.w,1000)),h=w*vb.height/vb.width;setVb(cx-w/2,cy-h/2,w,h);
-if(sel)tables.find(x=>x.dataset.n===sel)?.classList.remove('sel');sel=n;t.classList.add('sel');light(n)}
-const q=document.getElementById('q'),sug=document.getElementById('sug');let act=0,hits=[];
-function render(){sug.innerHTML='';hits.forEach((n,i)=>{const el=document.createElement('div');el.textContent=n;if(i===act)el.className='a';el.onmousedown=ev=>{ev.preventDefault();pick(n)};sug.appendChild(el)});sug.hidden=!hits.length}
-function pick(n){centerOn(n);q.value='';hits=[];render();q.blur()}
-q.addEventListener('input',()=>{const s=q.value.trim().toLowerCase();act=0;hits=s?tables.map(t=>t.dataset.n).filter(n=>n.toLowerCase().includes(s)).slice(0,15):[];render()});
-q.addEventListener('keydown',e=>{if(e.key==='ArrowDown'){act=Math.min(act+1,hits.length-1);render();e.preventDefault()}else if(e.key==='ArrowUp'){act=Math.max(act-1,0);render();e.preventDefault()}else if(e.key==='Enter'&&hits[act])pick(hits[act]);else if(e.key==='Escape'){q.value='';hits=[];render()}});
-q.addEventListener('mousedown',e=>e.stopPropagation());document.getElementById('bar').addEventListener('mousedown',e=>e.stopPropagation());
-show();
-</script></body></html>`;
+    const html = viewerHtml({ title: `${db} — ER`, heading: db, svg, pal, find: tr("db.erFindTable"), fit: tr("db.erFit"), help: tr("db.erHtmlHelp") });
     await invoke("write_text_file", { path, content: html });
   };
 
@@ -529,7 +486,7 @@ show();
   const shownEdges = edges.filter((e) => inView(e.bx1, e.by1, e.bx2, e.by2));
 
   return (
-    <Modal title={<>🔗 {tr("db.erTitle")} — <span className="mono">{db}</span></>} width={1600} onClose={onClose}>
+    <Modal title={<><Link /> {tr("db.erTitle")} — <span className="mono">{db}</span></>} width={1600} onClose={onClose}>
       <div className="er">
         <div className="er-bar">
           <div className="er-search">
@@ -552,18 +509,18 @@ show();
           </label>
           <span className="grow" />
           {tables && <span className="muted small">{tr("db.erStats", { tables: tables.length, fks: fks.length - external.length, linked: related.size })}</span>}
-          <button onClick={fit}>{tr("db.erFit")}</button>
-          <button onClick={() => setView((v) => ({ ...v, k: Math.min(2.5, v.k * 1.25) }))}>＋</button>
-          <button onClick={() => setView((v) => ({ ...v, k: Math.max(0.05, v.k / 1.25) }))}>－</button>
+          <button onClick={fit}><Maximize /> {tr("db.erFit")}</button>
+          <button onClick={() => setView((v) => ({ ...v, k: Math.min(2.5, v.k * 1.25) }))}><ZoomIn /></button>
+          <button onClick={() => setView((v) => ({ ...v, k: Math.max(0.05, v.k / 1.25) }))}><ZoomOut /></button>
           <span ref={zoomRef} className="muted small er-zoom">{Math.round(v0.k * 100)}%</span>
-          <button title={tr("db.erResetLayoutHint")} onClick={() => { setMoved({}); fitted.current = false; }}>{tr("db.erResetLayout")}</button>
-          <button onClick={() => void exportSvg()}>{tr("db.erExportSvg")}</button>
-          <button title={tr("db.erExportHtmlHint")} onClick={() => void exportHtml()}>{tr("db.erExportHtml")}</button>
+          <button title={tr("db.erResetLayoutHint")} onClick={() => { setMoved({}); fitted.current = false; }}><LayoutGrid /> {tr("db.erResetLayout")}</button>
+          <button onClick={() => void exportSvg()}><ImageDown /> {tr("db.erExportSvg")}</button>
+          <button title={tr("db.erExportHtmlHint")} onClick={() => void exportHtml()}><FileDown /> {tr("db.erExportHtml")}</button>
         </div>
 
         <div ref={wrapRef} className="er-canvas" onMouseDown={startPan} onClick={(e) => { if (lastMoved.current > 4) return; if (e.target === e.currentTarget || (e.target as Element).tagName === "svg") setSel(null); }}>
           {err ? <div className="error-box pre">{err}</div>
-            : !tables ? <div className="sftp-center"><span className="spinner" /> {tr("db.erLoading")}</div>
+            : !tables ? <Loading label={tr("db.erLoading")} />
             : !visible.length ? <div className="sftp-center">{tr("db.erNoTables")}</div>
             : (
               <svg width="100%" height="100%" fontFamily="Consolas, Menlo, 'DejaVu Sans Mono', monospace" fontSize="12" textRendering="optimizeSpeed" shapeRendering="optimizeSpeed">

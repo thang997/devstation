@@ -1,6 +1,7 @@
 import { memo, useEffect, useMemo, useState } from "react";
 import { Splitter, useSplitSize } from "../../shell/Resizable";
 import { useT } from "../../store/lang";
+import { ChevronDown, ChevronRight, Copy } from "lucide-react";
 import type { Commit } from "./api";
 import { parseDiff, type DiffFile } from "./diffParse";
 export { parseDiff };
@@ -105,7 +106,7 @@ export function CommitView({ text, commit, onCopy }: { text: string; commit: Com
     <div className="cv">
       <div className={`cv-head ${open ? "open" : ""}`}>
         <div className="cv-subject-row" onClick={toggle} title={open ? tr("git.collapseCommitInfo") : tr("git.expandCommitInfo")}>
-          <span className="cv-caret">{open ? "▾" : "▸"}</span>
+          <span className="cv-caret">{open ? <ChevronDown /> : <ChevronRight />}</span>
           <span className={`cv-subject ${open ? "" : "ellipsis"}`}>{info.subject || commit.subject}</span>
           {!open && (
             <span className="cv-mini muted small">
@@ -125,7 +126,7 @@ export function CommitView({ text, commit, onCopy }: { text: string; commit: Com
           <b className="cv-author" title={email}>{authorName}</b>
           {committerName && committerName !== authorName && <span>· {tr("git.committedBy", { name: committerName })}</span>}
           <span title={date.toString()}>· {date.toLocaleString()}</span>
-          <span className="mono cv-hash" title={tr("git.copyFullHash")} onClick={() => onCopy(commit.hash)}>· {commit.short} ⧉</span>
+          <span className="mono cv-hash" title={tr("git.copyFullHash")} onClick={() => onCopy(commit.hash)}>· {commit.short} <Copy /></span>
           {info.merge && <span className="mono">· merge {info.merge}</span>}
           <span className="grow" />
           <span>{tr("git.filesChangedCount", { n: files.length })}</span>

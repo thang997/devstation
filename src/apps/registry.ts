@@ -1,6 +1,10 @@
 import { createElement } from "react";
 import type { AppId, AppManifest, AppModule } from "./types";
+import { Container, GitBranch, Send, SquareTerminal, Wrench, Zap, type LucideIcon } from "lucide-react";
 import { DbIcon } from "../shell/icons";
+
+/** Icon app trong launcher / status bar: SVG lucide, mỗi app một màu (`.app-ic` cỡ theo chỗ dùng). */
+const ic = (C: LucideIcon, color: string) => createElement(C, { className: "app-ic", color });
 
 /**
  * Tên/mô tả hiển thị lấy từ src/locales/<lang>.json (khoá apps.<id>.title / .description);
@@ -11,43 +15,43 @@ import { DbIcon } from "../shell/icons";
  */
 export const APPS: AppManifest[] = [
   {
-    id: "git", title: "Git", icon: "🌿",
+    id: "git", title: "Git", icon: "", iconNode: ic(GitBranch, "#f0883e"),
     description: "Status, diff, commit, pull/push across repos",
     keywords: "repo branch commit",
     load: () => import("./git"),
   },
   {
-    id: "http", title: "HTTP Client", icon: "⚡",
+    id: "http", title: "HTTP Client", icon: "", iconNode: ic(Send, "#3fb950"),
     description: "Send requests, collections, environment",
     keywords: "api rest postman curl request",
     load: () => import("./http"),
   },
   {
-    id: "ssh", title: "SSH", icon: "🖥",
+    id: "ssh", title: "SSH", icon: "", iconNode: ic(SquareTerminal, "#58a6ff"),
     description: "Terminal, tunnel, host folders",
     keywords: "terminal server host sftp",
     load: () => import("./ssh"),
   },
   {
-    id: "tools", title: "Tools", icon: "🧰",
+    id: "tools", title: "Tools", icon: "", iconNode: ic(Wrench, "#a371f7"),
     description: "Base64, JSON, JWT and other small tools",
     keywords: "tien ich toolkit base64 json jwt",
     load: () => import("./tools"),
   },
   {
-    id: "db", title: "Database", icon: "🗄", iconNode: createElement(DbIcon, { size: 24 }),
+    id: "db", title: "Database", icon: "", iconNode: createElement("span", { className: "app-ic app-ic-db" }, createElement(DbIcon, { size: 24 })),
     description: "Connect PostgreSQL, MySQL, SQLite — run SQL, browse tables",
     keywords: "sql postgres mysql mariadb sqlite query co so du lieu",
     load: () => import("./db"),
   },
   {
-    id: "redis", title: "Redis", icon: "🔑",
+    id: "redis", title: "Redis", icon: "", iconNode: ic(Zap, "#f85149"),
     description: "Browse keys, view values, delete keys",
     keywords: "cache redis key value nosql kv",
     load: () => import("./redis"),
   },
   {
-    id: "registry", title: "Registry", icon: "📦",
+    id: "registry", title: "Registry", icon: "", iconNode: ic(Container, "#39c5cf"),
     description: "Browse Harbor, download images (.tar)",
     keywords: "docker harbor image registry container tag pull",
     load: () => import("./registry/index"), // "./registry" sẽ trỏ nhầm vào chính file registry.ts

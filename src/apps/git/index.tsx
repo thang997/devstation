@@ -9,12 +9,14 @@ import { Picker } from "../../shell/Picker";
 import { ContextMenu, type CtxItem } from "../../shell/ContextMenu";
 import { Modal } from "../../shell/Modal";
 import { Splitter, useSplitSize } from "../../shell/Resizable";
+import { Loading } from "../../shell/Loading";
 import { git, errText, type Branch, type Commit, type FileChange, type GitAccount, type RemoteOp, type Status } from "./api";
 import { CommitView, FileDiff } from "./DiffParts";
+import { Archive, ArchiveRestore, ArrowDownToLine, ArrowUpFromLine, Check, Cloud, Copy, Download, ExternalLink, EyeOff, FolderGit2, FolderOpen, GitBranch, GitBranchPlus, GitCommitHorizontal, GitMerge, History, LogIn, LogOut, Minus, Pencil, Plus, RefreshCw, RotateCcw, Save, Settings, Trash2, TriangleAlert, Undo2, X } from "lucide-react";
 import { refreshAllSummaries, refreshSummary, repoName, useRepos, type Repo } from "./repos";
 
 function openRepo(r: Repo) {
-  useWorkbench.getState().openTab({ id: `git:${r.path}`, appId: "git", title: `🌿 ${r.name}`, payload: { path: r.path } });
+  useWorkbench.getState().openTab({ id: `git:${r.path}`, appId: "git", title: r.name, payload: { path: r.path } });
 }
 
 /** Chọn thư mục: là repo thì thêm luôn, không phải thì quét các repo con bên trong. */
@@ -30,7 +32,13 @@ async function addRepos(): Promise<string> {
   if (!paths.length) return t("git.noGitRepoFoundInThis");
   const n = useRepos.getState().add(paths);
   void refreshAllSummaries();
-  if (paths.length === 1 && n === 1) openRepo({ path: paths[0], name: repoName(paths[0]) });
+  // Chọn đúng MỘT repo → mở nó luôn, kể cả khi đã có sẵn trong danh sách (dùng đúng mục đã lưu).
+  if (paths.length === 1) {
+    const keyOf = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+    const existing = useRepos.getState().repos.find((r) => keyOf(r.path) === keyOf(paths[0]));
+    openRepo(existing ?? { path: paths[0], name: repoName(paths[0]) });
+    return "";
+  }
   return n ? "" : t("git.theseReposAreAlreadyInThe");
 }
 
@@ -69,7 +77,7 @@ function RepoSwitcher({ currentPath }: { currentPath: string | null }) {
     <Picker
       title={tr("git.switchAddRepository")}
       filterPlaceholder={tr("git.filterRepository")}
-      label={<><span className="branch-glyph">▤</span> {current?.name ?? tr("git.pickRepository")}</>}
+      label={<><span className="branch-glyph"><FolderGit2 /></span> {current?.name ?? tr("git.pickRepository")}</>}
       items={[
         ...repos.map((r) => {
           const s = summaries[r.path];
@@ -78,11 +86,11 @@ function RepoSwitcher({ currentPath }: { currentPath: string | null }) {
             : s
               ? `${s.branch ?? "detached"}${s.ahead ? ` ↑${s.ahead}` : ""}${s.behind ? ` ↓${s.behind}` : ""}${s.changes ? ` •${s.changes}` : ""}`
               : undefined;
-          return { id: r.path, label: r.name, group: "Repository", icon: "▤", hint, selected: r.path === currentPath, removable: true };
+          return { id: r.path, label: r.name, group: "Repository", icon: <FolderGit2 />, hint, selected: r.path === currentPath, removable: true };
         }),
-        { id: "\u0000add", label: tr("git.addExistingRepo"), group: tr("git.actions"), icon: "＋" },
-        { id: "\u0000clone", label: tr("git.cloneFromUrl"), group: tr("git.actions"), icon: "⬇" },
-        { id: "\u0000account", label: tr("git.gitAccount"), group: tr("git.actions"), icon: "⚙" },
+        { id: "\u0000add", label: tr("git.addExistingRepo"), group: tr("git.actions"), icon: <Plus /> },
+        { id: "\u0000clone", label: tr("git.cloneFromUrl"), group: tr("git.actions"), icon: <Download /> },
+        { id: "\u0000account", label: tr("git.gitAccount"), group: tr("git.actions"), icon: <Settings /> },
       ]}
       onPick={(id) => {
         if (id === "\u0000add") return void addRepos().catch(() => {});
@@ -409,15 +417,15 @@ function RepoView({ tab }: { tab: Tab }) {
     const isHead = history[0]?.hash === c.hash;
     return [
       // Sửa message = amend, chỉ áp dụng cho commit mới nhất và chưa push.
-      ...(isHead && !headPushed ? [{ id: "reword", label: tr("git.editThisCommitMessage"), action: () => void openReword(c) }] : []),
-      { id: "branch", label: tr("git.createBranchFromThisCommit"), action: () => setCommitAction({ kind: "branch", c, name: "" }) },
-      { id: "revert", label: tr("git.revertThisCommit"), action: () => setCommitAction({ kind: "revert", c }) },
-      { id: "reset", label: tr("git.resetBranchToThisCommit"), danger: true, action: () => setCommitAction({ kind: "reset", c }) },
-      { id: "checkout", label: tr("git.checkoutThisCommitDetached"), action: () => setCommitAction({ kind: "checkout", c }) },
+      ...(isHead && !headPushed ? [{ id: "reword", icon: <Pencil />, label: tr("git.editThisCommitMessage"), action: () => void openReword(c) }] : []),
+      { id: "branch", icon: <GitBranchPlus />, label: tr("git.createBranchFromThisCommit"), action: () => setCommitAction({ kind: "branch", c, name: "" }) },
+      { id: "revert", icon: <RotateCcw />, label: tr("git.revertThisCommit"), action: () => setCommitAction({ kind: "revert", c }) },
+      { id: "reset", icon: <History />, label: tr("git.resetBranchToThisCommit"), danger: true, action: () => setCommitAction({ kind: "reset", c }) },
+      { id: "checkout", icon: <GitCommitHorizontal />, label: tr("git.checkoutThisCommitDetached"), action: () => setCommitAction({ kind: "checkout", c }) },
       { id: "s1", sep: true },
-      { id: "copySha", label: tr("git.copyFullSha"), action: () => copy(c.hash) },
-      { id: "copySubject", label: tr("git.copySubject"), action: () => copy(c.subject) },
-      { id: "openRemote", label: tr("git.openOnRemoteBrowser"), action: () => void git.openCommitRemote(path, c.hash).catch((e) => setError(errText(e))) },
+      { id: "copySha", icon: <Copy />, label: tr("git.copyFullSha"), action: () => copy(c.hash) },
+      { id: "copySubject", icon: <Copy />, label: tr("git.copySubject"), action: () => copy(c.subject) },
+      { id: "openRemote", icon: <ExternalLink />, label: tr("git.openOnRemoteBrowser"), action: () => void git.openCommitRemote(path, c.hash).catch((e) => setError(errText(e))) },
     ];
   };
 
@@ -443,23 +451,24 @@ function RepoView({ tab }: { tab: Tab }) {
     const copy = (text: string) => void navigator.clipboard.writeText(text);
     return [
       m.staged
-        ? { id: "unstage", label: "Unstage", action: () => void run(`unstage ${f.path}`, () => git.unstage(path, [f.path])) }
+        ? { id: "unstage", icon: <Minus />, label: "Unstage", action: () => void run(`unstage ${f.path}`, () => git.unstage(path, [f.path])) }
         : {
             id: "stage",
+            icon: <Plus />,
             label: f.kind === "conflict" ? tr("git.markResolved") : "Stage",
             action: () => void run(`stage ${f.path}`, () => git.stage(path, [f.path])),
           },
       ...(m.staged
         ? []
-        : [{ id: "discard", label: tr("git.discardChanges"), danger: true, action: () => setConfirmDiscard([f]) }]),
+        : [{ id: "discard", icon: <Undo2 />, label: tr("git.discardChanges"), danger: true, action: () => setConfirmDiscard([f]) }]),
       { id: "s1", sep: true },
-      { id: "copyRel", label: tr("git.copyRelativePath"), action: () => copy(f.path) },
-      { id: "copyAbs", label: tr("git.copyFullPath"), action: () => copy(`${path}/${f.path}`) },
-      { id: "reveal", label: tr("git.revealInExplorer"), action: () => void git.reveal(path, f.path).catch((e) => setError(errText(e))) },
+      { id: "copyRel", icon: <Copy />, label: tr("git.copyRelativePath"), action: () => copy(f.path) },
+      { id: "copyAbs", icon: <Copy />, label: tr("git.copyFullPath"), action: () => copy(`${path}/${f.path}`) },
+      { id: "reveal", icon: <FolderOpen />, label: tr("git.revealInExplorer"), action: () => void git.reveal(path, f.path).catch((e) => setError(errText(e))) },
       { id: "s2", sep: true },
-      { id: "igFile", label: tr("git.ignoreThisFileGitignore"), action: () => applyIgnore(f, "file") },
-      { id: "igParent", label: tr("git.ignoreParentFolder"), disabled: !f.path.includes("/"), action: () => applyIgnore(f, "parent") },
-      { id: "igExt", label: ext ? tr("git.ignoreAllExtFiles", { ext }) : tr("git.ignoreAllSameExtFiles"), disabled: !ext, action: () => applyIgnore(f, "ext") },
+      { id: "igFile", icon: <EyeOff />, label: tr("git.ignoreThisFileGitignore"), action: () => applyIgnore(f, "file") },
+      { id: "igParent", icon: <EyeOff />, label: tr("git.ignoreParentFolder"), disabled: !f.path.includes("/"), action: () => applyIgnore(f, "parent") },
+      { id: "igExt", icon: <EyeOff />, label: ext ? tr("git.ignoreAllExtFiles", { ext }) : tr("git.ignoreAllSameExtFiles"), disabled: !ext, action: () => applyIgnore(f, "ext") },
     ];
   };
 
@@ -495,21 +504,22 @@ function RepoView({ tab }: { tab: Tab }) {
 
   /** Menu chuột phải trên một nhánh trong dropdown (giống GitHub Desktop). */
   const branchMenuItems = (b: Branch): CtxItem[] => [
-    { id: "switch", label: tr("git.switchToThisBranch"), disabled: b.current, action: () => switchTo(b.name) },
-    { id: "merge", label: tr("git.mergeIntoCurrentBranch", { name: b.name }), disabled: b.current, action: () => doMerge(b.name) },
+    { id: "switch", icon: <GitBranch />, label: tr("git.switchToThisBranch"), disabled: b.current, action: () => switchTo(b.name) },
+    { id: "merge", icon: <GitMerge />, label: tr("git.mergeIntoCurrentBranch", { name: b.name }), disabled: b.current, action: () => doMerge(b.name) },
     { id: "s1", sep: true },
     ...(b.remote
       ? []
-      : [{ id: "rename", label: tr("git.renameBranch2"), action: () => setBranchAction({ kind: "rename", b, name: b.name }) }]),
+      : [{ id: "rename", icon: <Pencil />, label: tr("git.renameBranch2"), action: () => setBranchAction({ kind: "rename", b, name: b.name }) }]),
     {
       id: "delete",
+      icon: <Trash2 />,
       label: b.remote ? tr("git.deleteRemoteBranch") : tr("git.deleteBranch2"),
       danger: true,
       disabled: b.current,
       action: () => setBranchAction({ kind: "delete", b, force: false }),
     },
     { id: "s2", sep: true },
-    { id: "copy", label: tr("git.copyBranchName"), action: () => void navigator.clipboard.writeText(b.name) },
+    { id: "copy", icon: <Copy />, label: tr("git.copyBranchName"), action: () => void navigator.clipboard.writeText(b.name) },
   ];
 
   return (
@@ -522,18 +532,18 @@ function RepoView({ tab }: { tab: Tab }) {
             title={tr("git.switchBranch")}
             disabled={!!busy}
             filterPlaceholder={tr("git.filterBranches")}
-            label={<><span className="branch-glyph">⎇</span> {status?.branch ?? `(detached ${status?.head ?? ""})`}</>}
+            label={<><span className="branch-glyph"><GitBranch /></span> {status?.branch ?? `(detached ${status?.head ?? ""})`}</>}
             items={[
               ...localBranches.map((b) => ({
                 id: b.name,
                 label: b.name,
                 group: "Local",
-                icon: "🌿",
+                icon: <GitBranch />,
                 hint: b.time ? ago(b.time) : undefined,
                 selected: b.current,
               })),
-              ...remoteBranches.map((b) => ({ id: b.name, label: b.name, group: "Remote", icon: "☁", hint: b.time ? ago(b.time) : undefined })),
-              { id: "\u0000new", label: "New branch…", group: "Other", icon: "＋" },
+              ...remoteBranches.map((b) => ({ id: b.name, label: b.name, group: "Remote", icon: <Cloud />, hint: b.time ? ago(b.time) : undefined })),
+              { id: "\u0000new", label: "New branch…", group: "Other", icon: <Plus /> },
             ]}
             onPick={(id) => (id === "\u0000new" ? setNewBranch("") : switchTo(id))}
             onItemContextMenu={(id, e, close) => {
@@ -560,7 +570,7 @@ function RepoView({ tab }: { tab: Tab }) {
                 }
               }}
             />
-            <button onClick={() => setNewBranch(null)}>{tr("git.cancel")}</button>
+            <button onClick={() => setNewBranch(null)}><X />{tr("git.cancel")}</button>
           </>
         )}
         <button
@@ -568,14 +578,14 @@ function RepoView({ tab }: { tab: Tab }) {
           onClick={() => setMergeOpen(true)}
           title={tr("git.mergeAnotherBranchIntoTheCurrent")}
         >
-          ⇄ Merge
+          <GitMerge /> Merge
         </button>
         <span className="muted small ellipsis" title={path}>
           {status?.upstream ? `→ ${status.upstream}` : status ? tr("git.noUpstream") : ""}
         </span>
         <span className="grow" />
-        {busy && <span className="muted small ellipsis progress-text">⏳ {progress || busy}</span>}
-        <button className="icon-btn" disabled={!!busy} onClick={() => void refresh()} title={tr("git.reloadStatus")}>↻</button>
+        {busy && <Loading variant="inline" className="small progress-text" label={progress || busy} />}
+        <button className="icon-btn" disabled={!!busy} onClick={() => void refresh()} title={tr("git.reloadStatus")}><RefreshCw /></button>
         {/* Nhóm remote tách riêng khỏi các nút khác để không bấm nhầm; mỗi nút chỉ bật khi có việc để làm. */}
         <div className="remote-actions">
           <button
@@ -583,14 +593,14 @@ function RepoView({ tab }: { tab: Tab }) {
             onClick={() => remote("fetch", "fetch")}
             title={tr("git.fetchDownloadNewCommitsFromRemote")}
           >
-            ⟳ Fetch
+            <RefreshCw /> Fetch
           </button>
           <button
             disabled={!!busy || !status?.behind}
             onClick={() => remote("pull", "pull")}
             title={status?.behind ? tr("git.pullFetchCommitsFromRemoteInto", { behind: status.behind }) : tr("git.noCommitsOnRemoteToPull")}
           >
-            ⬇ Pull{status?.behind ? ` ${status.behind}` : ""}
+            <ArrowDownToLine /> Pull{status?.behind ? ` ${status.behind}` : ""}
           </button>
           <button
             disabled={!!busy || (!!status?.upstream && !status.ahead)}
@@ -603,20 +613,20 @@ function RepoView({ tab }: { tab: Tab }) {
                   : tr("git.noCommitsToPush")
             }
           >
-            {status?.upstream ? `⬆ Push${status.ahead ? ` ${status.ahead}` : ""}` : "⬆ Publish"}
+            <ArrowUpFromLine /> {status?.upstream ? `Push${status.ahead ? ` ${status.ahead}` : ""}` : "Publish"}
           </button>
         </div>
-        <button disabled={!!busy || !files.length} onClick={() => run("stash", () => git.stash(path, false))} title={tr("git.stashShelveAllChangesInclNew")}>Stash</button>
-        <button disabled={!!busy} onClick={() => run("stash pop", () => git.stash(path, true))} title={tr("git.popRestoreStashedChanges")}>Pop</button>
+        <button disabled={!!busy || !files.length} onClick={() => run("stash", () => git.stash(path, false))} title={tr("git.stashShelveAllChangesInclNew")}><Archive />Stash</button>
+        <button disabled={!!busy} onClick={() => run("stash pop", () => git.stash(path, true))} title={tr("git.popRestoreStashedChanges")}><ArchiveRestore />Pop</button>
       </div>
 
-      {error && <div className="error-box pre">⚠ {error}</div>}
+      {error && <div className="error-box pre"><TriangleAlert /> {error}</div>}
       {confirmDiscard && (
         <div className="error-box toolbar">
           {tr("git.discardChangesInFilesNewFiles", { confirmDiscardLength: confirmDiscard.length })}
           <span className="grow" />
-          <button onClick={() => setConfirmDiscard(null)}>{tr("git.cancel")}</button>
-          <button className="primary danger" onClick={() => doDiscard(confirmDiscard)}>{tr("git.discardChanges2")}</button>
+          <button onClick={() => setConfirmDiscard(null)}><X />{tr("git.cancel")}</button>
+          <button className="primary danger" onClick={() => doDiscard(confirmDiscard)}><Undo2 />{tr("git.discardChanges2")}</button>
         </div>
       )}
       {commitAction && (
@@ -631,8 +641,8 @@ function RepoView({ tab }: { tab: Tab }) {
               />
               <div className="toolbar">
                 <span className="grow" />
-                <button onClick={() => setCommitAction(null)}>{tr("git.cancel")}</button>
-                <button className="primary" disabled={!commitAction.draft.trim()} onClick={() => doReword(commitAction.c, commitAction.draft)}>{tr("git.saveMessage")}</button>
+                <button onClick={() => setCommitAction(null)}><X />{tr("git.cancel")}</button>
+                <button className="primary" disabled={!commitAction.draft.trim()} onClick={() => doReword(commitAction.c, commitAction.draft)}><Save />{tr("git.saveMessage")}</button>
               </div>
             </>
           )}
@@ -651,8 +661,8 @@ function RepoView({ tab }: { tab: Tab }) {
               />
               <div className="toolbar">
                 <span className="grow" />
-                <button onClick={() => setCommitAction(null)}>{tr("git.cancel")}</button>
-                <button className="primary" disabled={!commitAction.name.trim()} onClick={() => doBranchAt(commitAction.c, commitAction.name)}>{tr("git.createSwitchBranch")}</button>
+                <button onClick={() => setCommitAction(null)}><X />{tr("git.cancel")}</button>
+                <button className="primary" disabled={!commitAction.name.trim()} onClick={() => doBranchAt(commitAction.c, commitAction.name)}><GitBranch />{tr("git.createSwitchBranch")}</button>
               </div>
             </>
           )}
@@ -661,8 +671,8 @@ function RepoView({ tab }: { tab: Tab }) {
               <div>{tr("git.revertCommit")} <b>{commitAction.c.short}</b> “{commitAction.c.subject}”? {tr("git.createsANewCommitThatUndoes")}</div>
               <div className="toolbar">
                 <span className="grow" />
-                <button onClick={() => setCommitAction(null)}>{tr("git.cancel")}</button>
-                <button className="primary" onClick={() => doRevert(commitAction.c)}>Revert</button>
+                <button onClick={() => setCommitAction(null)}><X />{tr("git.cancel")}</button>
+                <button className="primary" onClick={() => doRevert(commitAction.c)}><RotateCcw />Revert</button>
               </div>
             </>
           )}
@@ -671,8 +681,8 @@ function RepoView({ tab }: { tab: Tab }) {
               <div>{tr("git.checkoutCommit")} <b>{commitAction.c.short}</b> {tr("git.in")} <b>detached HEAD</b> {tr("git.notOnAnyBranchViewOnly")}</div>
               <div className="toolbar">
                 <span className="grow" />
-                <button onClick={() => setCommitAction(null)}>{tr("git.cancel")}</button>
-                <button className="primary" onClick={() => doCheckout(commitAction.c)}>Checkout</button>
+                <button onClick={() => setCommitAction(null)}><X />{tr("git.cancel")}</button>
+                <button className="primary" onClick={() => doCheckout(commitAction.c)}><GitBranch />Checkout</button>
               </div>
             </>
           )}
@@ -684,9 +694,9 @@ function RepoView({ tab }: { tab: Tab }) {
               </div>
               <div className="toolbar">
                 <span className="grow" />
-                <button onClick={() => setCommitAction(null)}>{tr("git.cancel")}</button>
-                <button className="primary" title={tr("git.keepAllChangesInStagedTo")} onClick={() => doReset(commitAction.c, false)}>{tr("git.keepChangesSoft")}</button>
-                <button className="primary danger" title={tr("git.wipeAllChangesResetWorkingTree")} onClick={() => doReset(commitAction.c, true)}>{tr("git.wipeAllHard")}</button>
+                <button onClick={() => setCommitAction(null)}><X />{tr("git.cancel")}</button>
+                <button className="primary" title={tr("git.keepAllChangesInStagedTo")} onClick={() => doReset(commitAction.c, false)}><History />{tr("git.keepChangesSoft")}</button>
+                <button className="primary danger" title={tr("git.wipeAllChangesResetWorkingTree")} onClick={() => doReset(commitAction.c, true)}><History />{tr("git.wipeAllHard")}</button>
               </div>
             </>
           )}
@@ -700,7 +710,7 @@ function RepoView({ tab }: { tab: Tab }) {
               <FileGroup title={`Conflicts (${conflicts.length})`} files={conflicts} selected={selected} staged={false}
                 onSelect={(f) => setSelected({ type: "file", file: f, staged: false })}
                 onMenu={(f, e) => setMenu({ file: f, staged: false, x: e.clientX, y: e.clientY })}
-                actions={(f) => <button className="icon-btn" title={tr("git.markResolvedStage")} onClick={() => run(`stage ${f.path}`, () => git.stage(path, [f.path]))}>✓</button>}
+                actions={(f) => <button className="icon-btn" title={tr("git.markResolvedStage")} onClick={() => run(`stage ${f.path}`, () => git.stage(path, [f.path]))}><Check /></button>}
               />
             )}
             {committable.length > 0 && (
@@ -721,8 +731,8 @@ function RepoView({ tab }: { tab: Tab }) {
                 }
                 headerAction={
                   <>
-                    <button className="icon-btn danger" title={tr("git.discardAllChangesResetToHead")} onClick={() => setConfirmDiscardAll(true)}>↶</button>
-                    <button className="icon-btn" title={tr("git.stashAllChanges")} onClick={() => run(tr("git.stashAll"), () => git.stash(path, false))}>🗄</button>
+                    <button className="icon-btn danger" title={tr("git.discardAllChangesResetToHead")} onClick={() => setConfirmDiscardAll(true)}><Undo2 /></button>
+                    <button className="icon-btn" title={tr("git.stashAllChanges")} onClick={() => run(tr("git.stashAll"), () => git.stash(path, false))}><Archive /></button>
                   </>
                 }
                 isChecked={(f) => !unchecked.has(f.path)}
@@ -730,7 +740,7 @@ function RepoView({ tab }: { tab: Tab }) {
                 onSelect={(f) => setSelected({ type: "file", file: f, staged: false })}
                 onMenu={(f, e) => setMenu({ file: f, staged: false, x: e.clientX, y: e.clientY })}
                 actions={(f) => (
-                  <button className="icon-btn danger" title={tr("git.discardThisFileSChanges")} onClick={() => setConfirmDiscard([f])}>↶</button>
+                  <button className="icon-btn danger" title={tr("git.discardThisFileSChanges")} onClick={() => setConfirmDiscard([f])}><Undo2 /></button>
                 )}
               />
             )}
@@ -751,11 +761,11 @@ function RepoView({ tab }: { tab: Tab }) {
                 onClick={() => history[0] && setConfirmUndo(history[0])}
                 title={tr("git.undoLastCommitKeepChangesIn")}
               >
-                ↶ {tr("git.undoCommit2")} {history[0]?.short}
+                <Undo2 /><span className="ellipsis">{tr("git.undoCommit2")} {history[0]?.short}</span>
               </button>
             )}
             <button className="primary grow" disabled={!canCommit} onClick={() => void commit()}>
-              Commit{checkedFiles.length ? ` ${checkedFiles.length} ${tr("git.files")}` : ""}
+              <GitCommitHorizontal /><span className="ellipsis">Commit{checkedFiles.length ? ` ${checkedFiles.length} ${tr("git.files")}` : ""}</span>
             </button>
           </div>
           {confirmDiscardAll && (
@@ -763,8 +773,8 @@ function RepoView({ tab }: { tab: Tab }) {
               {tr("git.discardAllUncommittedChangesEveryModified")}
               <div className="toolbar">
                 <span className="grow" />
-                <button onClick={() => setConfirmDiscardAll(false)}>{tr("git.cancel")}</button>
-                <button className="primary danger" onClick={doDiscardAll}>{tr("git.discardAll")}</button>
+                <button onClick={() => setConfirmDiscardAll(false)}><X />{tr("git.cancel")}</button>
+                <button className="primary danger" onClick={doDiscardAll}><Undo2 />{tr("git.discardAll")}</button>
               </div>
             </div>
           )}
@@ -773,8 +783,8 @@ function RepoView({ tab }: { tab: Tab }) {
               {tr("git.undoCommit3")} <b>{confirmUndo.short}</b> “{confirmUndo.subject}”? {tr("git.theCommitLeavesTheBranchIts")}
               <div className="toolbar">
                 <span className="grow" />
-                <button onClick={() => setConfirmUndo(null)}>{tr("git.cancel")}</button>
-                <button className="primary danger" onClick={() => undoCommit(confirmUndo)}>{tr("git.undoCommit2")}</button>
+                <button onClick={() => setConfirmUndo(null)}><X />{tr("git.cancel")}</button>
+                <button className="primary danger" onClick={() => undoCommit(confirmUndo)}><Undo2 />{tr("git.undoCommit2")}</button>
               </div>
             </div>
           )}
@@ -784,9 +794,9 @@ function RepoView({ tab }: { tab: Tab }) {
               <span className="mono">{confirmIgnore.pattern}</span> {tr("git.addsToGitignoreAnd")} <b>{tr("git.untracks")}</b> {tr("git.thisFileFileStaysOnDisk")}
               <div className="toolbar">
                 <span className="grow" />
-                <button onClick={() => setConfirmIgnore(null)}>{tr("git.cancel")}</button>
+                <button onClick={() => setConfirmIgnore(null)}><X />{tr("git.cancel")}</button>
                 <button className="primary danger" onClick={() => doIgnore(confirmIgnore.file, confirmIgnore.scope, true)}>
-                  {tr("git.ignoreUntrack")}
+                  <EyeOff />{tr("git.ignoreUntrack")}
                 </button>
               </div>
             </div>
@@ -800,7 +810,7 @@ function RepoView({ tab }: { tab: Tab }) {
             </div>
           )}
           {!selected ? <div className="empty">{tr("git.pickAFileOrCommitTo")}</div>
-            : !diff ? <div className="sftp-center"><span className="spinner" /></div>
+            : !diff ? <Loading />
             : selected.type === "commit" ? <CommitView text={diff} commit={selected.commit} onCopy={(h) => void navigator.clipboard.writeText(h)} />
             : <FileDiff text={diff} />}
         </div>
@@ -849,13 +859,13 @@ function RepoView({ tab }: { tab: Tab }) {
               />
               <div className="toolbar">
                 <span className="grow" />
-                <button onClick={() => setBranchAction(null)}>{tr("git.cancel")}</button>
+                <button onClick={() => setBranchAction(null)}><X />{tr("git.cancel")}</button>
                 <button
                   className="primary"
                   disabled={!branchAction.name.trim() || branchAction.name.trim() === branchAction.b.name}
                   onClick={() => doRenameBranch(branchAction.b, branchAction.name.trim())}
                 >
-                  {tr("git.rename")}
+                  <Pencil />{tr("git.rename")}
                 </button>
               </div>
             </div>
@@ -872,12 +882,12 @@ function RepoView({ tab }: { tab: Tab }) {
               </div>
               <div className="toolbar">
                 <span className="grow" />
-                <button onClick={() => setBranchAction(null)}>{tr("git.cancel")}</button>
+                <button onClick={() => setBranchAction(null)}><X />{tr("git.cancel")}</button>
                 <button
                   className="primary danger"
                   onClick={() => doDeleteBranch(branchAction.b, branchAction.force || branchAction.b.remote)}
                 >
-                  {branchAction.force ? tr("git.forceDelete") : tr("git.delete")}
+                  <Trash2 />{branchAction.force ? tr("git.forceDelete") : tr("git.delete")}
                 </button>
               </div>
             </div>
@@ -892,14 +902,14 @@ function RepoView({ tab }: { tab: Tab }) {
             </div>
             <div className="toolbar">
               <span className="grow" />
-              <button onClick={() => setSwitchDirty(null)}>{tr("git.cancel")}</button>
-              <button className="primary" onClick={() => doSwitchBring(switchDirty)}>{tr("git.bringAlongSwitch")}</button>
+              <button onClick={() => setSwitchDirty(null)}><X />{tr("git.cancel")}</button>
+              <button className="primary" onClick={() => doSwitchBring(switchDirty)}><GitBranch />{tr("git.bringAlongSwitch")}</button>
             </div>
           </div>
         </Modal>
       )}
       {mergeOpen && (
-        <Modal title={tr("git.mergeInto", { branch: status?.branch ?? tr("git.currentBranch") })} width={520} onClose={() => setMergeOpen(false)}>
+        <Modal title={<><GitMerge /> {tr("git.mergeInto", { branch: status?.branch ?? tr("git.currentBranch") })}</>} width={520} onClose={() => setMergeOpen(false)}>
           <div className="form account-form">
             <div className="muted small">
               {rich(tr("git.pickMergeSourceRich"), { branch: <b>{status?.branch}</b> })}
@@ -907,7 +917,7 @@ function RepoView({ tab }: { tab: Tab }) {
             <div className="merge-list">
               {[...localBranches, ...remoteBranches].filter((b) => !b.current).map((b) => (
                 <button key={b.name} className="merge-row" onClick={() => doMerge(b.name)} title={b.subject}>
-                  <span className="merge-ic">{b.remote ? "☁" : "🌿"}</span>
+                  <span className="merge-ic">{b.remote ? <Cloud /> : <GitBranch />}</span>
                   <span className="merge-main">
                     <span className="merge-name ellipsis">{b.name}</span>
                     <span className="merge-sub muted small ellipsis">
@@ -1101,7 +1111,7 @@ function CloneView({ onClose }: { onClose: () => void }) {
           {tr("git.destinationFolder")}
           <div className="form-row">
             <input className="grow mono" value={parent} placeholder="vd. D:\projects" onChange={(e) => setParent(e.target.value)} />
-            <button onClick={chooseParent}>{tr("git.browse")}</button>
+            <button onClick={chooseParent}><FolderOpen />{tr("git.browse")}</button>
           </div>
         </label>
         <label>
@@ -1112,10 +1122,10 @@ function CloneView({ onClose }: { onClose: () => void }) {
           <div className="muted small mono">→ {parent}\{folder || suggested}</div>
         )}
         <div className="toolbar">
-          <button className="primary" disabled={busy} onClick={() => void clone()}>{busy ? tr("git.cloning") : "Clone"}</button>
-          {busy && <span className="muted small ellipsis progress-text">⏳ {progress}</span>}
+          <button className="primary" disabled={busy} onClick={() => void clone()}><Download />{busy ? tr("git.cloning") : "Clone"}</button>
+          {busy && <Loading variant="inline" className="small progress-text" label={progress || tr("git.cloning")} />}
         </div>
-        {error && <div className="error-box pre">⚠ {error}</div>}
+        {error && <div className="error-box pre"><TriangleAlert /> {error}</div>}
         <div className="muted small">
           {rich(tr("git.privateRepoLoginRich"), { account: <b>{tr("git.gitAccountLabel")}</b> })}
         </div>
@@ -1229,7 +1239,7 @@ function AccountView() {
           <label className="grow">Email<input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="a@example.com" /></label>
         </div>
         <div className="toolbar">
-          <button className="primary" onClick={() => void saveIdentity()}>{tr("git.saveIdentity")}</button>
+          <button className="primary" onClick={() => void saveIdentity()}><Save />{tr("git.saveIdentity")}</button>
           {savedIdent && <span className="muted small">{savedIdent}</span>}
         </div>
 
@@ -1254,12 +1264,12 @@ function AccountView() {
                   {account.note && <span className="danger-text"> · {account.note}</span>}
                 </div>
               </span>
-              <button onClick={() => void signOut()}>{tr("git.signOut2")}</button>
+              <button onClick={() => void signOut()}><LogOut />{tr("git.signOut2")}</button>
             </>
           ) : (
             <span className="muted small grow">{rich(tr("git.notSignedInRich"), { host: <b className="mono">{host}</b> })}</span>
           )}
-          <button className="icon-btn" title={tr("git.reCheck")} onClick={() => void loadAccount(host)}>↻</button>
+          <button className="icon-btn" title={tr("git.reCheck")} onClick={() => void loadAccount(host)}><RefreshCw /></button>
         </div>
 
         <div className="muted small">
@@ -1281,13 +1291,13 @@ function AccountView() {
           </div>
         )}
         <div className="toolbar">
-          <button className="primary" onClick={() => void saveCredential()}>{account?.signedIn ? tr("git.signInAgain") : tr("git.signIn2")}</button>
+          <button className="primary" onClick={() => void saveCredential()}><LogIn />{account?.signedIn ? tr("git.signInAgain") : tr("git.signIn2")}</button>
           {credMsg && <span className={credMsg.ok ? "muted small" : "danger-text small"}>{credMsg.text}</span>}
         </div>
         <div className="muted small">
           {rich(tr("git.tokenStorageRich"), { cmd: <span className="mono">git credential approve</span> })}
         </div>
-        {error && <div className="error-box pre">⚠ {error}</div>}
+        {error && <div className="error-box pre"><TriangleAlert /> {error}</div>}
     </div>
   );
 }
@@ -1303,14 +1313,14 @@ function GitEmpty() {
   useEffect(() => { void refreshAllSummaries(); }, []);
   return (
     <div className="welcome git-empty">
-      <h1>🌿 Git</h1>
+      <h1><GitBranch /> Git</h1>
       {repos.length > 0 ? (
         <>
           <p className="muted">{tr("git.pickARepositoryToOpen")}</p>
           <div className="empty-repo-list">
             {repos.map((r) => (
               <button key={r.path} className="empty-repo" onClick={() => openRepo(r)} title={r.path}>
-                <span className="grow ellipsis">▤ {r.name}</span>
+                <FolderGit2 /><span className="grow ellipsis">{r.name}</span>
               </button>
             ))}
           </div>
@@ -1319,9 +1329,9 @@ function GitEmpty() {
         <p className="muted">{tr("git.noRepositoriesYet")}</p>
       )}
       <div className="toolbar">
-        <button onClick={() => void addRepos().catch(() => {})}>{tr("git.addExistingRepo2")}</button>
-        <button className="primary" onClick={openClone}>{tr("git.cloneFromUrl2")}</button>
-        <button onClick={openAccount}>{tr("git.gitAccount2")}</button>
+        <button onClick={() => void addRepos().catch(() => {})}><Plus /> {tr("git.addExistingRepo2")}</button>
+        <button className="primary" onClick={openClone}><Download /> {tr("git.cloneFromUrl2")}</button>
+        <button onClick={openAccount}><Settings /> {tr("git.gitAccount2")}</button>
       </div>
     </div>
   );
@@ -1336,12 +1346,12 @@ function GitRoot() {
     <>
       <TabbedLayout appId="git" TabView={GitTab} empty={<GitEmpty />} />
       {accOpen && (
-        <Modal title={tr("git.gitAccount2")} width={560} onClose={closeAccount}>
+        <Modal title={<><Settings /> {tr("git.gitAccount2")}</>} width={560} onClose={closeAccount}>
           <AccountView />
         </Modal>
       )}
       {cloneOpen && (
-        <Modal title={tr("git.cloneRepository")} width={620} onClose={closeClone}>
+        <Modal title={<><Download /> {tr("git.cloneRepository")}</>} width={620} onClose={closeClone}>
           <CloneView onClose={closeClone} />
         </Modal>
       )}

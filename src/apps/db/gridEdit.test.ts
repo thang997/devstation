@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildUpdates, countSql, isPageable, pagedSql, parseSourceTable, sqlLiteral } from "./gridEdit";
+import { buildUpdates, countSql, isPageable, orderedSql, pagedSql, parseSourceTable, sortRows, sqlLiteral } from "./gridEdit";
 
 describe("parseSourceTable", () => {
   it("nhận câu SELECT đơn bảng (có/không schema, alias, WHERE/ORDER/LIMIT)", () => {
@@ -58,6 +58,11 @@ describe("phân trang", () => {
   });
   it("ghép LIMIT/OFFSET (dư 1 dòng) và COUNT", () => {
     expect(pagedSql("SELECT * FROM t;", 200, 400)).toBe("SELECT * FROM t LIMIT 201 OFFSET 400");
+    expect(pagedSql("SELECT * FROM t", 100, 0, { col: 2, desc: true })).toBe("SELECT * FROM t ORDER BY 3 DESC LIMIT 101 OFFSET 0");
+    expect(orderedSql("SELECT a, b FROM t ORDER BY a", { col: 1, desc: false })).toBe("SELECT * FROM (SELECT a, b FROM t ORDER BY a) AS ds_sort ORDER BY 2 ASC");
+    expect(orderedSql("SELECT * FROM t", null)).toBe("SELECT * FROM t");
+    expect(sortRows([["10"], [null], ["9"], ["b"], ["A"]], { col: 0, desc: false })).toEqual([[null], ["9"], ["10"], ["A"], ["b"]]);
+    expect(sortRows([["1"], ["3"], ["2"]], { col: 0, desc: true })).toEqual([["3"], ["2"], ["1"]]);
     expect(countSql("SELECT * FROM t ORDER BY a;")).toBe("SELECT COUNT(*) FROM (SELECT * FROM t ORDER BY a) AS ds_count");
   });
 });

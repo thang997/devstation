@@ -4,7 +4,7 @@ import { Shell } from "./shell/Shell";
 import { initTheme } from "./store/theme";
 import { loadLang } from "./store/lang";
 import { useWorkbench } from "./store/workbench";
-import { isMainWindow, unregisterOnClose, windowAppParam } from "./shell/windows";
+import { unregisterOnClose, windowAppParam } from "./shell/windows";
 import "./styles.css";
 
 initTheme();
@@ -20,11 +20,6 @@ for (const ev of ["dragover", "drop"] as const) {
 // Cửa sổ mở riêng cho một app (index.html?app=<id>) → vào thẳng app đó, không qua màn hình chính.
 if (windowAppParam) useWorkbench.getState().openApp(windowAppParam);
 
-// Việc nền chỉ chạy MỘT lần ở cửa sổ chính: tự mở các SSH tunnel autostart
-// (tải lười, không kéo UI SSH vào bundle chính). Tiến trình tunnel nằm phía Rust, dùng chung mọi cửa sổ.
-void isMainWindow().then((main) => {
-  if (main) void import("./apps/ssh/tunnels").then((m) => m.startAutostartTunnels()).catch(() => {});
-});
 
 // Nạp file ngôn ngữ đã chọn trước lần vẽ đầu (en có sẵn trong bundle → không chờ).
 void loadLang().finally(() => {

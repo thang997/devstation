@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { Check, Trash2, X } from "lucide-react";
 import { Modal } from "./Modal";
 import { t, useT } from "../store/lang";
 
@@ -53,8 +54,8 @@ export function ConfirmHost() {
         <div className="muted small" style={{ whiteSpace: "pre-line" }}>{req.message}</div>
         <div className="toolbar">
           <span className="grow" />
-          <button onClick={() => close(false)}>{tr("shell.cancel")}</button>
-          <button className={`primary ${req.danger ? "danger" : ""}`} autoFocus onClick={() => close(true)}>{req.confirmLabel}</button>
+          <button onClick={() => close(false)}><X />{tr("shell.cancel")}</button>
+          <button className={`primary ${req.danger ? "danger" : ""}`} autoFocus onClick={() => close(true)}>{req.danger ? <Trash2 /> : <Check />}{req.confirmLabel}</button>
         </div>
       </div>
     </Modal>

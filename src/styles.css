@@ -161,7 +161,7 @@ input::placeholder, textarea::placeholder { color: #6e7681; }
 .tree-row:hover { background: var(--bg-3); }
 .tree-row:focus-visible { outline: none; background: var(--sel); }
 .tree-row.sel { background: var(--sel); }
-.tree-caret { width: 12px; color: var(--muted); font-size: 10px; flex: 0 0 auto; }
+.tree-caret { width: 12px; color: var(--muted); font-size: 10px; flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; }
 .tree-icon { flex: 0 0 auto; }
 .tree-row.req { padding-left: 22px; }
 .tree-row .method { width: 40px; }
@@ -422,7 +422,6 @@ input::placeholder, textarea::placeholder { color: #6e7681; }
 .sftp-size { flex: 0 0 auto; width: 56px; text-align: right; }
 /* Cột "Last modified": gọn lại để panel hẹp không tràn (dùng gap thay padding-left). */
 .sftp-time { flex: 0 0 auto; width: 120px; padding-left: 8px; }
-.sftp-center .spinner { width: 18px; height: 18px; border-width: 2px; }
 .sftp-center { display: flex; flex: 1; align-items: center; justify-content: center; gap: 8px; color: var(--muted);
   padding: 16px; text-align: center; }
 .sftp-center.col { flex-direction: column; }
@@ -526,11 +525,19 @@ kbd {
 .db-timeout input:focus { border-color: var(--primary); outline: none; }
 /* Màn hình đang kết nối (ẩn form mật khẩu, chỉ spinner xoay kiểu Navicat). */
 .db-connecting { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; text-align: center; }
+/* Vòng xoay DUY NHẤT của app (src/shell/Loading.tsx). */
 .spinner {
-  width: 26px; height: 26px; border-radius: 50%;
-  border: 3px solid var(--line); border-top-color: var(--primary);
+  display: inline-block; flex: 0 0 auto; width: 16px; height: 16px; border-radius: 50%;
+  border: 2px solid var(--line); border-top-color: var(--primary);
   animation: spin .7s linear infinite;
 }
+.loading { display: flex; align-items: center; gap: 8px; color: var(--muted); min-width: 0; }
+.loading-center { flex: 1; justify-content: center; padding: 16px; text-align: center; min-height: 72px; }
+.loading-row { padding: 6px 10px; font-size: 12px; }
+.loading-inline { display: inline-flex; gap: 6px; }
+.loading-inline .loading-text, .loading-row .loading-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.loading-center .loading-text { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.loading-row .spinner, .loading-inline .spinner, button .spinner { width: 12px; height: 12px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 /* Danh sách container Docker (modal trong app SSH). */
 .docker-list { display: flex; flex-direction: column; gap: 6px; max-height: 420px; overflow: auto; }
@@ -608,7 +615,9 @@ kbd {
 }
 .ref.remote { background: var(--bg-3); border-color: var(--line); color: var(--muted); }
 .ref.head { background: #23863626; border-color: #23863680; color: #7ee787; }
-.commit-actions { margin: 0 8px; }
+.commit-actions { margin: 0 8px; flex-wrap: wrap; }
+/* Panel Changes hẹp: hai nút không đủ chỗ thì xuống dòng, mỗi nút chiếm cả hàng — chữ không bị bẻ nhiều dòng. */
+.commit-actions > button { flex: 1 1 auto; min-width: 0; white-space: nowrap; }
 .commit-actions .primary { width: auto; }
 
 /* ── App Redis ───────────────────────────────── */
@@ -635,7 +644,7 @@ kbd {
 .picker-btn { display: inline-flex; align-items: center; gap: 6px; max-width: 300px; }
 .picker-btn.open { background: var(--line); }
 .branch-glyph { color: var(--muted); }
-.caret { color: var(--muted); font-size: 10px; }
+.caret { color: var(--muted); font-size: 10px; display: inline-flex; align-items: center; line-height: 1; flex: 0 0 auto; }
 .picker-menu {
   /* Render qua portal (position: fixed, vị trí đặt bằng JS) để không bị khung overflow cắt. */
   z-index: 210;
@@ -744,11 +753,14 @@ button.link:hover { background: none; border: none; color: #79c0ff; }
 .grid-note { margin: 4px 8px 0; font-size: 12px; }
 
 /* Khung thông tin bảng đang chọn (dưới danh sách bảng, kiểu "Object info" của Navicat) */
-.db-table-info { flex: 0 0 auto; max-height: 45%; overflow: auto; border-top: 1px solid var(--line); background: var(--bg); padding: 6px 8px 8px; font-size: 12px; }
+/* Khung thông tin bảng: cột bên phải vùng làm việc (không che danh sách bảng). */
+.db-info-side { flex: 0 0 auto; display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--line); background: var(--bg); }
+.db-table-info { flex: 1; min-height: 0; overflow: auto; padding: 8px 10px 10px; font-size: 12px; }
 .db-table-info-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
 .db-table-info-list { margin: 0; }
 .db-table-info-row { display: flex; gap: 8px; padding: 2px 0; border-bottom: 1px dashed var(--line-muted); }
-.db-table-info-row dt { flex: 0 0 42%; color: var(--muted); }
+.db-table-info-row dt { flex: 0 0 40%; color: var(--muted); }
+.db-table-info-row dd { white-space: normal !important; word-break: break-word; }
 .db-table-info-row dd { margin: 0; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .db-table-info-actions { display: flex; gap: 6px; margin-top: 8px; }
 
@@ -905,7 +917,7 @@ body.er-dragging, body.er-dragging * { cursor: grabbing !important; user-select:
 .cv-head.open { padding: 10px 14px; }
 .cv-subject-row { display: flex; align-items: center; gap: 8px; cursor: pointer; min-width: 0; user-select: none; }
 .cv-subject-row:hover .cv-caret { color: var(--fg); }
-.cv-caret { flex: 0 0 auto; width: 12px; color: var(--muted); font-size: 11px; }
+.cv-caret { flex: 0 0 auto; width: 12px; color: var(--muted); font-size: 11px; display: inline-flex; align-items: center; }
 .cv-head .cv-subject { margin-bottom: 0; font-size: 13px; min-width: 0; }
 .cv-head:not(.open) .cv-subject { flex: 1 1 auto; }
 .cv-head.open .cv-subject { font-size: 14px; flex: 1; }
@@ -913,3 +925,122 @@ body.er-dragging, body.er-dragging * { cursor: grabbing !important; user-select:
 .cv-head.open .cv-meta { margin-left: 20px; }
 .cv-mini { flex: 0 0 auto; display: flex; gap: 5px; align-items: center; white-space: nowrap; }
 .cv-more { padding: 0 4px; border: 1px solid var(--line); border-radius: 3px; line-height: 12px; }
+/* ── Icon SVG (lucide-react): cỡ theo cỡ chữ, màu theo chữ (currentColor) → đồng bộ theme sáng/tối ── */
+svg.lucide { width: 1.15em; height: 1.15em; stroke-width: 1.9; flex: 0 0 auto; vertical-align: -0.2em; }
+button svg.lucide { pointer-events: none; }
+button:has(> svg.lucide) { display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
+.icon-btn svg.lucide { width: 15px; height: 15px; }
+.ctx-icon svg.lucide { width: 14px; height: 14px; vertical-align: middle; }
+svg.lucide.spin { animation: spin .8s linear infinite; }
+/* Icon app (registry.ts): launcher to, status bar theo cỡ chữ. */
+.app-ic { width: 1.15em; height: 1.15em; vertical-align: -0.2em; }
+.app-ic-db { display: inline-flex; align-items: center; justify-content: center; }
+.app-ic-db svg { width: 100%; height: 100%; }
+.launcher-icon { display: inline-flex; align-items: center; justify-content: center; }
+.launcher-icon .app-ic { width: 24px; height: 24px; stroke-width: 1.75; }
+.picker-check svg.lucide { width: 13px; height: 13px; }
+.caret svg.lucide { width: 12px; height: 12px; vertical-align: 0; display: block; }
+.side-toggle svg.lucide { width: 15px; height: 15px; }
+
+/* SSH app: icon lucide trong SFTP / sidebar */
+.sftp-ic { display: inline-flex; align-items: center; justify-content: center; color: var(--muted); }
+.sftp-ic svg.lucide { width: 15px; height: 15px; vertical-align: middle; }
+.sftp-ic.k-dir { color: var(--warn); }
+.sftp-ic.k-dir svg.lucide { fill: color-mix(in srgb, var(--warn) 25%, transparent); }
+.sftp-ic.k-link, .sftp-ic.k-web { color: var(--accent); }
+.sftp-ic.k-image, .sftp-ic.k-video, .sftp-ic.k-audio, .sftp-ic.k-slide { color: #a371f7; }
+.sftp-ic.k-archive, .sftp-ic.k-disk, .sftp-ic.k-make { color: #db6d28; }
+.sftp-ic.k-code, .sftp-ic.k-docker, .sftp-ic.k-db { color: var(--accent); }
+.sftp-ic.k-sheet { color: var(--ok); }
+.sftp-ic.k-pdf, .sftp-ic.k-git { color: var(--danger); }
+.sftp-ic.k-key, .sftp-ic.k-lock { color: var(--warn); }
+.docker-ic { display: inline-flex; color: var(--accent); }
+.tree-caret svg.lucide { width: 12px; height: 12px; vertical-align: -0.1em; }
+.tun-node svg.lucide { width: 13px; height: 13px; vertical-align: -0.15em; }
+/* Redis: hàng thư mục có mũi tên + icon thư mục. */
+.rkey-caret { flex: 0 0 auto; width: auto; display: inline-flex; align-items: center; gap: 3px; font-size: 12px; }
+.rkey-caret svg.lucide { width: 13px; height: 13px; }
+.tun-count-on { color: var(--ok); }
+
+/* JSON đẹp (src/shell/JsonView.tsx) */
+.json-view { margin: 0; white-space: pre; overflow: auto; tab-size: 2; }
+.json-view .js-key { color: #79c0ff; }
+.json-view .js-str { color: #a5d6ff; }
+.json-view .js-num { color: #ffa657; }
+.json-view .js-bool { color: #ff7b72; }
+.json-view .js-null { color: var(--muted); font-style: italic; }
+:root[data-theme="light"] .json-view .js-key { color: #0550ae; }
+:root[data-theme="light"] .json-view .js-str { color: #0a3069; }
+:root[data-theme="light"] .json-view .js-num { color: #953800; }
+:root[data-theme="light"] .json-view .js-bool { color: #cf222e; }
+.rstring .json-view { flex: 1; min-height: 0; }
+.rjson-badge { font-size: 10px; padding: 1px 6px; border-radius: 4px; background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); font-weight: 600; }
+.rjson-bad { color: var(--danger); display: inline-flex; align-items: center; gap: 4px; }
+
+/* Lưới kết quả DB: bấm tiêu đề cột để sắp xếp */
+.grid th.sortable { cursor: pointer; user-select: none; }
+.grid th.sortable:hover { color: var(--fg); background: var(--bg-3); }
+.grid th .th-in { display: inline-flex; align-items: center; gap: 4px; }
+.grid th .th-in svg.lucide { width: 12px; height: 12px; flex: 0 0 auto; }
+.grid th.sorted { color: var(--primary); }
+.grid th .th-sort-idle { opacity: 0; }
+.grid th.sortable:hover .th-sort-idle { opacity: .5; }
+.tab .x { display: inline-flex; align-items: center; }
+.tab .x svg.lucide { width: 13px; height: 13px; }
+.ssh-side-tabs { flex: 0 0 auto; }
+.ssh-side-tabs button { flex: 1; justify-content: center; }
+.ssh-side-tabs .badge { margin-left: 2px; }
+.tun-badge-on { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
+
+/* DB: kết quả các câu không trả bảng — một danh sách dòng thay vì nhiều lưới */
+.exec-log { flex: 0 0 auto; max-height: 35%; display: flex; flex-direction: column; min-height: 0; }
+.exec-log.full { flex: 1; max-height: none; }
+.exec-log-list { overflow: auto; min-height: 0; padding: 2px 0; font-size: 12px; }
+.exec-log-row { display: flex; align-items: center; gap: 8px; padding: 3px 10px; }
+.exec-log-row:hover { background: var(--bg-3); }
+.exec-log-no { flex: 0 0 auto; min-width: 26px; text-align: right; }
+.exec-log-ok { flex: 0 0 auto; color: var(--ok); width: 13px; height: 13px; }
+.exec-log-sql { flex: 1; min-width: 0; }
+.exec-log-n { flex: 0 0 auto; color: var(--ok); }
+.exec-log-ms { flex: 0 0 auto; min-width: 54px; text-align: right; }
+
+/* DB: Edit table (tab Columns / Indexes / Foreign keys / … / DDL) */
+.struct-modal { display: flex; flex-direction: column; height: 68vh; min-height: 360px; margin: -14px; }
+.struct-tabs { flex: 0 0 auto; }
+.struct-body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.struct-body .grid-wrap { flex: 1; min-height: 0; }
+.struct-ddl { margin: 0; white-space: pre; overflow: auto; flex: 1; }
+.struct-act { width: 1%; white-space: nowrap; text-align: right; }
+.struct-foot { flex: 0 0 auto; padding: 8px 12px; border-top: 1px solid var(--line); }
+.struct-new td { background: color-mix(in srgb, var(--ok) 7%, transparent); }
+.struct-new.bad td { background: color-mix(in srgb, var(--danger) 10%, transparent); }
+.struct-new .cell-input { width: 100%; min-width: 80px; }
+.struct-new .picker, .struct-new .picker-btn { width: 100%; max-width: 260px; }
+.struct-moved td { background: color-mix(in srgb, var(--warn) 12%, transparent); }
+.struct-new-grid { margin-top: 10px; }
+.struct-badge-new { color: var(--ok); }
+
+/* App Tools: Base64 file + JWT verify. */
+.pane.file-drop { position: relative; outline: 2px dashed var(--primary); outline-offset: -4px; }
+.tool-file { padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+.tool-file-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.tool-check { display: inline-flex; align-items: center; gap: 6px; font-weight: normal; color: var(--muted); cursor: pointer; }
+.tool-check input { margin: 0; }
+.tool-note { display: flex; align-items: center; gap: 6px; padding: 6px 10px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--line); }
+.jwt-key-title { border-top: 1px solid var(--line); }
+.io.jwt-key { flex: 0 0 140px; }
+.jwt-info { padding: 8px 10px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 4px; }
+.jwt-status { display: flex; align-items: center; gap: 6px; font-weight: 600; }
+.jwt-status.ok { color: var(--ok); }
+.jwt-status.bad { color: var(--danger); }
+.jwt-status.warn { color: var(--warn); }
+.jwt-status.muted { font-weight: normal; }
+.jwt-claim { font-size: 12px; }
+.jwt-claim.ok { color: var(--ok); }
+.jwt-claim.bad { color: var(--danger); }
+.jwt-claim code { color: var(--muted); margin-right: 4px; }
+.csr-info { gap: 8px; }
+.csr-dl { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px; font-size: 12px; }
+.csr-dl dt { color: var(--muted); }
+.csr-dl dd { margin: 0; word-break: break-word; }
+.csr-fmt { padding: 0; border-bottom: none; }

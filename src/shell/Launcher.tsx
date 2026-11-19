@@ -63,7 +63,7 @@ export function Launcher({ inline = false }: { inline?: boolean }) {
         return {
           id: `shell.unload.${id}`,
           group: tr("shell.general"),
-          title: `${tr("shell.closeApp")} ${a.icon} ${appTitle(a)} ${tr("shell.freeMemoryCloseAllTabs")}`,
+          title: `${tr("shell.closeApp")} ${appTitle(a)} ${tr("shell.freeMemoryCloseAllTabs")}`,
           run: () => s.unloadApp(id),
         };
       }),

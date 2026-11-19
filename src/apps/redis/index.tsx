@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { Braces, ChevronDown, ChevronRight, ChevronsDown, Copy, Database, Folder, FolderOpen, FolderTree, Info, KeyRound, List, Minimize2, Pencil, Plug, Plus, RefreshCw, Save, Trash2, TriangleAlert, Unplug, WandSparkles, X } from "lucide-react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { AppModule, Tab } from "../types";
@@ -6,10 +7,12 @@ import { useWorkbench } from "../../store/workbench";
 import { TabbedLayout } from "../../shell/TabbedLayout";
 import { Modal } from "../../shell/Modal";
 import { Picker } from "../../shell/Picker";
+import { Loading } from "../../shell/Loading";
 import { confirmDialog } from "../../shell/confirm";
 import { Splitter, useSplitSize } from "../../shell/Resizable";
 import { describe, newConn, sessionPasswords, useConns, type Conn } from "./connections";
 import { t, useT } from "../../store/lang";
+import { JsonView, parseJsonValue } from "../../shell/JsonView";
 
 interface KeysPage { cursor: number; keys: string[] }
 interface KeyDetail {
@@ -73,7 +76,7 @@ function openSession(c: Conn) {
   useWorkbench.getState().openTab({
     id: `redis:${c.id}`,
     appId: "redis",
-    title: `🔑 ${c.name}`,
+    title: c.name,
     payload: { kind: "session", connId: c.id },
     danger: c.env === "prod",
   });
@@ -159,14 +162,14 @@ function Sidebar() {
     <div className="side-list">
       <div className="side-head">
         <span>{tr("redis.redisConnections")}</span>
-        <button className="icon-btn" title={tr("redis.newConnection")} onClick={() => openForm()}>＋</button>
+        <button className="icon-btn" title={tr("redis.newConnection")} onClick={() => openForm()}><Plus /></button>
       </div>
       {conns.map((c) => (
         <div key={c.id} className={`side-item ${c.env === "prod" ? "prod" : ""} ${sel === c.id ? "sel" : ""}`} onClick={() => setSel(c.id)} onDoubleClick={() => openSession(c)} title={`${tr("redis.doubleClickToOpen")} · ${describe(c)}`}>
           <span className="grow ellipsis">{c.name}</span>
           <span className={`env-tag ${c.env}`}>{c.env.toUpperCase()}</span>
           <span className="muted small">{c.port}</span>
-          <button className="icon-btn small" title={tr("redis.edit")} onClick={(e) => { e.stopPropagation(); openForm(c.id); }}>✏</button>
+          <button className="icon-btn small" title={tr("redis.edit")} onClick={(e) => { e.stopPropagation(); openForm(c.id); }}><Pencil /></button>
         </div>
       ))}
       {!conns.length && <div className="muted small pad">{tr("redis.noConnectionsYetClickToAdd")}</div>}
@@ -210,7 +213,7 @@ function ConnForm({ connId, onClose }: { connId?: string; onClose: () => void })
   };
 
   return (
-    <Modal title={editing ? tr("redis.editRedisConnection") : tr("redis.newRedisConnection")} width={560} onClose={onClose}>
+    <Modal title={editing ? <><Pencil /> {tr("redis.editRedisConnection")}</> : <><Plus /> {tr("redis.newRedisConnection")}</>} width={560} onClose={onClose}>
       <div className="form account-form">
         <label>{tr("redis.name")}<input value={c.name} onChange={(e) => set({ name: e.target.value })} placeholder="vd. Cache HRM staging" autoFocus /></label>
         <div className="form-row">
@@ -264,17 +267,17 @@ function ConnForm({ connId, onClose }: { connId?: string; onClose: () => void })
             <label>{tr("redis.privateKeyBatchmodeNeedsKeyAgent")}
               <div className="form-row">
                 <input className="grow mono" value={c.ssh.keyPath} onChange={(e) => set({ ssh: { ...c.ssh!, keyPath: e.target.value } })} placeholder={tr("redis.emptyDefaultKeySshAgent")} />
-                <button onClick={() => void pickRedisKey((p) => set({ ssh: { ...c.ssh!, keyPath: p } }))}>{tr("redis.browse")}</button>
+                <button onClick={() => void pickRedisKey((p) => set({ ssh: { ...c.ssh!, keyPath: p } }))}><FolderOpen />{tr("redis.browse")}</button>
               </div>
             </label>
             <div className="muted small">{tr("redis.redisConnects127001")} <span className="mono">{c.host || "host"}:{c.port || 6379}</span> {tr("redis.viaTheSshServerAbove")}</div>
           </div>
         )}
         <div className="toolbar">
-          <button onClick={test}>{tr("redis.testConnection")}</button>
+          <button onClick={test}><Plug />{tr("redis.testConnection")}</button>
           <span className="grow" />
-          {editing && <button className="danger" onClick={() => void confirmDialog({ message: tr("redis.deleteConnectionNamed", { name: c.name || tr("redis.thisFallback") }) }).then((ok) => { if (!ok) return; remove(c.id); onClose(); })}>{tr("redis.delete")}</button>}
-          <button className="primary" onClick={submit}>{tr("redis.saveOpen")}</button>
+          {editing && <button className="danger" onClick={() => void confirmDialog({ message: tr("redis.deleteConnectionNamed", { name: c.name || tr("redis.thisFallback") }) }).then((ok) => { if (!ok) return; remove(c.id); onClose(); })}><Trash2 />{tr("redis.delete")}</button>}
+          <button className="primary" onClick={submit}><Save />{tr("redis.saveOpen")}</button>
         </div>
         {status && <div className={status.ok ? "muted" : "error-box"}>{status.text}</div>}
       </div>
@@ -449,11 +452,23 @@ function Session({ tab }: { tab: Tab }) {
     }
   };
 
+  /** Giá trị string là JSON → hiện đẹp (nhớ lựa chọn Pretty/Raw). */
+  const [pretty, setPretty] = useState(() => localStorage.getItem("redis.prettyJson") !== "0");
+  const togglePretty = () => setPretty((v) => { localStorage.setItem("redis.prettyJson", v ? "0" : "1"); return !v; });
+  const json = useMemo(() => (detail?.kind === "string" ? parseJsonValue(detail.text) : undefined), [detail]);
+  const isJson = json !== undefined;
+  /** Bản gốc lưu dạng gọn (một dòng) → khi lưu thu gọn lại, không đổi định dạng dữ liệu vì đã sửa ở dạng đẹp. */
+  const compactJson = isJson && !(detail?.text ?? "").includes("\n");
+  const editJson = editValue !== null ? parseJsonValue(editValue) : undefined;
+  const startEdit = () => setEditValue(isJson && pretty ? JSON.stringify(json, null, 2) : detail?.text ?? "");
+
   const saveValue = async () => {
     if (!dbId || !detail || editValue === null) return;
+    const parsed = compactJson ? parseJsonValue(editValue) : undefined;
+    const value = parsed !== undefined ? JSON.stringify(parsed) : editValue;
     try {
-      await call("redis_set_string", { id: dbId, key: detail.key, value: editValue });
-      setDetail({ ...detail, text: editValue, size: new Blob([editValue]).size });
+      await call("redis_set_string", { id: dbId, key: detail.key, value });
+      setDetail({ ...detail, text: value, size: new Blob([value]).size });
       setEditValue(null);
       log(t("redis.logSaved", { key: detail.key }));
     } catch (e) {
@@ -475,18 +490,14 @@ function Session({ tab }: { tab: Tab }) {
   if (!dbId) {
     const connectingScreen = (
       <div className="view">
-        <div className="db-connecting">
-          <span className="spinner" />
-          <div>{tr("redis.connectingTo")} <b>{conn.name}</b>…</div>
-          <div className="muted small">Redis · {describe(conn)}</div>
-        </div>
+        <Loading label={<><div>{tr("redis.connectingTo")} <b>{conn.name}</b>…</div><div className="muted small">Redis · {describe(conn)}</div></>} />
       </div>
     );
     if (connecting || !needPw) return connectingScreen;
     return (
       <>
         {connectingScreen}
-        <Modal title={tr("redis.enterPassword")} width={480} onClose={() => useWorkbench.getState().closeTab(tab.id)}>
+        <Modal title={<><KeyRound /> {tr("redis.enterPassword")}</>} width={480} onClose={() => useWorkbench.getState().closeTab(tab.id)}>
           <div className="form account-form">
             <div className="muted small">{conn.name} — Redis · {describe(conn)}</div>
             <label>{tr("redis.password")}
@@ -497,12 +508,12 @@ function Session({ tab }: { tab: Tab }) {
               <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
               {tr("redis.savePassword")}
             </label>
-            {error && <div className="error-box">⚠ {error}</div>}
+            {error && <div className="error-box"><TriangleAlert /> {error}</div>}
             <div className="toolbar">
-              <button onClick={() => openForm(conn.id)}>{tr("redis.editConfig")}</button>
+              <button onClick={() => openForm(conn.id)}><Pencil />{tr("redis.editConfig")}</button>
               <span className="grow" />
-              <button onClick={() => useWorkbench.getState().closeTab(tab.id)}>{tr("redis.cancel")}</button>
-              <button className="primary" disabled={connecting} onClick={() => connect()}>{connecting ? tr("redis.connecting") : tr("redis.connect")}</button>
+              <button onClick={() => useWorkbench.getState().closeTab(tab.id)}><X />{tr("redis.cancel")}</button>
+              <button className="primary" disabled={connecting} onClick={() => connect()}><Plug />{connecting ? tr("redis.connecting") : tr("redis.connect")}</button>
             </div>
           </div>
         </Modal>
@@ -531,16 +542,16 @@ function Session({ tab }: { tab: Tab }) {
           onChange={(e) => setPattern(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") { setKeys([]); setCursor(0); void loadKeys(dbId, pattern); } }}
         />
-        <button disabled={loadingKeys} onClick={() => { setKeys([]); setCursor(0); void loadKeys(dbId, pattern); }}>↻ {tr("redis.search")}</button>
-        <button onClick={() => void showInfo()} className={info !== null ? "primary" : ""}>INFO</button>
+        <button disabled={loadingKeys} onClick={() => { setKeys([]); setCursor(0); void loadKeys(dbId, pattern); }}><RefreshCw /> {tr("redis.search")}</button>
+        <button onClick={() => void showInfo()} className={info !== null ? "primary" : ""}><Info />INFO</button>
         <button onClick={() => {
           if (dbIdRef.current) void call("redis_disconnect", { id: dbIdRef.current }).catch(() => {});
           if (tunnelIdRef.current) void invoke("ssh_tunnel_close", { id: tunnelIdRef.current }).catch(() => {});
           dbIdRef.current = null; tunnelIdRef.current = null; setDbId(null); setDetail(null); setKeys([]);
-        }}>{tr("redis.disconnect")}</button>
+        }}><Unplug />{tr("redis.disconnect")}</button>
       </div>
 
-      {error && <div className="error-box pre">⚠ {error}</div>}
+      {error && <div className="error-box pre"><TriangleAlert /> {error}</div>}
 
       <div className="split">
         <div className="pane rkeys" style={{ width: keysW, flex: "0 0 auto" }}>
@@ -550,7 +561,7 @@ function Session({ tab }: { tab: Tab }) {
               className={`icon-btn ${treeView ? "on" : ""}`}
               title={treeView ? tr("redis.treeViewFoldByClickFor") : tr("redis.flatListClickForTree")}
               onClick={() => { const v = !treeView; setTreeView(v); localStorage.setItem("redis.treeView", v ? "1" : "0"); }}
-            >{treeView ? "🗂" : "☰"}</button>
+            >{treeView ? <FolderTree /> : <List />}</button>
           </div>
           <div className="rkey-list">
             {treeView
@@ -564,7 +575,7 @@ function Session({ tab }: { tab: Tab }) {
                   >
                     {row.kind === "folder" ? (
                       <>
-                        <span className="rkey-caret">{openFolders.has(row.path) ? "▾" : "▸"}</span>
+                        <span className="rkey-caret">{openFolders.has(row.path) ? <><ChevronDown /><FolderOpen /></> : <><ChevronRight /><Folder /></>}</span>
                         <span className="ellipsis grow">{row.label}</span>
                         <span className="muted small rkey-count">{row.count}</span>
                       </>
@@ -578,10 +589,10 @@ function Session({ tab }: { tab: Tab }) {
                     <span className="mono ellipsis grow">{k}</span>
                   </div>
                 ))}
-            {loadingKeys && <div className="muted small pad">{tr("redis.loading")}</div>}
+            {loadingKeys && <Loading variant={keys.length ? "row" : "center"} />}
             {!keys.length && !loadingKeys && <div className="muted small pad">{tr("redis.noKeysMatchPattern", { pattern })}</div>}
             {!loadingKeys && cursor !== 0 && (
-              <button className="rkey-more" onClick={() => void loadKeys(dbId, pattern, cursor)}>{tr("redis.loadMore")}</button>
+              <button className="rkey-more" onClick={() => void loadKeys(dbId, pattern, cursor)}><ChevronsDown />{tr("redis.loadMore")}</button>
             )}
           </div>
         </div>
@@ -595,9 +606,9 @@ function Session({ tab }: { tab: Tab }) {
                 <span className="kind-badge" style={{ color: KIND_COLOR[kind] ?? undefined, borderColor: KIND_COLOR[kind] ?? undefined }}>{kind}</span>
                 <span className="muted small">TTL {fmtTtl(detail.ttl)} · {detail.size} {tr("redis.elements")}</span>
                 <span className="grow" />
-                <button className="icon-btn" title={tr("redis.reload")} onClick={() => void openKey(detail.key)}>↻</button>
-                <button className="icon-btn" title={tr("redis.copyKeyName")} onClick={() => void navigator.clipboard.writeText(detail.key)}>⧉</button>
-                <button className="icon-btn danger" title={tr("redis.deleteKey")} onClick={() => setConfirmDel(true)}>🗑</button>
+                <button className="icon-btn" title={tr("redis.reload")} onClick={() => void openKey(detail.key)}><RefreshCw /></button>
+                <button className="icon-btn" title={tr("redis.copyKeyName")} onClick={() => void navigator.clipboard.writeText(detail.key)}><Copy /></button>
+                <button className="icon-btn danger" title={tr("redis.deleteKey")} onClick={() => setConfirmDel(true)}><Trash2 /></button>
               </>
             ) : tr("redis.value")}
           </div>
@@ -607,8 +618,8 @@ function Session({ tab }: { tab: Tab }) {
               {isProd ? tr("redis.thisIsAProdConnection") : ""}{tr("redis.permanentlyDeleteKey")} <b className="mono">{detail.key}</b>?
               <div className="toolbar">
                 <span className="grow" />
-                <button onClick={() => setConfirmDel(false)}>{tr("redis.cancel")}</button>
-                <button className="primary danger" onClick={() => void del()}>{tr("redis.deleteKey")}</button>
+                <button onClick={() => setConfirmDel(false)}><X />{tr("redis.cancel")}</button>
+                <button className="primary danger" onClick={() => void del()}><Trash2 />{tr("redis.deleteKey")}</button>
               </div>
             </div>
           )}
@@ -616,29 +627,42 @@ function Session({ tab }: { tab: Tab }) {
           {info !== null ? (
             <pre className="io mono rinfo">{info}</pre>
           ) : loadingKey ? (
-            <div className="empty">{tr("redis.reading")}</div>
+            <Loading label={tr("redis.reading")} />
           ) : !detail ? (
             <div className="empty">{tr("redis.pickAKeyOnTheLeft")}</div>
           ) : detail.kind === "string" ? (
             <div className="rstring">
               <div className="toolbar">
                 {editValue === null ? (
-                  <button onClick={() => setEditValue(detail.text ?? "")}>{tr("redis.editValue")}</button>
+                  <>
+                    <button onClick={startEdit}><Pencil />{tr("redis.editValue")}</button>
+                    {isJson && <button onClick={togglePretty} title={tr("redis.prettyJsonHint")}><Braces />{pretty ? tr("redis.showRaw") : tr("redis.prettyJson")}</button>}
+                    <button onClick={() => void navigator.clipboard.writeText(isJson && pretty ? JSON.stringify(json, null, 2) : detail.text ?? "")}><Copy />{tr("redis.copyValue")}</button>
+                    {isJson && <span className="badge rjson-badge">JSON</span>}
+                  </>
                 ) : (
                   <>
-                    <button className="primary" onClick={() => void saveValue()}>{tr("redis.saveSetKeepTtl")}</button>
-                    <button onClick={() => setEditValue(null)}>{tr("redis.cancel")}</button>
+                    <button className="primary" onClick={() => void saveValue()}><Save />{tr("redis.saveSetKeepTtl")}</button>
+                    <button onClick={() => setEditValue(null)}><X />{tr("redis.cancel")}</button>
+                    {editJson !== undefined && <button onClick={() => setEditValue(JSON.stringify(editJson, null, 2))}><WandSparkles />{tr("redis.formatJson")}</button>}
+                    {editJson !== undefined && <button onClick={() => setEditValue(JSON.stringify(editJson))}><Minimize2 />{tr("redis.minifyJson")}</button>}
+                    {isJson && editJson === undefined && <span className="small rjson-bad"><TriangleAlert /> {tr("redis.invalidJson")}</span>}
+                    {compactJson && editJson !== undefined && <span className="muted small">{tr("redis.savedCompactHint")}</span>}
                     {isProd && <span className="muted small">{tr("redis.prodConnectionDoubleCheckBeforeSaving")}</span>}
                   </>
                 )}
               </div>
-              <textarea
-                className="io mono"
-                readOnly={editValue === null}
-                value={editValue ?? detail.text ?? ""}
-                onChange={(e) => setEditValue(e.target.value)}
-                spellCheck={false}
-              />
+              {editValue === null && isJson && pretty ? (
+                <JsonView value={json} className="io" />
+              ) : (
+                <textarea
+                  className="io mono"
+                  readOnly={editValue === null}
+                  value={editValue ?? detail.text ?? ""}
+                  onChange={(e) => setEditValue(e.target.value)}
+                  spellCheck={false}
+                />
+              )}
             </div>
           ) : detail.rows.length ? (
             <div className="grid-wrap">
@@ -675,9 +699,9 @@ const redisApp: AppModule = {
         TabView={TabView}
         empty={
           <div className="welcome">
-            <h1>🔑 Redis</h1>
+            <h1><Database /> Redis</h1>
             <p className="muted">{t("redis.browseKeysViewValuesDeleteKeys")}</p>
-            <button className="primary" onClick={() => openForm()}>＋ {t("redis.newConnection")}</button>
+            <button className="primary" onClick={() => openForm()}><Plus /> {t("redis.newConnection")}</button>
           </div>
         }
       />

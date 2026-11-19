@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { useT } from "../../store/lang";
+import { Loading } from "../../shell/Loading";
 import { ssh, type ConnectCfg, type SshStat } from "./api";
 
 /* Icon line-art nhỏ (dùng currentColor) — gọn hơn emoji và hợp theme. */
@@ -87,7 +88,7 @@ export function SshStats({ cfg }: { cfg: Omit<ConnectCfg, "cols" | "rows" | "com
 
   if (off) return null;
   if (!stat) {
-    return <div className="ssh-stats muted"><span className="spinner" /> {tr("ssh.readingServerStats")}</div>;
+    return <div className="ssh-stats"><Loading variant="inline" label={tr("ssh.readingServerStats")} /></div>;
   }
 
   const memPct = stat.memTotal ? Math.round((stat.memUsed / stat.memTotal) * 100) : 0;

@@ -1,3 +1,4 @@
+import { X } from "lucide-react";
 import { createContext, useContext, useEffect, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useT } from "../store/lang";
@@ -42,7 +43,7 @@ export function Modal({
       <div className="modal" style={{ width }} onMouseDown={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <span className="grow">{title}</span>
-          <button className="icon-btn" title={tr("shell.closeEsc")} onClick={onClose}>×</button>
+          <button className="icon-btn" title={tr("shell.closeEsc")} onClick={onClose}><X /></button>
         </div>
         <div className="modal-body">{children}</div>
       </div>

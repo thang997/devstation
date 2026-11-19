@@ -732,6 +732,7 @@ pub async fn ssh_connect(
         .slave
         .spawn_command(cmd)
         .map_err(|e| if cfg!(windows) { format!("Không chạy được ssh.exe ({e}). Cài 'OpenSSH Client' trong Windows Features.") } else { format!("Không chạy được ssh ({e}). Cài openssh-client (apt install openssh-client / brew install openssh).") })?;
+    crate::procjob::adopt(child.process_id());
     drop(pair.slave);
 
     let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
@@ -924,6 +925,18 @@ pub struct TunnelCfg {
 /// Mở tunnel bằng `ssh -N`. BatchMode=yes để không treo chờ mật khẩu (tunnel cần key/agent).
 #[tauri::command]
 pub async fn ssh_tunnel_open(app: AppHandle, window: tauri::Window, state: State<'_, SshState>, cfg: TunnelCfg) -> Result<(), String> {
+    // Tunnel cùng id đang chạy (vd. cửa sổ chính autostart rồi, cửa sổ SSH bấm mở lần nữa) → giữ cái cũ.
+    // Trước đây ghi đè vào map làm mất handle tiến trình cũ → mồ côi; và trên Windows ssh bật SO_REUSEADDR
+    // nên hai tiến trình cùng nghe một cổng được (ExitOnForwardFailure không bắt được) → tunnel chạy trùng.
+    {
+        let mut map = state.tunnels.lock().unwrap();
+        if let Some(old) = map.get_mut(&cfg.id) {
+            if matches!(old.try_wait(), Ok(None)) {
+                return Ok(());
+            }
+            map.remove(&cfg.id);
+        }
+    }
     let (flag, spec) = match cfg.kind.as_str() {
         "D" => ("-D", cfg.local_port.to_string()),
         "L" | "R" => {
@@ -959,6 +972,18 @@ pub async fn ssh_tunnel_open(app: AppHandle, window: tauri::Window, state: State
             e.to_string()
         }
     })?;
+    crate::procjob::adopt(Some(child.id()));
+    // Hai lệnh mở cùng lúc (await ở giữa) → cái đến sau thấy đã có tunnel sống thì tự tắt bản của mình
+    // (trước khi gắn luồng đọc stderr, để không phát nhầm sự kiện "closed" cho tunnel đang chạy).
+    {
+        let mut map = state.tunnels.lock().unwrap();
+        if let Some(old) = map.get_mut(&cfg.id) {
+            if matches!(old.try_wait(), Ok(None)) {
+                let _ = child.kill();
+                return Ok(());
+            }
+        }
+    }
 
     if let Some(stderr) = child.stderr.take() {
         let app = app.clone();
@@ -973,10 +998,9 @@ pub async fn ssh_tunnel_open(app: AppHandle, window: tauri::Window, state: State
         });
     }
 
-    // Tunnel phụ của kết nối DB/Redis đi theo cửa sổ mở nó; tunnel người dùng tạo trong app SSH thì chạy nền tới khi tắt app.
-    if cfg.id.starts_with("db:") || cfg.id.starts_with("redis:") {
-        crate::owners::track(&app, window.label(), crate::owners::Kind::Tunnel, &cfg.id);
-    }
+    // MỌI tunnel đi theo cửa sổ mở nó: tunnel người dùng tạo trong app SSH tắt khi đóng cửa sổ SSH (không chạy nền),
+    // tunnel phụ của kết nối DB/Redis tắt khi đóng cửa sổ DB/Redis. Tắt hẳn app → Job Object kill nốt (procjob.rs).
+    crate::owners::track(&app, window.label(), crate::owners::Kind::Tunnel, &cfg.id);
     state.tunnels.lock().unwrap().insert(cfg.id.clone(), child);
     Ok(())
 }
@@ -1058,6 +1082,7 @@ pub async fn ssh_stat_start(app: AppHandle, window: tauri::Window, state: State<
     cmd.arg(STAT_CMD);
 
     let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+    crate::procjob::adopt(child.process_id());
     drop(pair.slave);
 
     let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
@@ -1268,6 +1293,7 @@ fn ssh_run_once(cfg: &ConnectCfg, command: &str, timeout: std::time::Duration, m
     cmd.arg(format!("{command}; echo {MARKER}"));
 
     let mut child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+    crate::procjob::adopt(child.process_id());
     drop(pair.slave);
 
     let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;

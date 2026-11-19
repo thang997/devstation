@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { ChevronsDown, CircleCheck, Copy, Download, Globe, KeyRound, Lock, LogIn, Package, Pencil, Play, Plug, Plus, RefreshCw, Save, Square, Tag, Trash2, TriangleAlert, X } from "lucide-react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
@@ -7,6 +8,7 @@ import { useWorkbench } from "../../store/workbench";
 import { TabbedLayout } from "../../shell/TabbedLayout";
 import { Modal } from "../../shell/Modal";
 import { Picker } from "../../shell/Picker";
+import { Loading as SharedLoading } from "../../shell/Loading";
 import { ContextMenu, type CtxItem } from "../../shell/ContextMenu";
 import { confirmDialog } from "../../shell/confirm";
 import { Splitter, useSplitSize } from "../../shell/Resizable";
@@ -43,7 +45,7 @@ function openSession(c: RegConn) {
   useWorkbench.getState().openTab({
     id: `registry:${c.id}`,
     appId: "registry",
-    title: `📦 ${c.name}`,
+    title: c.name,
     payload: { connId: c.id },
     danger: c.env === "prod",
   });
@@ -220,7 +222,7 @@ function ConnForm({ connId, onClose }: { connId?: string; onClose: () => void })
           </div>
         </div>
         <div className="toolbar">
-          <button onClick={() => void test()}>{tr("registry.testConnection")}</button>
+          <button onClick={() => void test()}><Plug />{tr("registry.testConnection")}</button>
           <span className="grow" />
           {editing && (
             <button className="danger" onClick={() => void confirmDialog({ message: tr("registry.deleteConnectionNamed", { name: c.name }) }).then((ok) => {
@@ -228,9 +230,9 @@ function ConnForm({ connId, onClose }: { connId?: string; onClose: () => void })
               remove(c.id);
               void call("registry_forget_password", { id: c.id }).catch(() => {});
               onClose();
-            })}>{tr("registry.delete")}</button>
+            })}><Trash2 />{tr("registry.delete")}</button>
           )}
-          <button className="primary" onClick={submit}>{tr("registry.saveOpen")}</button>
+          <button className="primary" onClick={submit}><Save />{tr("registry.saveOpen")}</button>
         </div>
         {status && <div className={status.ok ? "muted" : "error-box"}>{status.text}</div>}
       </div>
@@ -255,20 +257,20 @@ function Sidebar() {
     void call("registry_forget_password", { id: c.id }).catch(() => {});
   });
   const rowMenu = (c: RegConn): CtxItem[] => [
-    { id: "open", icon: "▶", label: tr("registry.open"), action: () => openSession(c) },
-    { id: "edit", icon: "✏", label: tr("registry.edit"), action: () => openForm(c.id) },
-    { id: "forget", icon: "🔑", label: tr("registry.forgetPassword"), action: () => { sessionPasswords.delete(c.id); void call("registry_forget_password", { id: c.id }).catch(() => {}); } },
+    { id: "open", icon: <Play />, label: tr("registry.open"), action: () => openSession(c) },
+    { id: "edit", icon: <Pencil />, label: tr("registry.edit"), action: () => openForm(c.id) },
+    { id: "forget", icon: <KeyRound />, label: tr("registry.forgetPassword"), action: () => { sessionPasswords.delete(c.id); void call("registry_forget_password", { id: c.id }).catch(() => {}); } },
     { id: "s", sep: true },
-    { id: "del", icon: "🗑", label: tr("registry.delete"), danger: true, action: () => del(c) },
+    { id: "del", icon: <Trash2 />, label: tr("registry.delete"), danger: true, action: () => del(c) },
   ];
   return (
     <div
       className="side-list fill"
-      onContextMenu={(e) => { if (e.target === e.currentTarget) { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, items: [{ id: "new", icon: "＋", label: tr("registry.newConnection"), action: () => openForm() }] }); } }}
+      onContextMenu={(e) => { if (e.target === e.currentTarget) { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, items: [{ id: "new", icon: <Plus />, label: tr("registry.newConnection"), action: () => openForm() }] }); } }}
     >
       <div className="side-head">
         <span>{tr("registry.connections")}</span>
-        <button className="icon-btn" title={tr("registry.newConnection")} onClick={() => openForm()}>＋</button>
+        <button className="icon-btn" title={tr("registry.newConnection")} onClick={() => openForm()}><Plus /></button>
       </div>
       {conns.map((c) => (
         <div
@@ -281,7 +283,7 @@ function Sidebar() {
         >
           <span className="grow ellipsis">{c.name}</span>
           <span className={`env-tag ${c.env}`}>{c.env.toUpperCase()}</span>
-          <button className="icon-btn small" title={tr("registry.edit")} onClick={(e) => { e.stopPropagation(); openForm(c.id); }}>✏</button>
+          <button className="icon-btn small" title={tr("registry.edit")} onClick={(e) => { e.stopPropagation(); openForm(c.id); }}><Pencil /></button>
         </div>
       ))}
       {!conns.length && <div className="muted small pad">{tr("registry.noConnectionsYet")}</div>}
@@ -327,8 +329,7 @@ function usePaged<T>(fetcher: ((q: string, page: number) => Promise<Page<T>>) | 
 
 /** Đang tải — giống panel SFTP: lần đầu (chưa có dòng nào) thì spinner + chữ ở GIỮA khung; nạp thêm thì một dòng dưới danh sách. */
 function Loading({ full }: { full: boolean }) {
-  const tr = useT();
-  return <div className={`sftp-center ${full ? "reg-loading-full" : "reg-loading-more"}`}><span className="spinner" /> {tr("registry.loading")}</div>;
+  return <SharedLoading variant={full ? "center" : "row"} className={full ? "reg-loading-full" : "reg-loading-more"} />;
 }
 
 /* ── Phiên làm việc với một Harbor ── */
@@ -407,25 +408,25 @@ function Session({ tab }: { tab: Tab }) {
     else void startDownload(cfg, repo, a, a.platforms[0]);
   };
   const artMenu = (a: RegArtifact): CtxItem[] => [
-    { id: "dl", icon: "⬇", label: tr("registry.downloadTar"), action: () => download(a) },
+    { id: "dl", icon: <Download />, label: tr("registry.downloadTar"), action: () => download(a) },
     { id: "s", sep: true },
-    { id: "pull", icon: "⧉", label: tr("registry.copyPullCmd"), action: () => void navigator.clipboard.writeText(pullCmd(a)) },
+    { id: "pull", icon: <Copy />, label: tr("registry.copyPullCmd"), action: () => void navigator.clipboard.writeText(pullCmd(a)) },
     { id: "digest", icon: "#", label: tr("registry.copyDigest"), action: () => void navigator.clipboard.writeText(a.digest) },
-    ...(a.tags.length ? [{ id: "tag", icon: "🏷", label: tr("registry.copyImageRef"), action: () => void navigator.clipboard.writeText(`${host}/${repo}:${a.tags[0]}`) }] : []),
+    ...(a.tags.length ? [{ id: "tag", icon: <Tag />, label: tr("registry.copyImageRef"), action: () => void navigator.clipboard.writeText(`${host}/${repo}:${a.tags[0]}`) }] : []),
   ];
   const shown = allJobs.slice(0, 50);
 
-  if (connecting) return <div className="db-connecting"><span className="spinner" /> {tr("registry.connecting")} <span className="mono">{host}</span>…</div>;
+  if (connecting) return <SharedLoading label={<>{tr("registry.connecting")} <span className="mono">{host}</span>…</>} />;
   if (!cfg) {
     return (
       <div className="pad">
         {error && <div className="error-box pre">{error}</div>}
-        <div className="toolbar"><button onClick={() => void login(sessionPasswords.get(conn.id) ?? "")}>{tr("registry.retry")}</button><button onClick={() => openForm(conn.id)}>{tr("registry.edit")}</button></div>
+        <div className="toolbar"><button onClick={() => void login(sessionPasswords.get(conn.id) ?? "")}><RefreshCw />{tr("registry.retry")}</button><button onClick={() => openForm(conn.id)}><Pencil />{tr("registry.edit")}</button></div>
         {needPw && (
           <Modal title={tr("registry.enterPasswordFor", { user: conn.user, host })} width={420} onClose={() => setNeedPw(false)}>
             <div className="form">
               <input type="password" autoFocus value={pwInput} onChange={(e) => setPwInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void login(pwInput); }} />
-              <div className="toolbar"><span className="grow" /><button className="primary" onClick={() => void login(pwInput)}>{tr("registry.login")}</button></div>
+              <div className="toolbar"><span className="grow" /><button className="primary" onClick={() => void login(pwInput)}><LogIn />{tr("registry.login")}</button></div>
             </div>
           </Modal>
         )}
@@ -439,7 +440,7 @@ function Session({ tab }: { tab: Tab }) {
         <span className="mono ellipsis">{host}</span>
         <span className="muted small">{info?.user ? `· ${info.user}` : `· ${tr("registry.anonymous")}`}{info?.version ? ` · Harbor ${info.version}` : ""}</span>
         <span className="grow" />
-        <button className="icon-btn" title={tr("registry.refresh")} onClick={() => { projects.reload(); repos.reload(); arts.reload(); }}>↻</button>
+        <button className="icon-btn" title={tr("registry.refresh")} onClick={() => { projects.reload(); repos.reload(); arts.reload(); }}><RefreshCw /></button>
       </div>
       <div className="reg-body">
         {/* Projects */}
@@ -449,14 +450,14 @@ function Session({ tab }: { tab: Tab }) {
           <div className="reg-list">
             {projects.items.map((p) => (
               <div key={p.name} className={`reg-row ${project === p.name ? "on" : ""}`} onClick={() => { setProject(p.name); setRepo(null); }}>
-                <span title={p.public ? "public" : "private"}>{p.public ? "🌐" : "🔒"}</span>
+                <span title={p.public ? "public" : "private"}>{p.public ? <Globe /> : <Lock />}</span>
                 <span className="grow ellipsis">{p.name}</span>
                 <span className="muted small">{p.repoCount}</span>
               </div>
             ))}
             {projects.loading && <Loading full={!projects.items.length} />}
             {projects.err && <div className="error-box small">{projects.err}</div>}
-            {!projects.loading && projects.items.length < projects.total && <button className="rkey-more" onClick={projects.more}>{tr("registry.loadMore")}</button>}
+            {!projects.loading && projects.items.length < projects.total && <button className="rkey-more" onClick={projects.more}><ChevronsDown />{tr("registry.loadMore")}</button>}
             {!projects.loading && !projects.err && !projects.items.length && <div className="muted small pad">{tr("registry.nothingFound")}</div>}
           </div>
         </div>
@@ -484,12 +485,12 @@ function Session({ tab }: { tab: Tab }) {
             <span className="grow" />
             {checked.size > 0 && (
               <>
-                <button className="icon-btn small" title={tr("registry.clearSelection")} onClick={() => setChecked(new Set())}>×</button>
+                <button className="icon-btn small" title={tr("registry.clearSelection")} onClick={() => setChecked(new Set())}><X /></button>
                 <button
                   className="primary reg-bulk"
                   title={`${tr("registry.downloadSelectedHint")}\n${[...checked].join("\n")}`}
                   onClick={() => { const list = [...checked]; setChecked(new Set()); void startBulkDownload(cfg, list); }}
-                >{tr("registry.downloadSelected", { n: checked.size })}</button>
+                ><Download /> {tr("registry.downloadSelected", { n: checked.size })}</button>
               </>
             )}
           </div>
@@ -501,12 +502,12 @@ function Session({ tab }: { tab: Tab }) {
                   <div key={r.name} className={`reg-row ${repo === r.name ? "on" : ""}`} onClick={() => setRepo(r.name)} title={r.name}>
                     <input type="checkbox" checked={checked.has(r.name)} onClick={(e) => e.stopPropagation()} onChange={(e) => toggleCheck(r.name, e.target.checked)} />
                     <span className="grow ellipsis mono">{r.name.startsWith(`${project}/`) ? r.name.slice(project.length + 1) : r.name}</span>
-                    <span className="muted small" title={tr("registry.artifactsPulls")}>{r.artifactCount} · ⬇{r.pullCount}</span>
+                    <span className="muted small" title={tr("registry.artifactsPulls")}>{r.artifactCount} · <Download />{r.pullCount}</span>
                   </div>
                 ))}
                 {repos.loading && <Loading full={!repos.items.length} />}
                 {repos.err && <div className="error-box small">{repos.err}</div>}
-                {!repos.loading && repos.items.length < repos.total && <button className="rkey-more" onClick={repos.more}>{tr("registry.loadMore")}</button>}
+                {!repos.loading && repos.items.length < repos.total && <button className="rkey-more" onClick={repos.more}><ChevronsDown />{tr("registry.loadMore")}</button>}
                 {!repos.loading && !repos.err && !repos.items.length && <div className="muted small pad">{tr("registry.nothingFound")}</div>}
               </div>
             </>
@@ -529,8 +530,8 @@ function Session({ tab }: { tab: Tab }) {
                       <td className="small">{human(a.size)}</td>
                       <td className="small muted">{fmtTime(a.pushTime)}</td>
                       <td className="reg-actions">
-                        <button className="icon-btn" title={tr("registry.copyPullCmd")} onClick={() => void navigator.clipboard.writeText(pullCmd(a))}>⧉</button>
-                        <button className="primary" title={tr("registry.downloadTarHint")} onClick={() => download(a)}>⬇</button>
+                        <button className="icon-btn" title={tr("registry.copyPullCmd")} onClick={() => void navigator.clipboard.writeText(pullCmd(a))}><Copy /></button>
+                        <button className="primary" title={tr("registry.downloadTarHint")} onClick={() => download(a)}><Download /></button>
                       </td>
                     </tr>
                   ))}
@@ -538,7 +539,7 @@ function Session({ tab }: { tab: Tab }) {
               </table>}
               {arts.loading && <Loading full={!arts.items.length} />}
               {arts.err && <div className="error-box small">{arts.err}</div>}
-              {!arts.loading && arts.items.length < arts.total && <button className="rkey-more" onClick={arts.more}>{tr("registry.loadMore")}</button>}
+              {!arts.loading && arts.items.length < arts.total && <button className="rkey-more" onClick={arts.more}><ChevronsDown />{tr("registry.loadMore")}</button>}
               {!arts.loading && !arts.err && !arts.items.length && <div className="muted small pad">{tr("registry.nothingFound")}</div>}
             </div>
           ) : <div className="empty">{tr("registry.pickRepo")}</div>}
@@ -555,7 +556,7 @@ function Session({ tab }: { tab: Tab }) {
             const queued = j.phase === "queued";
             return (
               <div key={j.job} className="reg-job">
-                <span className="ellipsis reg-job-name" title={j.dest}>{j.error ? "⚠" : j.phase === "done" ? "✓" : "⬇"} {j.label}</span>
+                <span className="ellipsis reg-job-name" title={j.dest}>{j.error ? <TriangleAlert /> : j.phase === "done" ? <CircleCheck /> : <Download />} {j.label}</span>
                 <div className="update-bar grow"><div style={{ width: j.phase === "done" ? "100%" : `${pct}%` }} /></div>
                 <span className="muted small reg-job-stat">
                   {j.error ? <span style={{ color: "var(--danger)" }} title={j.error}>{j.error}</span>
@@ -570,8 +571,8 @@ function Session({ tab }: { tab: Tab }) {
                       if (queued) cancelledQueued.add(j.job);
                       else void call("registry_cancel", { job: j.job });
                       patchJob(j.job, { error: tr("registry.cancel") });
-                    }}>■</button>
-                  : <button className="icon-btn" title={tr("registry.dismiss")} onClick={() => setJobs((js) => js.filter((x) => x.job !== j.job))}>×</button>}
+                    }}><Square /></button>
+                  : <button className="icon-btn" title={tr("registry.dismiss")} onClick={() => setJobs((js) => js.filter((x) => x.job !== j.job))}><X /></button>}
               </div>
             );
           })}
@@ -602,9 +603,9 @@ const registryApp: AppModule = {
         TabView={Session}
         empty={
           <div className="welcome">
-            <h1>📦 Registry</h1>
+            <h1><Package /> Registry</h1>
             <p className="muted">{t("registry.welcome")}</p>
-            <button className="primary" onClick={() => openForm()}>＋ {t("registry.newConnection")}</button>
+            <button className="primary" onClick={() => openForm()}><Plus /> {t("registry.newConnection")}</button>
           </div>
         }
       />

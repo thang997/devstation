@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Braces, Check, ChevronDown, ChevronRight, Copy, CornerRightDown, Download, FileInput, Folder, FolderInput, FolderOpen, FolderPlus, KeyRound, Minimize2, PackageOpen, Pencil, Plus, Save, Send, Sparkles, Trash2, TriangleAlert, X, Zap } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { AppModule, Tab } from "../types";
 import { useWorkbench } from "../../store/workbench";
@@ -8,6 +9,7 @@ import { ContextMenu, type CtxItem } from "../../shell/ContextMenu";
 import { Modal } from "../../shell/Modal";
 import { confirmDialog } from "../../shell/confirm";
 import { Picker } from "../../shell/Picker";
+import { Loading, Spinner } from "../../shell/Loading";
 import { sendHttp, readFile, readDir, errText, NO_AUTH, type Auth, type Header, type HttpResp } from "./api";
 import { looksLikeCurl, parseCurl, parseCurlFile, type ParsedCurl } from "./curl";
 import { looksLikePostman, parsePostman, type PmNode } from "./postman";
@@ -25,7 +27,7 @@ export function newRequest(init?: { method?: string; url?: string; name?: string
   useWorkbench.getState().openTab({
     id: `http:new-${++untitled}`,
     appId: "http",
-    title: `⚡ ${init?.name ?? t("http.newRequest")}`,
+    title: init?.name ?? t("http.newRequest"),
     payload: { method: init?.method ?? "GET", url: init?.url ?? "" },
   });
 }
@@ -35,7 +37,7 @@ function openSavedRequest(id: string, name: string, r: SavedReq) {
   useWorkbench.getState().openTab({
     id: `http:saved-${++untitled}`,
     appId: "http",
-    title: `⚡ ${name}`,
+    title: name,
     payload: { method: r.method, url: r.url, headers: r.headers, body: r.body, insecure: r.insecure, savedId: id, auth: r.auth, preScript: r.preScript, script: r.script },
   });
 }
@@ -271,16 +273,16 @@ function Sidebar() {
         void importDropped(Array.from(e.dataTransfer.files));
       }}
     >
-      {fileOver && <div className="file-drop-hint">⬇ {tr("http.dropToImport")}</div>}
+      {fileOver && <div className="file-drop-hint"><Download /> {tr("http.dropToImport")}</div>}
       <div className="side-head">
         <span>COLLECTIONS</span>
         <span className="side-actions">
-          <button className="icon-btn" title={tr("http.newRequest")} onClick={() => newRequest()}>＋</button>
-          <button className="icon-btn" title={tr("http.newFolder")} onClick={() => setEditing(addFolder(null))}>🗂</button>
-          <button className="icon-btn" title={tr("http.importPostman")} onClick={() => void importPostmanFile()}>📦</button>
-          <button className="icon-btn" title={tr("http.importCurlCommandFile")} onClick={() => void importFile()}>📄</button>
-          <button className="icon-btn" title={tr("http.importAWholeFolderOfCommands")} onClick={() => void importFolder()}>📁</button>
-          <button className="icon-btn" title={`${tr("http.environmentVariables")}${Object.keys(vars).length ? ` (${Object.keys(vars).length})` : ""}`} onClick={() => setVarsOpen(true)}>🔑</button>
+          <button className="icon-btn" title={tr("http.newRequest")} onClick={() => newRequest()}><Plus /></button>
+          <button className="icon-btn" title={tr("http.newFolder")} onClick={() => setEditing(addFolder(null))}><FolderPlus /></button>
+          <button className="icon-btn" title={tr("http.importPostman")} onClick={() => void importPostmanFile()}><PackageOpen /></button>
+          <button className="icon-btn" title={tr("http.importCurlCommandFile")} onClick={() => void importFile()}><FileInput /></button>
+          <button className="icon-btn" title={tr("http.importAWholeFolderOfCommands")} onClick={() => void importFolder()}><FolderInput /></button>
+          <button className="icon-btn" title={`${tr("http.environmentVariables")}${Object.keys(vars).length ? ` (${Object.keys(vars).length})` : ""}`} onClick={() => setVarsOpen(true)}><KeyRound /></button>
         </span>
       </div>
       {varsOpen && <VarsModal onClose={() => setVarsOpen(false)} />}
@@ -320,17 +322,17 @@ function Sidebar() {
 }
 
 function nodeMenu(node: TreeNode, setEditing: (id: string) => void): CtxItem[] {
-  const items: CtxItem[] = [{ id: "rename", label: t("http.rename"), action: () => setEditing(node.id) }];
+  const items: CtxItem[] = [{ id: "rename", icon: <Pencil />, label: t("http.rename"), action: () => setEditing(node.id) }];
   if (node.kind === "folder") {
     items.push(
-      { id: "newReqHere", label: t("http.newRequestHere"), action: () => setEditing(addRequestHere(node.id)) },
-      { id: "newFolderHere", label: t("http.subfolder"), action: () => setEditing(addFolder(node.id)) },
+      { id: "newReqHere", icon: <Plus />, label: t("http.newRequestHere"), action: () => setEditing(addRequestHere(node.id)) },
+      { id: "newFolderHere", icon: <FolderPlus />, label: t("http.subfolder"), action: () => setEditing(addFolder(node.id)) },
     );
   } else {
-    items.push({ id: "open", label: t("http.openRequest"), action: () => openSavedRequest(node.id, node.name, node.req) });
+    items.push({ id: "open", icon: <Send />, label: t("http.openRequest"), action: () => openSavedRequest(node.id, node.name, node.req) });
   }
   items.push({ id: "s", sep: true }, {
-    id: "del", label: t("http.delete"), danger: true,
+    id: "del", icon: <Trash2 />, label: t("http.delete"), danger: true,
     action: () => void confirmDialog({ message: t(node.kind === "folder" ? "http.deleteFolderNamed" : "http.deleteNodeNamed", { name: node.name }) }).then((ok) => ok && removeNode(node.id)),
   });
   return items;
@@ -400,8 +402,8 @@ function TreeRow({
           onKeyDown={(e) => { if (e.key === "F2") { e.preventDefault(); setEditing(node.id); } }}
           onContextMenu={(e) => onMenu(node, parent, e)}
         >
-          <span className="tree-caret">{node.open ? "▾" : "▸"}</span>
-          <span className="tree-icon">🗂</span>
+          <span className="tree-caret">{node.open ? <ChevronDown /> : <ChevronRight />}</span>
+          <span className="tree-icon">{node.open ? <FolderOpen /> : <Folder />}</span>
           {nameEl}
         </div>
         {node.open &&
@@ -444,10 +446,10 @@ function KVEditor({ rows, onChange, addLabel }: { rows: Header[]; onChange: (r: 
           <input type="checkbox" checked={r.on} title={tr("http.onOff")} onChange={(e) => set(i, { on: e.target.checked })} />
           <input className="kv-k" value={r.name} placeholder={tr("http.name")} onChange={(e) => set(i, { name: e.target.value })} />
           <input className="kv-v" value={r.value} placeholder={tr("http.value")} onChange={(e) => set(i, { value: e.target.value })} />
-          <button className="icon-btn danger" title={tr("http.delete")} onClick={() => onChange(rows.filter((_, j) => j !== i))}>×</button>
+          <button className="icon-btn danger" title={tr("http.delete")} onClick={() => onChange(rows.filter((_, j) => j !== i))}><X /></button>
         </div>
       ))}
-      <button className="kv-add" onClick={() => onChange([...rows, { name: "", value: "", on: true }])}>＋ {addLabel}</button>
+      <button className="kv-add" onClick={() => onChange([...rows, { name: "", value: "", on: true }])}><Plus /> {addLabel}</button>
     </div>
   );
 }
@@ -527,7 +529,7 @@ function VarsModal({ onClose }: { onClose: () => void }) {
   const [v, setV] = useState("");
   const add = () => { if (k.trim()) { setVar(k.trim(), v); setK(""); setV(""); } };
   return (
-    <Modal title={tr("http.environmentVariables2")} width={520} onClose={onClose}>
+    <Modal title={<><KeyRound /> {tr("http.environmentVariables2")}</>} width={520} onClose={onClose}>
       <div className="form save-form">
         <div className="muted small">{tr("http.use")} <span className="mono">{"{{name}}"}</span> {tr("http.inUrlHeaderBodyAuthScripts")} <span className="mono">setVar</span>.</div>
         {rows.length === 0 && <div className="muted small">{tr("http.noVariablesYet")}</div>}
@@ -535,13 +537,13 @@ function VarsModal({ onClose }: { onClose: () => void }) {
           <div className="var-row" key={name}>
             <span className="mono var-k ellipsis" title={name}>{name}</span>
             <input value={val} onChange={(e) => setVar(name, e.target.value)} />
-            <button className="icon-btn danger" title={tr("http.delete")} onClick={() => removeVar(name)}>×</button>
+            <button className="icon-btn danger" title={tr("http.delete")} onClick={() => removeVar(name)}><X /></button>
           </div>
         ))}
         <div className="var-row">
           <input placeholder={tr("http.variableName")} value={k} onChange={(e) => setK(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} />
           <input placeholder={tr("http.value2")} value={v} onChange={(e) => setV(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} />
-          <button className="primary" disabled={!k.trim()} onClick={add}>{tr("http.add")}</button>
+          <button className="primary" disabled={!k.trim()} onClick={add}><Plus />{tr("http.add")}</button>
         </div>
       </div>
     </Modal>
@@ -580,10 +582,10 @@ function ParamsEditor({ url, onUrl }: { url: string; onUrl: (u: string) => void 
           <input type="checkbox" checked={r.on} title={tr("http.onOff")} onChange={(e) => set(i, { on: e.target.checked })} />
           <input className="kv-k" value={r.k} placeholder={tr("http.param")} onChange={(e) => set(i, { k: e.target.value })} />
           <input className="kv-v" value={r.v} placeholder={tr("http.value")} onChange={(e) => set(i, { v: e.target.value })} />
-          <button className="icon-btn danger" title={tr("http.delete")} onClick={() => apply(rows.filter((_, j) => j !== i))}>×</button>
+          <button className="icon-btn danger" title={tr("http.delete")} onClick={() => apply(rows.filter((_, j) => j !== i))}><X /></button>
         </div>
       ))}
-      <button className="kv-add" onClick={() => apply([...rows, { k: "", v: "", on: true }])}>＋ {tr("http.addParam")}</button>
+      <button className="kv-add" onClick={() => apply([...rows, { k: "", v: "", on: true }])}><Plus /> {tr("http.addParam")}</button>
     </div>
   );
 }
@@ -793,19 +795,19 @@ function TabView({ tab }: { tab: Tab }) {
           }}
           onKeyDown={(e) => e.key === "Enter" && void send()}
         />
-        {urlIsCurl && <button onClick={() => applyCurl(req.url)} title={tr("http.parseCurlCommandIntoARequest")}>⤵ {tr("http.parseCurl")}</button>}
-        <button className="primary" disabled={sending} onClick={() => void send()}>{sending ? tr("http.sending") : "Send"}</button>
+        {urlIsCurl && <button onClick={() => applyCurl(req.url)} title={tr("http.parseCurlCommandIntoARequest")}><CornerRightDown /> {tr("http.parseCurl")}</button>}
+        <button className="primary" disabled={sending} onClick={() => void send()}>{sending ? <><Spinner /> {tr("http.sending")}</> : <><Send /> Send</>}</button>
         <button
           onClick={onSave}
           title={savedId ? tr("http.overwriteTheSavedRequest") : tr("http.saveThisRequestIntoAFolder")}
         >
-          {savedFlash ? tr("http.saved") : savedId ? tr("http.save") : tr("http.save2")}
+          {savedFlash ? <Check /> : <Save />} {savedFlash ? tr("http.saved") : savedId ? tr("http.save") : tr("http.save2")}
         </button>
-        <button onClick={copyCurl} title={tr("http.copyThisRequestAsACurl")}>{copied ? tr("http.copied") : "Copy curl"}</button>
+        <button onClick={copyCurl} title={tr("http.copyThisRequestAsACurl")}>{copied ? <><Check /> {tr("http.copied")}</> : <><Copy /> Copy curl</>}</button>
       </div>
 
       {saveOpen && (
-        <Modal title={tr("http.saveRequestToCollection")} width={560} onClose={() => setSaveOpen(false)}>
+        <Modal title={<><Save /> {tr("http.saveRequestToCollection")}</>} width={560} onClose={() => setSaveOpen(false)}>
           <div className="form save-form">
             <label>{tr("http.name")}
               <input autoFocus value={saveName} onChange={(e) => setSaveName(e.target.value)}
@@ -824,14 +826,14 @@ function TabView({ tab }: { tab: Tab }) {
             <div className="muted small">{tr("http.tipCreateAFolderInThe")}</div>
             <div className="toolbar">
               <span className="grow" />
-              <button onClick={() => setSaveOpen(false)}>{tr("http.cancel")}</button>
-              <button className="primary" disabled={!saveName.trim()} onClick={confirmSave}>{tr("http.save")}</button>
+              <button onClick={() => setSaveOpen(false)}><X />{tr("http.cancel")}</button>
+              <button className="primary" disabled={!saveName.trim()} onClick={confirmSave}><Save />{tr("http.save")}</button>
             </div>
           </div>
         </Modal>
       )}
 
-      {error && <div className="error-box pre">⚠ {error}</div>}
+      {error && <div className="error-box pre"><TriangleAlert /> {error}</div>}
 
       <div className="pane">
         <div className="subtabs">
@@ -880,7 +882,7 @@ function TabView({ tab }: { tab: Tab }) {
                   onChange={(e) => patch({ script: e.target.value })}
                 />
               </div>
-              {scriptMsg && <div className={`script-msg ${scriptMsg.ok ? "" : "danger-text"}`}>{scriptMsg.ok ? "✓ " : "⚠ "}{scriptMsg.message}</div>}
+              {scriptMsg && <div className={`script-msg ${scriptMsg.ok ? "" : "danger-text"}`}>{scriptMsg.ok ? <Check /> : <TriangleAlert />} {scriptMsg.message}</div>}
             </div>
           )}
           {reqTab === "Body" && (
@@ -890,8 +892,8 @@ function TabView({ tab }: { tab: Tab }) {
               <>
                 <div className="body-toolbar">
                   <span className="muted small grow">{req.body.trim() ? tr("http.chars", { bodyLength: req.body.length }) : tr("http.requestBody")}</span>
-                  <button className="link" disabled={!bodyIsJson} title={tr("http.formatJsonForReadability")} onClick={() => formatBody(false)}>✨ Format JSON</button>
-                  <button className="link" disabled={!bodyIsJson} title={tr("http.collapseJsonToOneLine")} onClick={() => formatBody(true)}>Minify</button>
+                  <button className="link" disabled={!bodyIsJson} title={tr("http.formatJsonForReadability")} onClick={() => formatBody(false)}><Sparkles /> Format JSON</button>
+                  <button className="link" disabled={!bodyIsJson} title={tr("http.collapseJsonToOneLine")} onClick={() => formatBody(true)}><Minimize2 />Minify</button>
                 </div>
                 <textarea
                   className="req-raw mono"
@@ -911,7 +913,7 @@ function TabView({ tab }: { tab: Tab }) {
             <button key={t} className={t === resTab ? "on" : ""} onClick={() => setResTab(t)}>{t}</button>
           ))}
           {isJson && resTab === "Body" && (
-            <button className={pretty ? "on" : ""} onClick={() => setPretty((v) => !v)} title={tr("http.toggleJsonFormatting")}>{pretty ? "Pretty" : "Raw"}</button>
+            <button className={pretty ? "on" : ""} onClick={() => setPretty((v) => !v)} title={tr("http.toggleJsonFormatting")}><Braces />{pretty ? "Pretty" : "Raw"}</button>
           )}
           <span className="grow" />
           {resp ? (
@@ -924,7 +926,7 @@ function TabView({ tab }: { tab: Tab }) {
           )}
         </div>
         {!resp ? (
-          <div className="empty">{sending ? tr("http.waitingForResponse") : tr("http.clickSendToSendTheRequest")}</div>
+          sending ? <Loading label={tr("http.waitingForResponse")} /> : <div className="empty">{tr("http.clickSendToSendTheRequest")}</div>
         ) : resTab === "Body" ? (
           <>
             {resp.truncated && <div className="muted small pad">{tr("http.responseTooLargeShowingFirst", { p: fmtSize(8 * 1024 * 1024) })}</div>}
@@ -966,10 +968,10 @@ function HttpEmpty() {
   const tr = useT();
   return (
     <div className="welcome">
-      <h1>⚡ HTTP Client</h1>
+      <h1><Zap /> HTTP Client</h1>
       <p className="muted">{tr("http.sendRealRequestsViaRustNo")}</p>
       <div className="toolbar">
-        <button className="primary" onClick={() => newRequest()}>＋ {tr("http.newRequest")}</button>
+        <button className="primary" onClick={() => newRequest()}><Plus /> {tr("http.newRequest")}</button>
       </div>
     </div>
   );

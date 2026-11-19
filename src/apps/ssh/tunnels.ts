@@ -19,6 +19,8 @@ export interface SavedTunnel {
   remotePort: number;
   /** Tự mở tunnel này ngay khi chạy app. */
   autostart?: boolean;
+  /** Thư mục chứa (tunnelFolders trong folders.ts); rỗng / thư mục đã xoá = ở gốc. */
+  folderId?: string;
 }
 
 export type TunStatus = "stopped" | "starting" | "running" | "error";
@@ -72,6 +74,10 @@ export function saveTunnel(t: SavedTunnel) {
   const i = tunnels.findIndex((x) => x.id === t.id);
   saveList(i >= 0 ? tunnels.map((x) => (x.id === t.id ? t : x)) : [...tunnels, t]);
 }
+/** Ghi lại cả danh sách (kéo-thả sắp thứ tự / chuyển thư mục). */
+export function setTunnels(next: SavedTunnel[]) {
+  saveList(next);
+}
 export function removeTunnel(id: string) {
   void stopTunnel(id);
   saveList(tunnels.filter((x) => x.id !== id));
@@ -107,7 +113,7 @@ export async function syncRunningTunnels() {
 }
 
 let autostarted = false;
-/** Mở các tunnel được đánh dấu autostart — gọi một lần lúc khởi động app. */
+/** Mở các tunnel được đánh dấu autostart — gọi một lần khi mở app SSH (trong cửa sổ SSH). */
 export function startAutostartTunnels() {
   if (autostarted) return;
   autostarted = true;
@@ -145,7 +151,7 @@ export function tunnelDesc(t: SavedTunnel): string {
   return `:${t.localPort} ${arrow} ${t.remoteHost}:${t.remotePort}`;
 }
 
-export const newTunnel = (): SavedTunnel => ({
+export const newTunnel = (folderId = ""): SavedTunnel => ({
   id: uid("t"), name: tr("ssh.newTunnel"), host: "", port: 22, user: "", keyPath: "",
-  kind: "L", localPort: 8080, remoteHost: "localhost", remotePort: 80,
+  kind: "L", localPort: 8080, remoteHost: "localhost", remotePort: 80, folderId,
 });

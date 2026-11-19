@@ -7,6 +7,7 @@ mod db;
 mod git;
 mod http;
 mod owners;
+mod procjob;
 mod redis;
 mod registry;
 mod sftp;

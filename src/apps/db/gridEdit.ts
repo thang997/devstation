@@ -96,8 +96,41 @@ export function isPageable(sql: string, driver: GridDriver): boolean {
   return !s.includes(";"); // nhiều câu dính nhau → bỏ
 }
 
+/** Sắp xếp theo cột của LƯỚI KẾT QUẢ (chỉ số cột từ 0). */
+export interface GridSort { col: number; desc: boolean }
+
+/**
+ * Thêm ORDER BY theo cột thứ `col` của kết quả. Dùng SỐ THỨ TỰ cột (`ORDER BY 3`) — không phải quote tên,
+ * chạy được cả khi cột là biểu thức/alias, MySQL/MariaDB/Postgres/SQLite đều hiểu.
+ * Câu gốc đã có ORDER BY (ở đâu đó) → bọc thành bảng con rồi sắp lại, tránh hai mệnh đề ORDER BY.
+ */
+export function orderedSql(sql: string, sort?: GridSort | null): string {
+  const s = stripSql(sql);
+  if (!sort) return s;
+  const by = `ORDER BY ${sort.col + 1} ${sort.desc ? "DESC" : "ASC"}`;
+  return /\border\s+by\b/i.test(s) ? `SELECT * FROM (${s}) AS ds_sort ${by}` : `${s} ${by}`;
+}
+
 /** Câu lấy một trang: lấy dư 1 dòng để biết còn trang sau. */
-export const pagedSql = (sql: string, size: number, offset: number) => `${stripSql(sql)} LIMIT ${size + 1} OFFSET ${offset}`;
+export const pagedSql = (sql: string, size: number, offset: number, sort?: GridSort | null) =>
+  `${orderedSql(sql, sort)} LIMIT ${size + 1} OFFSET ${offset}`;
+
+/** Sắp xếp phía UI (kết quả không phân trang): số so theo giá trị số, NULL luôn đứng đầu khi tăng dần. */
+export function sortRows(rows: (string | null)[][], sort: GridSort): (string | null)[][] {
+  const num = (v: string) => (/^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(v.trim()) ? Number(v) : NaN);
+  const coll = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+  const dir = sort.desc ? -1 : 1;
+  return rows.map((r, i) => ({ r, i })).sort((a, b) => {
+    const x = a.r[sort.col], y = b.r[sort.col];
+    let c: number;
+    if (x === null || y === null) c = x === y ? 0 : x === null ? -1 : 1;
+    else {
+      const nx = num(x), ny = num(y);
+      c = !Number.isNaN(nx) && !Number.isNaN(ny) ? nx - ny : coll.compare(x, y);
+    }
+    return c * dir || a.i - b.i;
+  }).map((e) => e.r);
+}
 
 /** Đếm tổng số dòng của câu SELECT gốc. */
 export const countSql = (sql: string) => `SELECT COUNT(*) FROM (${stripSql(sql)}) AS ds_count`;

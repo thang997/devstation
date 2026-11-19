@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { ChevronUp, SquareTerminal, X } from "lucide-react";
 import { appById, orderedApps } from "../apps/registry";
 import { useWorkbench } from "../store/workbench";
 import { toggleTheme, useTheme } from "../store/theme";
@@ -96,7 +97,7 @@ export function Shell() {
           <section className="panel">
             <div className="pane-title">
               OUTPUT <span className="grow" />
-              <button className="icon-btn" onClick={togglePanel}>×</button>
+              <button className="icon-btn" onClick={togglePanel}><X /></button>
             </div>
             <pre className="mono log">{logs.join("\n") || tr("shell.noLogsYet")}</pre>
           </section>
@@ -106,7 +107,7 @@ export function Shell() {
       <footer className="statusbar">
         {current && (
           <button title={tr("shell.openAnotherAppWindow")} onClick={() => setLauncher(true)}>
-            {current.iconNode ?? current.icon} {tr(`apps.${current.id}.title` as TKey)} ▾
+            {current.iconNode ?? current.icon} {tr(`apps.${current.id}.title` as TKey)} <ChevronUp />
           </button>
         )}
         <span className="grow" />
@@ -131,7 +132,7 @@ export function Shell() {
           </svg>
         </button>
         <VersionLabel />
-        <button onClick={togglePanel}>Output {logs.length ? `(${logs.length})` : ""}</button>
+        <button onClick={togglePanel}><SquareTerminal />Output {logs.length ? `(${logs.length})` : ""}</button>
       </footer>
 
       {launcherOpen && activeApp && <Launcher />}

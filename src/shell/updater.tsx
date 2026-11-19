@@ -1,7 +1,9 @@
 import { useSyncExternalStore } from "react";
+import { Clock, Download, RotateCw, X } from "lucide-react";
 import { isTauri } from "@tauri-apps/api/core";
 import type { Update } from "@tauri-apps/plugin-updater";
 import { Modal } from "./Modal";
+import { Spinner } from "./Loading";
 import { t, useT } from "../store/lang";
 
 /**
@@ -117,14 +119,14 @@ export function UpdateButton() {
   if (s.kind === "downloading") {
     return (
       <button className="sb-version" onClick={openUpdateModal} title={tr("shell.downloadingInBackground")}>
-        ⬇ v{s.update.version} {pct(s.done, s.total)}
+        <Download /> v{s.update.version} {pct(s.done, s.total)}
       </button>
     );
   }
   if (s.kind === "ready" || s.kind === "installing") {
     return (
       <button className="sb-update" onClick={openUpdateModal} title={tr("shell.updateReady", { version: s.update.version })}>
-        ⟳ {s.kind === "installing" ? tr("shell.installing") : tr("shell.restartToUpdate")}
+        {s.kind === "installing" ? <Spinner /> : <RotateCw />} {s.kind === "installing" ? tr("shell.installing") : tr("shell.restartToUpdate")}
       </button>
     );
   }
@@ -166,11 +168,11 @@ export function UpdateHost() {
           <span className="grow" />
           {s.kind === "ready" ? (
             <>
-              <button onClick={closeUpdateModal}>{tr("shell.later")}</button>
-              <button className="primary" onClick={() => void restartToUpdate(s.update)}>⟳ {tr("shell.restartNow")}</button>
+              <button onClick={closeUpdateModal}><Clock />{tr("shell.later")}</button>
+              <button className="primary" onClick={() => void restartToUpdate(s.update)}><RotateCw /> {tr("shell.restartNow")}</button>
             </>
           ) : (
-            <button disabled={busy} onClick={closeUpdateModal}>{tr("shell.close2")}</button>
+            <button disabled={busy} onClick={closeUpdateModal}><X />{tr("shell.close2")}</button>
           )}
         </div>
       </div>

@@ -270,6 +270,7 @@ fn open_blocking(cfg: SftpCfg) -> Result<Arc<SftpSession>, String> {
         .slave
         .spawn_command(cmd)
         .map_err(|e| if cfg!(windows) { format!("Không chạy được sftp.exe ({e}). Cài 'OpenSSH Client' trong Windows Features.") } else { format!("Không chạy được sftp ({e}). Cài openssh-client (apt install openssh-client / brew install openssh).") })?;
+    crate::procjob::adopt(child.process_id());
     drop(pair.slave);
 
     let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;

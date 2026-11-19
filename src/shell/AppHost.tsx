@@ -1,8 +1,10 @@
 import { Component, Suspense, use, useMemo, useState, type ReactNode } from "react";
+import { RefreshCw, TriangleAlert } from "lucide-react";
 import { appById, loadApp } from "../apps/registry";
 import type { AppId } from "../apps/types";
 import { t, useT, type TKey } from "../store/lang";
 import { ModalLayerContext } from "./Modal";
+import { Loading } from "./Loading";
 
 /**
  * Vỏ của một mini app: tự tải code khi mount lần đầu, chiếm toàn bộ vùng làm việc,
@@ -18,7 +20,7 @@ export function AppHost({ id, active }: { id: AppId; active: boolean }) {
     <div className="app-host" hidden={!active}>
       <ModalLayerContext.Provider value={layer}>
         <AppErrorBoundary title={m.title}>
-          <Suspense fallback={<div className="empty">{tr("shell.loading")} {m.icon} {tr(`apps.${id}.title` as TKey)}…</div>}>
+          <Suspense fallback={<Loading label={<>{tr("shell.loading")} {tr(`apps.${id}.title` as TKey)}…</>} />}>
             <AppView id={id} />
           </Suspense>
         </AppErrorBoundary>
@@ -42,8 +44,8 @@ class AppErrorBoundary extends Component<{ title: string; children: ReactNode },
     if (!this.state.error) return this.props.children;
     return (
       <div className="welcome">
-        <div className="error-box">⚠ {this.props.title} {t("shell.crashed")} {this.state.error.message}</div>
-        <button onClick={() => this.setState({ error: null })}>{t("shell.retry")}</button>
+        <div className="error-box"><TriangleAlert /> {this.props.title} {t("shell.crashed")} {this.state.error.message}</div>
+        <button onClick={() => this.setState({ error: null })}><RefreshCw />{t("shell.retry")}</button>
       </div>
     );
   }

@@ -1,4 +1,5 @@
 import { memo, useState, type ComponentType, type ReactNode } from "react";
+import { CircleSlash, Copy, PanelLeft, X, SquareX } from "lucide-react";
 import type { AppId, Tab } from "../apps/types";
 import { useWorkbench } from "../store/workbench";
 import { Splitter, useSplitSize } from "./Resizable";
@@ -48,11 +49,11 @@ export function TabbedLayout({
     openTab({ ...t, id: `${t.id}~${uid}` });
   };
   const tabMenuItems = (t: Tab): CtxItem[] => [
-    { id: "dup", icon: "⧉", label: tr("shell.duplicate"), action: () => duplicateTab(t) },
+    { id: "dup", icon: <Copy />, label: tr("shell.duplicate"), action: () => duplicateTab(t) },
     { id: "s1", sep: true },
-    { id: "close", icon: "✕", label: tr("shell.closeTab"), action: () => closeTab(t.id) },
-    { id: "others", icon: "⊘", label: tr("shell.closeOthers"), disabled: app.tabs.length < 2, action: () => closeOtherTabs(t.id) },
-    { id: "all", icon: "⨉", label: tr("shell.closeAll"), danger: true, action: () => closeAllTabs(appId) },
+    { id: "close", icon: <X />, label: tr("shell.closeTab"), action: () => closeTab(t.id) },
+    { id: "others", icon: <CircleSlash />, label: tr("shell.closeOthers"), disabled: app.tabs.length < 2, action: () => closeOtherTabs(t.id) },
+    { id: "all", icon: <SquareX />, label: tr("shell.closeAll"), danger: true, action: () => closeAllTabs(appId) },
   ];
 
   return (
@@ -73,7 +74,7 @@ export function TabbedLayout({
               title={`${app.sidebarOpen ? tr("shell.hide") : tr("shell.show")} ${tr("shell.list")} (Ctrl+B)`}
               onClick={toggleSidebar}
             >
-              ☰
+              <PanelLeft />
             </button>
           )}
           {app.tabs.map((t) => (
@@ -85,7 +86,7 @@ export function TabbedLayout({
               onContextMenu={(e) => { e.preventDefault(); setTabMenu({ x: e.clientX, y: e.clientY, tab: t }); }}
             >
               <span className="ellipsis">{t.title}</span>
-              <button className="x" onClick={(e) => { e.stopPropagation(); closeTab(t.id); }}>×</button>
+              <button className="x" onClick={(e) => { e.stopPropagation(); closeTab(t.id); }}><X /></button>
             </div>
           ))}
         </div>

@@ -1,6 +1,6 @@
 [package]
 name = "devstation"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 license = "LicenseRef-Proprietary"
 publish = false
@@ -46,6 +46,8 @@ bytes = "1"
 # keyring: mỗi nền tảng một backend (Windows Credential Manager / Secret Service / macOS Keychain).
 [target.'cfg(windows)'.dependencies]
 keyring = { version = "3", default-features = false, features = ["windows-native"] }
+# Job Object: tiến trình ssh/sftp con tự chết khi app thoát kiểu gì cũng vậy (procjob.rs). MIT/Apache.
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Secret Service qua D-Bus (GNOME Keyring/KWallet). crypto-rust để khỏi phụ thuộc OpenSSL.

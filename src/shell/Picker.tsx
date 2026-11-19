@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { Check, ChevronDown } from "lucide-react";
 import { createPortal } from "react-dom";
 import { useT } from "../store/lang";
 
@@ -30,6 +31,7 @@ export function Picker({
   title,
   disabled,
   filterPlaceholder,
+  keepOpen,
 }: {
   label: ReactNode;
   items: PickerItem[];
@@ -41,6 +43,8 @@ export function Picker({
   title?: string;
   disabled?: boolean;
   filterPlaceholder?: string;
+  /** Chọn xong vẫn để menu mở (chọn nhiều mục liên tiếp, vd. nhiều cột). */
+  keepOpen?: boolean;
 }) {
   const tr = useT();
   const [open, setOpen] = useState(false);
@@ -119,7 +123,7 @@ export function Picker({
         onClick={() => { setOpen(!open); setQ(""); }}
       >
         <span className="ellipsis">{label}</span>
-        <span className="caret">▾</span>
+        <span className="caret"><ChevronDown /></span>
       </button>
       {open && pos && createPortal(
         <div
@@ -152,7 +156,7 @@ export function Picker({
                     className={`picker-item ${it.selected ? "on" : ""} ${it.disabled ? "disabled" : ""} ${it.className ?? ""}`}
                     onClick={() => {
                       if (it.disabled) return;
-                      setOpen(false);
+                      if (!keepOpen) setOpen(false);
                       onPick(it.id);
                     }}
                     onContextMenu={
@@ -161,7 +165,7 @@ export function Picker({
                         : undefined
                     }
                   >
-                    <span className="picker-check">{it.selected ? "✓" : ""}</span>
+                    <span className="picker-check">{it.selected ? <Check /> : null}</span>
                     {it.icon && <span className="picker-icon">{it.icon}</span>}
                     <span className="grow ellipsis">{it.label}</span>
                     {it.hint && <span className="muted small ellipsis">{it.hint}</span>}
