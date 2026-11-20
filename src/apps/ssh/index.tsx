@@ -1,4 +1,7 @@
-import { lazy, Suspense, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { Swap } from "../../shell/Swap";
+import { renderLog } from "../../shell/renderDebug";
+import { copyText } from "../../shell/clipboard";
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   ChevronDown, ChevronRight, Container, Copy, CornerDownRight, FileUp, Folder, FolderOpen, FolderPlus, Hash, Image, KeyRound, List, Lock,
@@ -86,16 +89,152 @@ function closeHostForm() {
   hostFormReq = null;
   hostFormSubs.forEach((f) => f());
 }
+const subHostForm = (cb: () => void) => { hostFormSubs.add(cb); return () => { hostFormSubs.delete(cb); }; };
+const snapHostForm = () => hostFormReq;
 function useHostFormReq() {
-  return useSyncExternalStore(
-    (cb) => { hostFormSubs.add(cb); return () => { hostFormSubs.delete(cb); }; },
-    () => hostFormReq,
-  );
+  return useSyncExternalStore(subHostForm, snapHostForm);
 }
 
 /* ── Sidebar: hosts + tunnels ── */
 
+const INDENT = { paddingLeft: 24 };
+
+/** Hành động của hàng host — truyền qua ref ổn định để `HostRow` (memo) không vẽ lại khi Sidebar đổi state
+ *  (gõ tìm, chọn, kéo, trạng thái tunnel…). Chỉ hàng có prop thay đổi mới vẽ lại. */
+interface HostRowApi {
+  select: (id: string) => void;
+  rename: (id: string | null) => void;
+  menu: (e: React.MouseEvent, h: SavedHost) => void;
+  dragStart: (id: string | null) => void;
+  /** Id đang kéo (đọc từ ref — hàng không phụ thuộc state kéo). */
+  dragging: () => string | null;
+  drop: (targetId: string | null, folderId: string) => void;
+}
+
+const HostRow = memo(function HostRow({ h, inFolder, sel, dragging, renaming, jumpName, api }: {
+  h: SavedHost; inFolder: boolean; sel: boolean; dragging: boolean; renaming: boolean;
+  /** Tên jump host (nếu có) — tra sẵn ở Sidebar. */
+  jumpName?: string;
+  api: { current: HostRowApi };
+}) {
+  renderLog("HostRow");
+  const tr = useT();
+  const style = inFolder ? INDENT : undefined;
+  if (renaming) return (
+    <div className="side-item ssh-host" style={style} onClick={(e) => e.stopPropagation()}>
+      <span className="dot green" />
+      <input
+        autoFocus
+        className="tree-rename grow"
+        defaultValue={h.name || h.host}
+        onFocus={(e) => e.currentTarget.select()}
+        onBlur={(e) => { saveHost({ ...h, name: e.target.value.trim() || h.host }); api.current.rename(null); }}
+        onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") api.current.rename(null); }}
+      />
+    </div>
+  );
+  return (
+    <div
+      className={`side-item ssh-host ${h.prod ? "prod" : ""} ${sel ? "sel" : ""} ${dragging ? "dragging" : ""}`}
+      style={style}
+      draggable
+      tabIndex={0}
+      onDragStart={(e) => { api.current.dragStart(h.id); e.dataTransfer.effectAllowed = "move"; }}
+      onDragEnd={() => api.current.dragStart(null)}
+      onDragOver={(e) => { const d = api.current.dragging(); if (d) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; if (d !== h.id) e.currentTarget.classList.add("drop-before"); } }}
+      onDragLeave={(e) => e.currentTarget.classList.remove("drop-before")}
+      onDrop={(e) => { e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.remove("drop-before"); api.current.drop(h.id, h.folderId ?? ""); }}
+      onClick={() => api.current.select(h.id)}
+      onDoubleClick={() => connect(h)}
+      onKeyDown={(e) => { if (e.key === "F2") { e.preventDefault(); api.current.rename(h.id); } }}
+      onContextMenu={(e) => api.current.menu(e, h)}
+      title={`${tr("ssh.doubleClickToConnect")} ${h.user}@${h.host}${h.prod ? " (PROD)" : ""} · ${tr("ssh.f2ToRename")}`}
+    >
+      <span className="dot green" />
+      <span className="grow ellipsis">{h.name || h.host}</span>
+      {jumpName !== undefined && <span className="muted small" title={tr("ssh.viaJump", { name: jumpName })}><CornerDownRight /></span>}
+      {h.prod && <span className="prod-tag">PROD</span>}
+      <span className="muted small ellipsis">{h.user}@{h.host}</span>
+      <span className="row-actions" onClick={(e) => e.stopPropagation()}>
+        <button className="icon-btn" title={tr("ssh.edit")} onClick={() => openHostForm(h)}><Pencil /></button>
+        <button className="icon-btn danger" title={tr("ssh.delete")} onClick={() => void confirmDialog({ message: tr("ssh.deleteHost2", { p: h.name || h.host }) }).then((ok) => ok && removeHost(h.id))}><X /></button>
+      </span>
+    </div>
+  );
+});
+
+/** Hành động của hàng tunnel — ref ổn định cho `TunRow` (memo): event `ssh-tunnel` chỉ vẽ lại hàng đổi trạng thái. */
+interface TunRowApi {
+  select: (id: string) => void;
+  rename: (id: string | null) => void;
+  edit: (tn: SavedTunnel) => void;
+  menu: (e: React.MouseEvent, tn: SavedTunnel) => void;
+  dragStart: (id: string | null) => void;
+  dragging: () => string | null;
+  drop: (targetId: string | null, folderId: string) => void;
+}
+
+const TunRow = memo(function TunRow({ tn, inFolder, sel, dragging, renaming, st, msg, api }: {
+  tn: SavedTunnel; inFolder: boolean; sel: boolean; dragging: boolean; renaming: boolean;
+  st: string; msg: string;
+  api: { current: TunRowApi };
+}) {
+  renderLog("TunRow");
+  const tr = useT();
+  const on = st === "running" || st === "starting";
+  const style = inFolder ? INDENT : undefined;
+  if (renaming) return (
+    <div className="side-item ssh-tunnel" style={style}>
+      <span className={`dot tun-${st}`} />
+      <input
+        autoFocus
+        className="tree-rename grow"
+        defaultValue={tn.name}
+        onFocus={(e) => e.currentTarget.select()}
+        onBlur={(e) => { const name = e.target.value.trim(); if (name && name !== tn.name) saveTunnel({ ...tn, name }); api.current.rename(null); }}
+        onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") api.current.rename(null); }}
+      />
+    </div>
+  );
+  return (
+    <div
+      tabIndex={0}
+      onKeyDown={(e) => { if (e.key === "F2") { e.preventDefault(); api.current.rename(tn.id); } }}
+      className={`side-item ssh-tunnel ${sel ? "sel" : ""} ${dragging ? "dragging" : ""}`}
+      onClick={() => api.current.select(tn.id)}
+      onDoubleClick={() => api.current.edit(tn)}
+      style={style}
+      title={`${msg || tunnelDesc(tn)} · ${tr("ssh.doubleClickToEditTunnel")} · ${tr("ssh.f2ToRename")}`}
+      draggable
+      onDragStart={(e) => { api.current.dragStart(tn.id); e.dataTransfer.effectAllowed = "move"; }}
+      onDragEnd={() => api.current.dragStart(null)}
+      onDragOver={(e) => { const d = api.current.dragging(); if (d) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; if (d !== tn.id) e.currentTarget.classList.add("drop-before"); } }}
+      onDragLeave={(e) => e.currentTarget.classList.remove("drop-before")}
+      onDrop={(e) => { if (!api.current.dragging()) return; e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.remove("drop-before"); api.current.drop(tn.id, tn.folderId ?? ""); }}
+      onContextMenu={(e) => api.current.menu(e, tn)}
+    >
+      <button
+        className="icon-btn tun-toggle"
+        onDoubleClick={(e) => e.stopPropagation()}
+        title={on ? tr("ssh.stopTunnel") : tr("ssh.openTunnel")}
+        onClick={() => (on ? void stopTunnel(tn.id) : void startTunnel(tn.id))}
+      >
+        {on ? <Square /> : <Play />}
+      </button>
+      <span className={`dot tun-${st}`} />
+      <span className="grow ellipsis">{tn.name}</span>
+      {tn.autostart && <span title={tr("ssh.autoStartOnAppLaunch")} style={{ opacity: 0.7, display: "inline-flex" }}><Zap /></span>}
+      <span className="muted small ellipsis">{tunnelDesc(tn)}</span>
+      <span className="row-actions" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
+        <button className="icon-btn" title={tr("ssh.edit")} onClick={() => api.current.edit(tn)}><Pencil /></button>
+        <button className="icon-btn danger" title={tr("ssh.delete")} onClick={() => void confirmDialog({ message: tr("ssh.deleteTunnel", { name: tn.name }) }).then((ok) => ok && removeTunnel(tn.id))}><X /></button>
+      </span>
+    </div>
+  );
+});
+
 function Sidebar() {
+  renderLog("Sidebar");
   const tr = useT();
   const hosts = useHosts();
   const folders = useFolders();
@@ -107,11 +246,15 @@ function Sidebar() {
   const [sel, setSel] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
+  // Ref song song với state kéo: hàng memo đọc ref qua api (state chỉ để tô lớp "dragging").
+  const dragRef = useRef<string | null>(null);
+  const startDrag = (id: string | null) => { dragRef.current = id; setDragId(id); };
   /** Kéo-thả sắp lại vị trí host: chèn `dragId` vào trước `targetId` (null = cuối), đổi folderId. */
   const dropHost = (targetId: string | null, folderId: string) => {
-    if (!dragId) return;
+    const dragging = dragRef.current;
+    if (!dragging) return;
     const list = [...hosts];
-    const di = list.findIndex((h) => h.id === dragId);
+    const di = list.findIndex((h) => h.id === dragging);
     if (di < 0) return;
     const [moved] = list.splice(di, 1);
     moved.folderId = folderId;
@@ -119,25 +262,28 @@ function Sidebar() {
     if (ti < 0) ti = list.length;
     list.splice(ti, 0, moved);
     setHosts(list);
-    setDragId(null);
+    startDrag(null);
   };
   /* ── Tunnel: thư mục riêng (tunnelFolders), kéo-thả sắp vị trí / chuyển thư mục ── */
   const tFolders = tunnelFolders.use();
   const [tunDrag, setTunDrag] = useState<string | null>(null);
+  const tunDragRef = useRef<string | null>(null);
+  const startTunDrag = (id: string | null) => { tunDragRef.current = id; setTunDrag(id); };
   const [editingTunFolder, setEditingTunFolder] = useState<string | null>(null);
   const [renamingTun, setRenamingTun] = useState<string | null>(null);
   const isOn = (id: string) => { const st = runtime[id]?.status; return st === "running" || st === "starting"; };
   const dropTunnel = (targetId: string | null, folderId: string) => {
-    if (!tunDrag) return;
+    const dragging = tunDragRef.current;
+    if (!dragging) return;
     const list = [...tunnels];
-    const di = list.findIndex((x) => x.id === tunDrag);
+    const di = list.findIndex((x) => x.id === dragging);
     if (di < 0) return;
     const [moved] = list.splice(di, 1);
     let ti = targetId ? list.findIndex((x) => x.id === targetId) : list.length;
     if (ti < 0) ti = list.length;
     list.splice(ti, 0, { ...moved, folderId });
     setTunnels(list);
-    setTunDrag(null);
+    startTunDrag(null);
   };
   const deleteTunFolder = (f: { id: string; name: string }) =>
     void confirmDialog({ message: tr("ssh.deleteTunnelFolderConfirm", { name: f.name }) }).then((ok) => ok && tunnelFolders.remove(f.id));
@@ -163,60 +309,45 @@ function Sidebar() {
     { id: "s1", sep: true },
     { id: "del", icon: <Trash2 />, label: tr("ssh.delete"), danger: true, action: () => void confirmDialog({ message: tr("ssh.deleteTunnel", { name: tn.name }) }).then((ok) => ok && removeTunnel(tn.id)) },
   ];
+  // Menu dựng lúc mở (chuột phải), không dựng sẵn cho từng hàng.
+  const tunApi = useRef<TunRowApi>(null as unknown as TunRowApi);
+  tunApi.current = {
+    select: setSel,
+    rename: setRenamingTun,
+    edit: setTunModal,
+    menu: (e, tn) => { setSel(tn.id); openMenu(e, tunMenu(tn)); },
+    dragStart: startTunDrag,
+    dragging: () => tunDragRef.current,
+    drop: dropTunnel,
+  };
   const tunRow = (tn: SavedTunnel, inFolder: boolean) => {
-    const st = runtime[tn.id]?.status ?? "stopped";
-    const on = st === "running" || st === "starting";
-    if (renamingTun === tn.id) return (
-      <div key={tn.id} className="side-item ssh-tunnel" style={inFolder ? { paddingLeft: 24 } : undefined}>
-        <span className={`dot tun-${st}`} />
-        <input
-          autoFocus
-          className="tree-rename grow"
-          defaultValue={tn.name}
-          onFocus={(e) => e.currentTarget.select()}
-          onBlur={(e) => { const name = e.target.value.trim(); if (name && name !== tn.name) saveTunnel({ ...tn, name }); setRenamingTun(null); }}
-          onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") setRenamingTun(null); }}
-        />
-      </div>
-    );
+    const rt = runtime[tn.id];
     return (
-      <div
+      <TunRow
         key={tn.id}
-        tabIndex={0}
-        onKeyDown={(e) => { if (e.key === "F2") { e.preventDefault(); setRenamingTun(tn.id); } }}
-        className={`side-item ssh-tunnel ${sel === tn.id ? "sel" : ""} ${tunDrag === tn.id ? "dragging" : ""}`}
-        onClick={() => setSel(tn.id)}
-        onDoubleClick={() => setTunModal(tn)}
-        style={inFolder ? { paddingLeft: 24 } : undefined}
-        title={`${runtime[tn.id]?.msg || tunnelDesc(tn)} · ${tr("ssh.doubleClickToEditTunnel")} · ${tr("ssh.f2ToRename")}`}
-        draggable
-        onDragStart={(e) => { setTunDrag(tn.id); e.dataTransfer.effectAllowed = "move"; }}
-        onDragEnd={() => setTunDrag(null)}
-        onDragOver={(e) => { if (tunDrag) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; if (tunDrag !== tn.id) e.currentTarget.classList.add("drop-before"); } }}
-        onDragLeave={(e) => e.currentTarget.classList.remove("drop-before")}
-        onDrop={(e) => { if (!tunDrag) return; e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.remove("drop-before"); dropTunnel(tn.id, tn.folderId ?? ""); }}
-        onContextMenu={(e) => { setSel(tn.id); openMenu(e, tunMenu(tn)); }}
-      >
-        <button
-          className="icon-btn tun-toggle"
-          onDoubleClick={(e) => e.stopPropagation()}
-          title={on ? tr("ssh.stopTunnel") : tr("ssh.openTunnel")}
-          onClick={() => (on ? void stopTunnel(tn.id) : void startTunnel(tn.id))}
-        >
-          {on ? <Square /> : <Play />}
-        </button>
-        <span className={`dot tun-${st}`} />
-        <span className="grow ellipsis">{tn.name}</span>
-        {tn.autostart && <span title={tr("ssh.autoStartOnAppLaunch")} style={{ opacity: 0.7, display: "inline-flex" }}><Zap /></span>}
-        <span className="muted small ellipsis">{tunnelDesc(tn)}</span>
-        <span className="row-actions" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
-          <button className="icon-btn" title={tr("ssh.edit")} onClick={() => setTunModal(tn)}><Pencil /></button>
-          <button className="icon-btn danger" title={tr("ssh.delete")} onClick={() => void confirmDialog({ message: tr("ssh.deleteTunnel", { name: tn.name }) }).then((ok) => ok && removeTunnel(tn.id))}><X /></button>
-        </span>
-      </div>
+        tn={tn}
+        inFolder={inFolder}
+        sel={sel === tn.id}
+        dragging={tunDrag === tn.id}
+        renaming={renamingTun === tn.id}
+        st={rt?.status ?? "stopped"}
+        msg={rt?.msg ?? ""}
+        api={tunApi}
+      />
     );
   };
-  const rootTunnels = tunnels.filter((tn) => !tn.folderId || !tFolders.some((f) => f.id === tn.folderId));
+  const tFolderIds = useMemo(() => new Set(tFolders.map((f) => f.id)), [tFolders]);
+  // Gom tunnel theo thư mục một lần cho mỗi lần danh sách đổi (không lọc lại theo từng thư mục mỗi render).
+  const tunByFolder = useMemo(() => {
+    const m = new Map<string, SavedTunnel[]>();
+    for (const tn of tunnels) {
+      const k = tn.folderId && tFolderIds.has(tn.folderId) ? tn.folderId : "";
+      const arr = m.get(k);
+      if (arr) arr.push(tn); else m.set(k, [tn]);
+    }
+    return m;
+  }, [tunnels, tFolderIds]);
+  const rootTunnels = tunByFolder.get("") ?? [];
   const runningCount = tunnels.filter((tn) => isOn(tn.id)).length;
   /** Chuột phải chỗ trống của sidebar: thao tác theo tab đang mở. */
   const emptyMenu = (): CtxItem[] =>
@@ -238,7 +369,10 @@ function Sidebar() {
   const [q, setQ] = useState("");
   const ql = q.trim().toLowerCase();
   const searching = ql.length > 0;
-  const matchHost = (h: SavedHost) => !ql || `${h.name} ${h.host} ${h.user}`.toLowerCase().includes(ql);
+  const matched = useMemo(
+    () => (ql ? hosts.filter((h) => `${h.name} ${h.host} ${h.user}`.toLowerCase().includes(ql)) : hosts),
+    [hosts, ql],
+  );
 
   const openMenu = (e: React.MouseEvent, items: CtxItem[]) => {
     e.preventDefault();
@@ -261,50 +395,44 @@ function Sidebar() {
     { id: "del", icon: <Trash2 />, label: tr("ssh.deleteHost"), danger: true, action: () => void confirmDialog({ message: tr("ssh.deleteHost2", { p: h.name || h.host }) }).then((ok) => ok && removeHost(h.id)) },
   ];
 
-  const hostRow = (h: SavedHost, inFolder: boolean) =>
-    renaming === h.id ? (
-      <div key={h.id} className="side-item ssh-host" style={inFolder ? { paddingLeft: 24 } : undefined} onClick={(e) => e.stopPropagation()}>
-        <span className="dot green" />
-        <input
-          autoFocus
-          className="tree-rename grow"
-          defaultValue={h.name || h.host}
-          onFocus={(e) => e.currentTarget.select()}
-          onBlur={(e) => { saveHost({ ...h, name: e.target.value.trim() || h.host }); setRenaming(null); }}
-          onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") setRenaming(null); }}
-        />
-      </div>
-    ) : (
-    <div
-      key={h.id}
-      className={`side-item ssh-host ${h.prod ? "prod" : ""} ${sel === h.id ? "sel" : ""} ${dragId === h.id ? "dragging" : ""}`}
-      style={inFolder ? { paddingLeft: 24 } : undefined}
-      draggable
-      tabIndex={0}
-      onDragStart={(e) => { setDragId(h.id); e.dataTransfer.effectAllowed = "move"; }}
-      onDragEnd={() => setDragId(null)}
-      onDragOver={(e) => { if (dragId) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; if (dragId !== h.id) e.currentTarget.classList.add("drop-before"); } }}
-      onDragLeave={(e) => e.currentTarget.classList.remove("drop-before")}
-      onDrop={(e) => { e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.remove("drop-before"); dropHost(h.id, h.folderId ?? ""); }}
-      onClick={() => setSel(h.id)}
-      onDoubleClick={() => connect(h)}
-      onKeyDown={(e) => { if (e.key === "F2") { e.preventDefault(); setRenaming(h.id); } }}
-      onContextMenu={(e) => { setSel(h.id); openMenu(e, hostMenu(h)); }}
-      title={`${tr("ssh.doubleClickToConnect")} ${h.user}@${h.host}${h.prod ? " (PROD)" : ""} · ${tr("ssh.f2ToRename")}`}
-    >
-      <span className="dot green" />
-      <span className="grow ellipsis">{h.name || h.host}</span>
-      {h.jumpHostId && (() => { const j = hosts.find((x) => x.id === h.jumpHostId); return j ? <span className="muted small" title={tr("ssh.viaJump", { name: j.name || j.host })}><CornerDownRight /></span> : null; })()}
-      {h.prod && <span className="prod-tag">PROD</span>}
-      <span className="muted small ellipsis">{h.user}@{h.host}</span>
-      <span className="row-actions" onClick={(e) => e.stopPropagation()}>
-        <button className="icon-btn" title={tr("ssh.edit")} onClick={() => openHostForm(h)}><Pencil /></button>
-        <button className="icon-btn danger" title={tr("ssh.delete")} onClick={() => void confirmDialog({ message: tr("ssh.deleteHost2", { p: h.name || h.host }) }).then((ok) => ok && removeHost(h.id))}><X /></button>
-      </span>
-    </div>
-  );
+  const hostApi = useRef<HostRowApi>(null as unknown as HostRowApi);
+  hostApi.current = {
+    select: setSel,
+    rename: setRenaming,
+    menu: (e, h) => { setSel(h.id); openMenu(e, hostMenu(h)); },
+    dragStart: startDrag,
+    dragging: () => dragRef.current,
+    drop: dropHost,
+  };
+  // Tra jump host bằng Map (thay vì find trong từng hàng → O(n²) với nhiều host).
+  const hostById = useMemo(() => new Map(hosts.map((h) => [h.id, h])), [hosts]);
+  const hostRow = (h: SavedHost, inFolder: boolean) => {
+    const j = h.jumpHostId ? hostById.get(h.jumpHostId) : undefined;
+    return (
+      <HostRow
+        key={h.id}
+        h={h}
+        inFolder={inFolder}
+        sel={sel === h.id}
+        dragging={dragId === h.id}
+        renaming={renaming === h.id}
+        jumpName={j ? j.name || j.host : undefined}
+        api={hostApi}
+      />
+    );
+  };
 
-  const rootHosts = hosts.filter((h) => !h.folderId || !folders.some((f) => f.id === h.folderId));
+  const folderIds = useMemo(() => new Set(folders.map((f) => f.id)), [folders]);
+  const hostsByFolder = useMemo(() => {
+    const m = new Map<string, SavedHost[]>();
+    for (const h of hosts) {
+      const k = h.folderId && folderIds.has(h.folderId) ? h.folderId : "";
+      const arr = m.get(k);
+      if (arr) arr.push(h); else m.set(k, [h]);
+    }
+    return m;
+  }, [hosts, folderIds]);
+  const rootHosts = hostsByFolder.get("") ?? [];
 
   return (
     <div
@@ -341,8 +469,8 @@ function Sidebar() {
 
       {/* Đang tìm: hiện phẳng mọi host khớp (bỏ qua nhóm/thu gọn). Không tìm: giữ cây thư mục. */}
       {searching ? (
-        hosts.filter(matchHost).length ? (
-          hosts.filter(matchHost).map((h) => hostRow(h, false))
+        matched.length ? (
+          matched.map((h) => hostRow(h, false))
         ) : (
           <div className="muted small pad">{t("ssh.noHostMatches", { q })}</div>
         )
@@ -381,7 +509,7 @@ function Sidebar() {
                   <button className="icon-btn danger" title={tr("ssh.deleteFolderHostsMoveOut")} onClick={() => void confirmDialog({ message: tr("ssh.deleteFolderHostsInsideMoveOut", { name: f.name }) }).then((ok) => ok && removeFolder(f.id))}><X /></button>
                 </span>
               </div>
-              {f.open && hosts.filter((h) => h.folderId === f.id).map((h) => hostRow(h, true))}
+              {f.open && (hostsByFolder.get(f.id) ?? []).map((h) => hostRow(h, true))}
             </div>
           ))}
           {rootHosts.map((h) => hostRow(h, false))}
@@ -399,7 +527,7 @@ function Sidebar() {
       </div>
       {tunnels.length === 0 && tFolders.length === 0 && <div className="muted small pad">{tr("ssh.noTunnelsPortForward")}</div>}
       {tFolders.map((f) => {
-        const inside = tunnels.filter((tn) => tn.folderId === f.id);
+        const inside = tunByFolder.get(f.id) ?? [];
         const running = inside.filter((tn) => isOn(tn.id)).length;
         return (
           <div key={f.id}>
@@ -669,9 +797,9 @@ function DockerModal({ cfg, base, onClose }: { cfg: ConnectCfg; base: ExecBase; 
   const rowMenu = (c: DockerContainer): CtxItem[] => [
     { id: "exec", icon: <Play />, label: tr("ssh.execShellIntoContainer"), action: () => exec(c) },
     { id: "s1", sep: true },
-    { id: "copy", icon: <Copy />, label: tr("ssh.copyName"), action: () => void navigator.clipboard.writeText(c.name || c.id) },
-    { id: "copyid", icon: <Hash />, label: tr("ssh.copyId"), action: () => void navigator.clipboard.writeText(c.id) },
-    { id: "copyimg", icon: <Image />, label: tr("ssh.copyImage"), action: () => void navigator.clipboard.writeText(c.image) },
+    { id: "copy", icon: <Copy />, label: tr("ssh.copyName"), action: () => void copyText(c.name || c.id) },
+    { id: "copyid", icon: <Hash />, label: tr("ssh.copyId"), action: () => void copyText(c.id) },
+    { id: "copyimg", icon: <Image />, label: tr("ssh.copyImage"), action: () => void copyText(c.image) },
   ];
   return (
     <Modal title={<><Container /> {tr("ssh.dockerContainers")}</>} width={760} onClose={onClose}>
@@ -680,7 +808,7 @@ function DockerModal({ cfg, base, onClose }: { cfg: ConnectCfg; base: ExecBase; 
         <div className="toolbar">
           <span className="mono muted small grow ellipsis">{base.name || cfg.host} · {cfg.user}@{cfg.host}:{cfg.port}</span>
           {base.prod ? <span className="prod-tag">PROD</span> : null}
-          <button onClick={load} disabled={loading}>{loading ? <Spinner /> : <RefreshCw />} {loading ? tr("ssh.loading") : tr("ssh.refresh")}</button>
+          <button onClick={load} disabled={loading}><Swap on={loading} a={<><Spinner /> {tr("ssh.loading")}</>} b={<><RefreshCw /> {tr("ssh.refresh")}</>} /></button>
         </div>
         {loading && (
           <Loading label={<>{tr("ssh.reading")} <span className="mono">docker ps</span>…</>} />
@@ -749,6 +877,7 @@ const FILES_MIN = 260;
 const FILES_MAX = 720;
 
 function TabView({ tab }: { tab: Tab }) {
+  renderLog("TabView");
   const tr = useT();
   const p = tab.payload;
   const hosts = useHosts();
@@ -771,10 +900,21 @@ function TabView({ tab }: { tab: Tab }) {
   const hostId = String(p.hostId ?? "");
   const curHost = hosts.find((h) => h.id === hostId);
   // Jump host tra theo host đã lưu lúc mở tab (sửa jump host thì mở lại tab để áp dụng).
-  const cfg: ConnectCfg = { host: String(p.host), port: Number(p.port) || 22, user: String(p.user), keyPath: String(p.keyPath ?? ""), jump: jumpCfgFor(curHost, hosts) };
+  const jump = jumpCfgFor(curHost, hosts);
+  // cfg/driver giữ nguyên object giữa các lần vẽ (đổi trạng thái, cd, sửa danh sách host…) → SftpPanel/SshStats/Terminal (memo) không vẽ lại.
+  const cfg: ConnectCfg = useMemo(
+    () => ({ host: String(p.host), port: Number(p.port) || 22, user: String(p.user), keyPath: String(p.keyPath ?? ""), jump }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [p.host, p.port, p.user, p.keyPath, jump?.host, jump?.port, jump?.user, jump?.keyPath],
+  );
   // Tab exec vào container: chạy `docker exec -it` qua ssh -tt. Giao diện tối giản (chỉ terminal).
   const isExec = !!p.exec;
-  const execCfg: ConnectCfg = isExec ? { ...cfg, command: String(p.command ?? ""), tty: p.tty !== false } : cfg;
+  const execCfg: ConnectCfg = useMemo(
+    () => (isExec ? { ...cfg, command: String(p.command ?? ""), tty: p.tty !== false } : cfg),
+    [cfg, isExec, p.command, p.tty],
+  );
+  const drv = useMemo(() => (isExec ? dockerFs(cfg, String(p.container ?? "")) : undefined), [cfg, isExec, p.container]);
+  const onCd = useCallback((arg: string) => { cdSeq.current += 1; setCd({ arg, seq: cdSeq.current }); }, []);
   const base: ExecBase = { hostId, host: cfg.host, port: cfg.port, user: cfg.user, keyPath: cfg.keyPath, name: curHost?.name || String(p.name ?? ""), prod: !!p.prod };
   // Dropdown chọn host (sidebar đã thu lại khi đang trong phiên).
   const hostItems: PickerItem[] = [
@@ -796,9 +936,10 @@ function TabView({ tab }: { tab: Tab }) {
     if (h) connect(h); // mở tab mới (cho phép nhiều tab/host); chuyển tab dùng thanh tab
   };
   // ── Tab exec container: terminal + panel file DUYỆT TRONG CONTAINER (qua docker exec), không stats. ──
+  // Tiêu đề panel file giữ nguyên element giữa các lần vẽ (SftpPanel memo).
+  const execTitle = useMemo(() => <><Container /> {String(p.container ?? "")}</>, [p.container]);
   if (isExec) {
     const container = String(p.container ?? "");
-    const drv = dockerFs(cfg, container);
     return (
       <div className="view ssh-view">
         <div className="toolbar">
@@ -822,10 +963,10 @@ function TabView({ tab }: { tab: Tab }) {
             className="ssh-files-wrap"
             style={{ width: filesW, flex: "0 0 auto", display: filesOpen ? "flex" : "none" }}
           >
-            <SftpPanel cfg={cfg} driver={drv} title={<><Container /> {container}</>} noUpload />
+            <SftpPanel cfg={cfg} driver={drv} title={execTitle} noUpload />
           </div>
           {filesOpen && (
-            <Splitter axis="x" onResize={(d) => setFilesW((w) => w + d)} onReset={() => setFilesW(FILES_DEFAULT)} />
+            <Splitter axis="x" live="prev" min={FILES_MIN} max={FILES_MAX} onResize={(d) => setFilesW((w) => w + d)} onReset={() => setFilesW(FILES_DEFAULT)} />
           )}
           <div className="ssh-term-wrap">
             <Suspense fallback={null}><SshTerminal cfg={execCfg} onStatus={setStatus} /></Suspense>
@@ -875,14 +1016,14 @@ function TabView({ tab }: { tab: Tab }) {
           <SftpPanel cfg={cfg} followCd={cd} />
         </div>
         {filesOpen && (
-          <Splitter axis="x" onResize={(d) => setFilesW((w) => w + d)} onReset={() => setFilesW(FILES_DEFAULT)} />
+          <Splitter axis="x" live="prev" min={FILES_MIN} max={FILES_MAX} onResize={(d) => setFilesW((w) => w + d)} onReset={() => setFilesW(FILES_DEFAULT)} />
         )}
         <div className="ssh-term-wrap">
           <Suspense fallback={null}>
             <SshTerminal
               cfg={cfg}
               onStatus={setStatus}
-              onCd={(arg) => { cdSeq.current += 1; setCd({ arg, seq: cdSeq.current }); }}
+              onCd={onCd}
             />
           </Suspense>
           <SshStats cfg={cfg} />

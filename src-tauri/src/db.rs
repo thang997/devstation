@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use sqlx::{Column, Either, Row};
+use sqlx::{Column, Either, Executor, Row};
 use base64::Engine;
 use tauri::State;
 
@@ -288,6 +288,12 @@ macro_rules! run_on {
     }};
 }
 
+/** Câu dạng truy vấn (trả bảng) — để biết cần lấy tên cột khi kết quả 0 dòng. */
+fn looks_like_query(sql: &str) -> bool {
+    let l = strip_lead_comments(sql).trim_start().to_lowercase();
+    ["select", "with", "show", "explain", "describe", "desc ", "pragma", "values", "table "].iter().any(|k| l.starts_with(k))
+}
+
 async fn run(pool: &Pool, sql: &str, limit: usize) -> Result<QueryOut, String> {
     let started = Instant::now();
     let mut out = match pool {
@@ -296,6 +302,17 @@ async fn run(pool: &Pool, sql: &str, limit: usize) -> Result<QueryOut, String> {
         Pool::Lite(p) => run_on!(p, sql, limit),
         Pool::Cass(s) => run_cass(s, sql, limit).await,
     }?;
+    // SELECT trả 0 dòng: raw_sql không cho biết tên cột (chỉ có khi có dòng) → hỏi cấu trúc bằng describe
+    // (chuẩn bị câu, KHÔNG chạy lại) để UI vẫn hiện bảng rỗng có tiêu đề cột. Lỗi (câu không prepare được) thì bỏ qua.
+    if out.columns.is_empty() && out.rows.is_empty() && looks_like_query(sql) {
+        let cols: Option<Vec<String>> = match pool {
+            Pool::Pg(p) => p.describe(sql).await.ok().map(|d| d.columns().iter().map(|c| c.name().to_string()).collect()),
+            Pool::My(p) => p.describe(sql).await.ok().map(|d| d.columns().iter().map(|c| c.name().to_string()).collect()),
+            Pool::Lite(p) => p.describe(sql).await.ok().map(|d| d.columns().iter().map(|c| c.name().to_string()).collect()),
+            Pool::Cass(_) => None,
+        };
+        if let Some(c) = cols { out.columns = c; }
+    }
     out.elapsed_ms = started.elapsed().as_millis();
     Ok(out)
 }

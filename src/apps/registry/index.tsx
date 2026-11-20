@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { renderLog } from "../../shell/renderDebug";
+import { copyText } from "../../shell/clipboard";
+import { memo, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ChevronsDown, CircleCheck, Copy, Download, Globe, KeyRound, Lock, LogIn, Package, Pencil, Play, Plug, Plus, RefreshCw, Save, Square, Tag, Trash2, TriangleAlert, X } from "lucide-react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import type { AppModule, Tab } from "../types";
 import { useWorkbench } from "../../store/workbench";
 import { TabbedLayout } from "../../shell/TabbedLayout";
@@ -64,6 +66,10 @@ interface Job {
   error?: string;
   size?: number;
   startedAt: number;
+  /** Byte/giây tức thời (phase download/zip). */
+  speed?: number;
+  /** Đã tải xong vào thư mục tạm, chờ người dùng chọn nơi lưu. */
+  pending?: { kind: "tar" | "zip"; files: string[]; name: string; batch?: string; skipped?: number };
 }
 let jobs: Job[] = [];
 const jobSubs = new Set<() => void>();
@@ -78,10 +84,21 @@ function ensureListener() {
   listening = true;
   void listen<{ job: string; phase: string; done: number; total: number; layersDone: number; layersTotal: number }>("registry-pull", (ev) => {
     const p = ev.payload;
-    if (!jobs.some((j) => j.job === p.job && !j.error && j.phase !== "done")) return;
-    patchJob(p.job, { phase: p.phase, done: p.done, total: p.total, layersDone: p.layersDone, layersTotal: p.layersTotal });
+    const cur = jobs.find((j) => j.job === p.job && !j.error && j.phase !== "done" && j.phase !== "unsaved" && j.phase !== "saving");
+    if (!cur) return;
+    // Tốc độ TỨC THỜI (trung bình trượt giữa hai mẫu ~400ms), không phải trung bình từ lúc bắt đầu.
+    const now = Date.now();
+    const last = samples.get(p.job);
+    let speed = cur.speed ?? 0;
+    if (last && p.phase === last.phase && now > last.t) {
+      const inst = Math.max(0, p.done - last.done) / ((now - last.t) / 1000);
+      speed = speed ? speed * 0.6 + inst * 0.4 : inst;
+    } else speed = 0;
+    samples.set(p.job, { t: now, done: p.done, phase: p.phase });
+    patchJob(p.job, { phase: p.phase, done: p.done, total: p.total, layersDone: p.layersDone, layersTotal: p.layersTotal, speed });
   });
 }
+const samples = new Map<string, { t: number; done: number; phase: string }>();
 
 const fileNameFor = (repo: string, a: RegArtifact, platform?: string) => {
   const base = repo.split("/").pop() || "image";
@@ -92,44 +109,89 @@ const newJobId = () => `j${Date.now().toString(36)}${Math.random().toString(36).
 const addJob = (job: string, label: string, dest: string, phase = "manifest") =>
   setJobs((js) => [{ job, label, dest, phase, done: 0, total: 0, layersDone: 0, layersTotal: 0, startedAt: Date.now() }, ...js]);
 
-/** Chạy registry_pull cho một job đã thêm vào danh sách. */
-async function runPull(job: string, cfg: RegCfg, repo: string, a: RegArtifact, platform: string | undefined, dest: string) {
+/** Thư mục tạm của app (`%TEMP%/devstation-registry/out`): tải xong mới hỏi nơi lưu. */
+let tempDirP: Promise<string> | null = null;
+const tempDir = () => (tempDirP ??= call<string>("registry_temp_dir", {}).catch((e) => { tempDirP = null; throw e; }));
+const joinPath = (dir: string, ...parts: string[]) => {
+  const sep = dir.includes("\\") ? "\\" : "/";
+  return [dir.replace(/[\\/]+$/, ""), ...parts].join(sep);
+};
+
+/** Chạy registry_pull cho một job đã thêm vào danh sách (ghi vào `dest` trong thư mục tạm). Trả về size hoặc null khi lỗi. */
+async function runPull(job: string, cfg: RegCfg, repo: string, a: RegArtifact, platform: string | undefined, dest: string): Promise<number | null> {
   ensureListener();
   const tag = a.tags[0] ?? "";
   const label = `${repo}:${tag || a.digest.slice(0, 19)}${platform ? ` (${platform})` : ""}`;
   patchJob(job, { label, phase: "manifest", startedAt: Date.now() });
   try {
     const size = await call<number>("registry_pull", { cfg, repo, reference: a.digest, tag: tag || null, platform: platform ?? null, dest, job });
-    patchJob(job, { phase: "done", size });
-    useWorkbench.getState().log(`✓ ${label} → ${dest} (${human(size)})`);
+    patchJob(job, { phase: "unsaved", size, done: size, total: size });
+    return size;
   } catch (e) {
     patchJob(job, { error: errText(e) });
+    return null;
   }
 }
 
-async function startDownload(cfg: RegCfg, repo: string, a: RegArtifact, platform?: string) {
+/** Hỏi nơi lưu cho job đã tải xong (`pending`): .tar → chuyển file; zip → gom các .tar vào file zip đã chọn.
+ *  Bấm Huỷ ở hộp thoại → job ở trạng thái "chưa lưu" (nút Lưu… để hỏi lại, ✕ để bỏ file tạm). */
+async function saveJob(jobId: string) {
+  const j = jobs.find((x) => x.job === jobId);
+  const p = j?.pending;
+  if (!j || !p) return;
+  const isZip = p.kind === "zip";
   const dest = await saveDialog({
-    title: t("registry.saveImageAs"),
-    defaultPath: fileNameFor(repo, a, platform),
-    filters: [{ name: "Docker image (docker load)", extensions: ["tar"] }],
+    title: t(isZip ? "registry.saveZipAs" : "registry.saveImageAs"),
+    defaultPath: p.name,
+    filters: isZip ? [{ name: "Zip", extensions: ["zip"] }] : [{ name: "Docker image (docker load)", extensions: ["tar"] }],
   });
-  if (typeof dest !== "string") return;
-  const job = newJobId();
-  addJob(job, `${repo}:${a.tags[0] || a.digest.slice(0, 19)}`, dest);
-  await runPull(job, cfg, repo, a, platform, dest);
+  if (typeof dest !== "string") { patchJob(jobId, { phase: "unsaved", error: undefined }); return; }
+  ensureListener();
+  samples.delete(jobId);
+  patchJob(jobId, { phase: isZip ? "zip" : "saving", error: undefined, done: 0, speed: 0, dest });
+  try {
+    const size = isZip
+      ? await call<number>("registry_zip", { files: p.files, dest, job: jobId, cleanup: p.batch })
+      : await call<number>("registry_move", { src: p.files[0], dest });
+    patchJob(jobId, { phase: "done", size, pending: undefined });
+    useWorkbench.getState().log(`✓ ${j.label} → ${dest} (${human(size)})`);
+    if (isZip && p.skipped) useWorkbench.getState().log(`⚠ ${t("registry.zipSkipped", { n: p.skipped })}`);
+  } catch (e) {
+    patchJob(jobId, { phase: "unsaved", error: errText(e) });
+  }
 }
 
-/** Tải image MỚI NHẤT (theo push time) của nhiều repository vào một thư mục; chạy 2 repo song song
- *  (mỗi repo đã tải 4 layer song song). Image multi-arch → nền tảng mặc định linux/amd64 (phía Rust). */
+/** Bỏ job: còn file tạm chưa lưu thì xoá luôn. */
+function dismissJob(j: Job) {
+  if (j.pending) void call("registry_discard", { paths: j.pending.files }).catch(() => {});
+  setJobs((js) => js.filter((x) => x.job !== j.job));
+}
+
+async function startDownload(cfg: RegCfg, repo: string, a: RegArtifact, platform?: string) {
+  const job = newJobId();
+  const name = fileNameFor(repo, a, platform);
+  addJob(job, `${repo}:${a.tags[0] || a.digest.slice(0, 19)}`, "");
+  let dest: string;
+  try { dest = joinPath(await tempDir(), job, name); } catch (e) { patchJob(job, { error: errText(e) }); return; }
+  patchJob(job, { dest });
+  if ((await runPull(job, cfg, repo, a, platform, dest)) == null) return;
+  patchJob(job, { pending: { kind: "tar", files: [dest], name } });
+  await saveJob(job);
+}
+
+/** Tải image MỚI NHẤT (theo push time) của nhiều repository; chạy tất cả repo song song (mỗi repo 4 layer song song).
+ *  Tải hết vào thư mục tạm rồi mới hỏi nơi lưu: 1 repo → .tar, nhiều repo → gom vào MỘT file .zip.
+ *  Image multi-arch → nền tảng mặc định linux/amd64 (phía Rust). */
 async function startBulkDownload(cfg: RegCfg, repos: string[]) {
-  const dir = await openDialog({ title: t("registry.pickFolder"), directory: true });
-  if (typeof dir !== "string") return;
-  const sep = dir.includes("\\") ? "\\" : "/";
   const queue = repos.map((repo) => {
     const job = newJobId();
-    addJob(job, repo, dir, "queued");
+    addJob(job, repo, "", "queued");
     return { job, repo };
   });
+  const ids = queue.map((q) => q.job);
+  let batch: string;
+  try { batch = joinPath(await tempDir(), newJobId()); } catch (e) { ids.forEach((id) => patchJob(id, { error: errText(e) })); return; }
+  const names = new Map<string, string>();
   const worker = async () => {
     for (let it = queue.shift(); it; it = queue.shift()) {
       const { job, repo } = it;
@@ -142,7 +204,9 @@ async function startBulkDownload(cfg: RegCfg, repos: string[]) {
         if (!a) { patchJob(job, { error: t("registry.noArtifactsIn", { repo }) }); continue; }
         // Bấm hủy lúc đang đọc danh sách artifact → không bắt đầu tải.
         if (jobs.find((j) => j.job === job)?.error) continue;
-        const dest = `${dir.replace(/[\\/]+$/, "")}${sep}${fileNameFor(repo, a)}`;
+        const name = fileNameFor(repo, a);
+        names.set(job, name);
+        const dest = joinPath(batch, name);
         patchJob(job, { dest });
         await runPull(job, cfg, repo, a, undefined, dest);
       } catch (e) {
@@ -150,7 +214,29 @@ async function startBulkDownload(cfg: RegCfg, repos: string[]) {
       }
     }
   };
-  await Promise.all([worker(), worker()]);
+  // Chạy TẤT CẢ repo song song (layer chung chỉ tải một lần nhờ BlobLease phía Rust).
+  await Promise.all(queue.map(() => worker()));
+  const ok = jobs.filter((j) => ids.includes(j.job) && j.phase === "unsaved" && !j.error);
+  if (!ok.length) return;
+  if (repos.length === 1) {
+    patchJob(ok[0].job, { pending: { kind: "tar", files: [ok[0].dest], name: names.get(ok[0].job) ?? "image.tar" } });
+    await saveJob(ok[0].job);
+    return;
+  }
+  const d = new Date(), p2 = (n: number) => String(n).padStart(2, "0");
+  const stamp = `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}`;
+  const project = repos[0].split("/")[0] || "images";
+  const name = `${project}_images_${stamp}.zip`.replace(/[\\/:*?"<>|]/g, "_");
+  const zjob = newJobId();
+  const size = ok.reduce((n, j) => n + (j.size ?? 0), 0);
+  // Các dòng .tar đã tải gộp thành MỘT dòng zip (dòng lỗi giữ lại).
+  setJobs((js) => [
+    { job: zjob, label: t("registry.zipLabel", { name, n: ok.length }), dest: batch, phase: "unsaved", done: size, total: size, size,
+      layersDone: 0, layersTotal: 0, startedAt: Date.now(),
+      pending: { kind: "zip", files: ok.map((j) => j.dest), name, batch, skipped: ids.length - ok.length } },
+    ...js.filter((j) => !ok.some((o) => o.job === j.job)),
+  ]);
+  await saveJob(zjob);
 }
 /** Job còn trong hàng đợi bị bấm hủy (chưa gọi Rust). */
 const cancelledQueued = new Set<string>();
@@ -332,8 +418,115 @@ function Loading({ full }: { full: boolean }) {
   return <SharedLoading variant={full ? "center" : "row"} className={full ? "reg-loading-full" : "reg-loading-more"} />;
 }
 
+/* ── Hàng danh sách (memo): gõ ô lọc / tick / chọn dòng chỉ vẽ lại hàng đổi, không vẽ lại cả trăm hàng ── */
+const ProjectRow = memo(function ProjectRow({ p, on, onPick }: { p: RegProject; on: boolean; onPick: (name: string) => void }) {
+  renderLog("ProjectRow");
+  return (
+    <div className={`reg-row ${on ? "on" : ""}`} onClick={() => onPick(p.name)}>
+      <span title={p.public ? "public" : "private"}>{p.public ? <Globe /> : <Lock />}</span>
+      <span className="grow ellipsis">{p.name}</span>
+      <span className="muted small">{p.repoCount}</span>
+    </div>
+  );
+});
+
+const RepoRow = memo(function RepoRow({ r, project, on, checked, onPick, onCheck }: {
+  r: RegRepo; project: string; on: boolean; checked: boolean;
+  onPick: (name: string) => void; onCheck: (name: string, on: boolean) => void;
+}) {
+  renderLog("RepoRow");
+  const tr = useT();
+  return (
+    <div className={`reg-row ${on ? "on" : ""}`} onClick={() => onPick(r.name)} title={r.name}>
+      <input type="checkbox" checked={checked} onClick={(e) => e.stopPropagation()} onChange={(e) => onCheck(r.name, e.target.checked)} />
+      <span className="grow ellipsis mono">{r.name.startsWith(`${project}/`) ? r.name.slice(project.length + 1) : r.name}</span>
+      <span className="muted small" title={tr("registry.artifactsPulls")}>{r.artifactCount} · <Download />{r.pullCount}</span>
+    </div>
+  );
+});
+
+interface ArtApi {
+  download: (a: RegArtifact) => void;
+  copyPull: (a: RegArtifact) => void;
+  menu: (a: RegArtifact, x: number, y: number) => void;
+}
+const ArtRow = memo(function ArtRow({ a, api }: { a: RegArtifact; api: { get: () => ArtApi } }) {
+  renderLog("ArtRow");
+  const tr = useT();
+  return (
+    <tr onContextMenu={(e) => { e.preventDefault(); api.get().menu(a, e.clientX, e.clientY); }} onDoubleClick={() => api.get().download(a)}>
+      <td>{a.tags.length ? a.tags.map((x) => <span key={x} className="reg-tag">{x}</span>) : <span className="muted small">{tr("registry.untagged")}</span>}</td>
+      <td className="mono small" title={a.digest}>{a.digest.replace("sha256:", "").slice(0, 12)}</td>
+      <td className="small">{a.platform || (a.platforms.length ? a.platforms.join(", ") : "")}</td>
+      <td className="small">{human(a.size)}</td>
+      <td className="small muted">{fmtTime(a.pushTime)}</td>
+      <td className="reg-actions">
+        <button className="icon-btn" title={tr("registry.copyPullCmd")} onClick={() => api.get().copyPull(a)}><Copy /></button>
+        <button className="primary" title={tr("registry.downloadTarHint")} onClick={() => api.get().download(a)}><Download /></button>
+      </td>
+    </tr>
+  );
+});
+
+/** Danh sách lượt tải: component riêng subscribe store jobs → sự kiện tiến trình (dày) chỉ vẽ lại phần này,
+ *  không vẽ lại 3 cột Projects/Repositories/Artifacts. Mỗi hàng memo: chỉ job đổi mới vẽ lại. */
+function JobsPanel() {
+  renderLog("JobsPanel");
+  const tr = useT();
+  const all = useJobs();
+  const shown = all.slice(0, 50);
+  if (!shown.length) return null;
+  // Tổng tốc độ mọi lượt đang tải: băng thông chia cho các lượt song song, con số này mới là tốc độ thật của đường mạng.
+  const active = all.filter((j) => !j.error && j.phase === "download");
+  const total = active.reduce((n, j) => n + (j.speed ?? 0), 0);
+  return (
+    <div className="reg-jobs">
+      {active.length > 1 && <div className="muted small reg-jobs-total">{tr("registry.totalSpeed", { n: active.length, speed: `${human(total)}/s` })}</div>}
+      {shown.map((j) => <JobRow key={j.job} j={j} />)}
+    </div>
+  );
+}
+
+const JobRow = memo(function JobRow({ j }: { j: Job }) {
+  renderLog("JobRow");
+  const tr = useT();
+  const pct = j.total ? Math.min(100, (j.done / j.total) * 100) : 0;
+  const speed = (j.phase === "download" || j.phase === "zip") && j.speed ? `${human(j.speed)}/s` : "";
+  const unsaved = j.phase === "unsaved";
+  const running = !j.error && j.phase !== "done" && !unsaved;
+  const queued = j.phase === "queued";
+  return (
+    <div className="reg-job">
+      <span className="ellipsis reg-job-name" title={j.dest}>{j.error ? <TriangleAlert /> : j.phase === "done" ? <CircleCheck /> : <Download />} {j.label}</span>
+      <div className="update-bar grow"><div style={{ width: j.phase === "done" ? "100%" : `${pct}%` }} /></div>
+      <span className="muted small reg-job-stat">
+        {j.error ? <span style={{ color: "var(--danger)" }} title={j.error}>{j.error}</span>
+          : j.phase === "done" ? human(j.size ?? j.total)
+          : unsaved ? `${human(j.size ?? j.total)} · ${tr("registry.notSaved")}`
+          : j.phase === "saving" ? tr("registry.phaseSaving")
+          : queued ? tr("registry.phaseQueued")
+          : j.phase === "manifest" ? tr("registry.phaseManifest")
+          : j.phase === "pack" ? tr("registry.phasePack")
+          : j.phase === "zip" ? `${tr("registry.phaseZip")} ${human(j.done)} / ${human(j.total)}${speed && ` · ${speed}`}`
+          : `${human(j.done)} / ${human(j.total)} · ${j.layersDone}/${j.layersTotal} layers ${speed && `· ${speed}`}`}
+      </span>
+      {running
+        ? <button className="icon-btn danger" title={tr("registry.cancel")} onClick={() => {
+            if (queued) cancelledQueued.add(j.job);
+            else void call("registry_cancel", { job: j.job });
+            patchJob(j.job, { error: tr("registry.cancel") });
+          }}><Square /></button>
+        : <>
+            {j.pending && <button className="icon-btn" title={tr("registry.saveAs")} onClick={() => void saveJob(j.job)}><Save /></button>}
+            <button className="icon-btn" title={j.pending ? tr("registry.discard") : tr("registry.dismiss")} onClick={() => dismissJob(j)}><X /></button>
+          </>}
+    </div>
+  );
+});
+
 /* ── Phiên làm việc với một Harbor ── */
 function Session({ tab }: { tab: Tab }) {
+  renderLog("Session");
   const tr = useT();
   const connId = String(tab.payload.connId);
   const conn = useConns((s) => s.conns.find((c) => c.id === connId));
@@ -349,11 +542,13 @@ function Session({ tab }: { tab: Tab }) {
   const [pickPlat, setPickPlat] = useState<RegArtifact | null>(null);
   /** Repository đã tick để tải hàng loạt (tên đầy đủ project/repo, giữ khi đổi project). */
   const [checked, setChecked] = useState<Set<string>>(() => new Set());
-  const toggleCheck = (name: string, on: boolean) =>
-    setChecked((s) => { const n = new Set(s); if (on) n.add(name); else n.delete(name); return n; });
+  const toggleCheck = useCallback((name: string, on: boolean) =>
+    setChecked((s) => { const n = new Set(s); if (on) n.add(name); else n.delete(name); return n; }), []);
+  const pickProject = useCallback((name: string) => { setProject(name); setRepo(null); }, []);
+  const artRef = useRef<ArtApi>(null!);
+  const [artApi] = useState(() => ({ get: () => artRef.current }));
   const [projW, setProjW] = useSplitSize("registry-projects", 240, 160, 480);
   const [repoW, setRepoW] = useSplitSize("registry-repos", 320, 200, 640);
-  const allJobs = useJobs();
 
   const login = useCallback(async (password: string) => {
     if (!conn) return;
@@ -410,11 +605,12 @@ function Session({ tab }: { tab: Tab }) {
   const artMenu = (a: RegArtifact): CtxItem[] => [
     { id: "dl", icon: <Download />, label: tr("registry.downloadTar"), action: () => download(a) },
     { id: "s", sep: true },
-    { id: "pull", icon: <Copy />, label: tr("registry.copyPullCmd"), action: () => void navigator.clipboard.writeText(pullCmd(a)) },
-    { id: "digest", icon: "#", label: tr("registry.copyDigest"), action: () => void navigator.clipboard.writeText(a.digest) },
-    ...(a.tags.length ? [{ id: "tag", icon: <Tag />, label: tr("registry.copyImageRef"), action: () => void navigator.clipboard.writeText(`${host}/${repo}:${a.tags[0]}`) }] : []),
+    { id: "pull", icon: <Copy />, label: tr("registry.copyPullCmd"), action: () => void copyText(pullCmd(a)) },
+    { id: "digest", icon: "#", label: tr("registry.copyDigest"), action: () => void copyText(a.digest) },
+    ...(a.tags.length ? [{ id: "tag", icon: <Tag />, label: tr("registry.copyImageRef"), action: () => void copyText(`${host}/${repo}:${a.tags[0]}`) }] : []),
   ];
-  const shown = allJobs.slice(0, 50);
+  // Hàng artifact memo: hàm mới mỗi render đi qua ref (object `artApi` giữ nguyên) để không phá memo.
+  artRef.current = { download, copyPull: (a) => void copyText(pullCmd(a)), menu: (a, x, y) => setMenu({ x, y, items: artMenu(a) }) };
 
   if (connecting) return <SharedLoading label={<>{tr("registry.connecting")} <span className="mono">{host}</span>…</>} />;
   if (!cfg) {
@@ -449,11 +645,7 @@ function Session({ tab }: { tab: Tab }) {
           <div className="side-search-row"><input className="side-search" placeholder={tr("registry.filter")} value={projects.q} onChange={(e) => projects.setQ(e.target.value)} /></div>
           <div className="reg-list">
             {projects.items.map((p) => (
-              <div key={p.name} className={`reg-row ${project === p.name ? "on" : ""}`} onClick={() => { setProject(p.name); setRepo(null); }}>
-                <span title={p.public ? "public" : "private"}>{p.public ? <Globe /> : <Lock />}</span>
-                <span className="grow ellipsis">{p.name}</span>
-                <span className="muted small">{p.repoCount}</span>
-              </div>
+              <ProjectRow key={p.name} p={p} on={project === p.name} onPick={pickProject} />
             ))}
             {projects.loading && <Loading full={!projects.items.length} />}
             {projects.err && <div className="error-box small">{projects.err}</div>}
@@ -461,7 +653,7 @@ function Session({ tab }: { tab: Tab }) {
             {!projects.loading && !projects.err && !projects.items.length && <div className="muted small pad">{tr("registry.nothingFound")}</div>}
           </div>
         </div>
-        <Splitter axis="x" onResize={(d) => setProjW((w) => w + d)} onReset={() => setProjW(240)} />
+        <Splitter axis="x" live="prev" min={160} max={480} onResize={(d) => setProjW((w) => w + d)} onReset={() => setProjW(240)} />
         {/* Repositories */}
         <div className="reg-pane" style={{ width: repoW }}>
           <div className="pane-title reg-repo-title">
@@ -499,11 +691,7 @@ function Session({ tab }: { tab: Tab }) {
               <div className="side-search-row"><input className="side-search" placeholder={tr("registry.filter")} value={repos.q} onChange={(e) => repos.setQ(e.target.value)} /></div>
               <div className="reg-list">
                 {repos.items.map((r) => (
-                  <div key={r.name} className={`reg-row ${repo === r.name ? "on" : ""}`} onClick={() => setRepo(r.name)} title={r.name}>
-                    <input type="checkbox" checked={checked.has(r.name)} onClick={(e) => e.stopPropagation()} onChange={(e) => toggleCheck(r.name, e.target.checked)} />
-                    <span className="grow ellipsis mono">{r.name.startsWith(`${project}/`) ? r.name.slice(project.length + 1) : r.name}</span>
-                    <span className="muted small" title={tr("registry.artifactsPulls")}>{r.artifactCount} · <Download />{r.pullCount}</span>
-                  </div>
+                  <RepoRow key={r.name} r={r} project={project} on={repo === r.name} checked={checked.has(r.name)} onPick={setRepo} onCheck={toggleCheck} />
                 ))}
                 {repos.loading && <Loading full={!repos.items.length} />}
                 {repos.err && <div className="error-box small">{repos.err}</div>}
@@ -513,7 +701,7 @@ function Session({ tab }: { tab: Tab }) {
             </>
           ) : <div className="empty">{tr("registry.pickProject")}</div>}
         </div>
-        <Splitter axis="x" onResize={(d) => setRepoW((w) => w + d)} onReset={() => setRepoW(320)} />
+        <Splitter axis="x" live="prev" min={200} max={640} onResize={(d) => setRepoW((w) => w + d)} onReset={() => setRepoW(320)} />
         {/* Artifacts */}
         <div className="reg-pane grow">
           <div className="pane-title ellipsis">{repo ? <span className="mono">{repo}</span> : "Artifacts"} {repo && <span className="muted small">{arts.total || ""}</span>}</div>
@@ -522,19 +710,7 @@ function Session({ tab }: { tab: Tab }) {
               {!(arts.loading && !arts.items.length) && <table className="grid reg-grid">
                 <thead><tr><th>Tags</th><th>Digest</th><th>{tr("registry.platform")}</th><th>{tr("registry.size")}</th><th>{tr("registry.pushed")}</th><th /></tr></thead>
                 <tbody>
-                  {arts.items.map((a) => (
-                    <tr key={a.digest} onContextMenu={(e) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, items: artMenu(a) }); }} onDoubleClick={() => download(a)}>
-                      <td>{a.tags.length ? a.tags.map((x) => <span key={x} className="reg-tag">{x}</span>) : <span className="muted small">{tr("registry.untagged")}</span>}</td>
-                      <td className="mono small" title={a.digest}>{a.digest.replace("sha256:", "").slice(0, 12)}</td>
-                      <td className="small">{a.platform || (a.platforms.length ? a.platforms.join(", ") : "")}</td>
-                      <td className="small">{human(a.size)}</td>
-                      <td className="small muted">{fmtTime(a.pushTime)}</td>
-                      <td className="reg-actions">
-                        <button className="icon-btn" title={tr("registry.copyPullCmd")} onClick={() => void navigator.clipboard.writeText(pullCmd(a))}><Copy /></button>
-                        <button className="primary" title={tr("registry.downloadTarHint")} onClick={() => download(a)}><Download /></button>
-                      </td>
-                    </tr>
-                  ))}
+                  {arts.items.map((a) => <ArtRow key={a.digest} a={a} api={artApi} />)}
                 </tbody>
               </table>}
               {arts.loading && <Loading full={!arts.items.length} />}
@@ -546,38 +722,7 @@ function Session({ tab }: { tab: Tab }) {
         </div>
       </div>
 
-      {shown.length > 0 && (
-        <div className="reg-jobs">
-          {shown.map((j) => {
-            const pct = j.total ? Math.min(100, (j.done / j.total) * 100) : 0;
-            const secs = (Date.now() - j.startedAt) / 1000;
-            const speed = secs > 1 && j.phase === "download" ? `${human(j.done / secs)}/s` : "";
-            const running = !j.error && j.phase !== "done";
-            const queued = j.phase === "queued";
-            return (
-              <div key={j.job} className="reg-job">
-                <span className="ellipsis reg-job-name" title={j.dest}>{j.error ? <TriangleAlert /> : j.phase === "done" ? <CircleCheck /> : <Download />} {j.label}</span>
-                <div className="update-bar grow"><div style={{ width: j.phase === "done" ? "100%" : `${pct}%` }} /></div>
-                <span className="muted small reg-job-stat">
-                  {j.error ? <span style={{ color: "var(--danger)" }} title={j.error}>{j.error}</span>
-                    : j.phase === "done" ? human(j.size ?? j.total)
-                    : queued ? tr("registry.phaseQueued")
-                    : j.phase === "manifest" ? tr("registry.phaseManifest")
-                    : j.phase === "pack" ? tr("registry.phasePack")
-                    : `${human(j.done)} / ${human(j.total)} · ${j.layersDone}/${j.layersTotal} layers ${speed && `· ${speed}`}`}
-                </span>
-                {running
-                  ? <button className="icon-btn danger" title={tr("registry.cancel")} onClick={() => {
-                      if (queued) cancelledQueued.add(j.job);
-                      else void call("registry_cancel", { job: j.job });
-                      patchJob(j.job, { error: tr("registry.cancel") });
-                    }}><Square /></button>
-                  : <button className="icon-btn" title={tr("registry.dismiss")} onClick={() => setJobs((js) => js.filter((x) => x.job !== j.job))}><X /></button>}
-              </div>
-            );
-          })}
-        </div>
-      )}
+      <JobsPanel />
 
       {pickPlat && cfg && repo && (
         <Modal title={tr("registry.pickPlatform")} width={420} onClose={() => setPickPlat(null)}>

@@ -19,6 +19,8 @@ export interface Status {
   behind: number;
   files: FileChange[];
   conflicted: boolean;
+  /** Đang merge dở (có MERGE_HEAD). */
+  merging: boolean;
 }
 
 export interface Commit {
@@ -73,6 +75,9 @@ export const git = {
   discard: (path: string, tracked: string[], untracked: string[]) =>
     call<void>("git_discard", { path, tracked, untracked }),
   discardAll: (path: string) => call<void>("git_discard_all", { path }),
+  /** Giải xung đột bằng nguyên một phía rồi đánh dấu đã giải. */
+  resolveSide: (path: string, files: string[], side: "ours" | "theirs") => call<void>("git_resolve_side", { path, files, side }),
+  mergeAbort: (path: string) => call<void>("git_merge_abort", { path }),
   commit: (path: string, message: string) => call<string>("git_commit", { path, message }),
   switchBranch: (path: string, branch: string, create = false, track = false) =>
     call<void>("git_switch", { path, branch, create, track }),

@@ -1,3 +1,4 @@
+import { renderLog } from "./renderDebug";
 import { useEffect } from "react";
 import { ChevronUp, SquareTerminal, X } from "lucide-react";
 import { appById, orderedApps } from "../apps/registry";
@@ -7,6 +8,7 @@ import { toggleLang, useLang, useT, type TKey } from "../store/lang";
 import { AppHost } from "./AppHost";
 import { Launcher } from "./Launcher";
 import { ConfirmHost } from "./confirm";
+import { CopyToast } from "./clipboard";
 import { UpdateButton, UpdateHost, VersionLabel, checkForUpdate } from "./updater";
 import { closeThisWindow, isMainWindow, launchApp, registerWindowApp, windowAppParam } from "./windows";
 
@@ -16,16 +18,16 @@ import { closeThisWindow, isMainWindow, launchApp, registerWindowApp, windowAppP
  * Trong app: Ctrl+G / Ctrl+1..9 mở app khác (đã có cửa sổ thì đưa lên, chưa có thì mở cửa sổ mới).
  */
 export function Shell() {
+  renderLog("Shell");
   const activeApp = useWorkbench((s) => s.activeApp);
   const mounted = useWorkbench((s) => s.mounted);
   const tabCount = useWorkbench((s) => (s.activeApp ? s.apps[s.activeApp].tabs.length : 0));
   const panelOpen = useWorkbench((s) => s.panelOpen);
   const launcherOpen = useWorkbench((s) => s.launcherOpen);
-  const logs = useWorkbench((s) => s.logs);
   const theme = useTheme();
   const lang = useLang();
   const tr = useT();
-  const { togglePanel, setLauncher } = useWorkbench.getState();
+  const { setLauncher } = useWorkbench.getState();
 
   // Kiểm tra bản mới 3s sau khi mở, rồi mỗi 30 phút — CHỈ ở cửa sổ chính (tránh mỗi cửa sổ tự tải một bản).
   useEffect(() => {
@@ -93,15 +95,7 @@ export function Shell() {
           {!activeApp && <Launcher inline />}
         </div>
 
-        {panelOpen && (
-          <section className="panel">
-            <div className="pane-title">
-              OUTPUT <span className="grow" />
-              <button className="icon-btn" onClick={togglePanel}><X /></button>
-            </div>
-            <pre className="mono log">{logs.join("\n") || tr("shell.noLogsYet")}</pre>
-          </section>
-        )}
+        {panelOpen && <OutputPanel />}
       </div>
 
       <footer className="statusbar">
@@ -132,12 +126,33 @@ export function Shell() {
           </svg>
         </button>
         <VersionLabel />
-        <button onClick={togglePanel}><SquareTerminal />Output {logs.length ? `(${logs.length})` : ""}</button>
+        <OutputButton />
       </footer>
 
       {launcherOpen && activeApp && <Launcher />}
       <ConfirmHost />
+      <CopyToast />
       <UpdateHost />
     </div>
   );
+}
+
+/* Log ở component riêng: mỗi dòng log mới chỉ vẽ lại panel/nút Output, không vẽ lại Shell. */
+function OutputPanel() {
+  const logs = useWorkbench((s) => s.logs);
+  const tr = useT();
+  return (
+    <section className="panel">
+      <div className="pane-title">
+        OUTPUT <span className="grow" />
+        <button className="icon-btn" onClick={useWorkbench.getState().togglePanel}><X /></button>
+      </div>
+      <pre className="mono log">{logs.join("\n") || tr("shell.noLogsYet")}</pre>
+    </section>
+  );
+}
+
+function OutputButton() {
+  const n = useWorkbench((s) => s.logs.length);
+  return <button onClick={useWorkbench.getState().togglePanel}><SquareTerminal />Output {n ? `(${n})` : ""}</button>;
 }

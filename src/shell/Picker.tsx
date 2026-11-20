@@ -32,6 +32,8 @@ export function Picker({
   disabled,
   filterPlaceholder,
   keepOpen,
+  autoOpen,
+  onClose,
 }: {
   label: ReactNode;
   items: PickerItem[];
@@ -45,9 +47,19 @@ export function Picker({
   filterPlaceholder?: string;
   /** Chọn xong vẫn để menu mở (chọn nhiều mục liên tiếp, vd. nhiều cột). */
   keepOpen?: boolean;
+  /** Mở sẵn khi vừa hiện (vd. double-click một ô để sửa). */
+  autoOpen?: boolean;
+  /** Panel vừa đóng (chọn xong / bấm ra ngoài / Esc). */
+  onClose?: () => void;
 }) {
   const tr = useT();
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(!!autoOpen);
+  const wasOpen = useRef(open);
+  useEffect(() => {
+    if (wasOpen.current && !open) onClose?.();
+    wasOpen.current = open;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
   const [q, setQ] = useState("");
   /** Vị trí menu (viewport) — menu render qua portal để không bị khung overflow (modal/sidebar) cắt. */
   const [pos, setPos] = useState<{ left: number; top?: number; bottom?: number; width: number; maxHeight: number } | null>(null);
@@ -85,12 +97,12 @@ export function Picker({
       if (menu.current && t instanceof Node && menu.current.contains(t)) return;
       setOpen(false);
     };
-    window.addEventListener("mousedown", onDown);
+    window.addEventListener("mousedown", onDown, true);
     window.addEventListener("keydown", onKey);
     window.addEventListener("resize", onScroll);
     window.addEventListener("scroll", onScroll, true);
     return () => {
-      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("mousedown", onDown, true);
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("resize", onScroll);
       window.removeEventListener("scroll", onScroll, true);
@@ -114,15 +126,20 @@ export function Picker({
     return out;
   }, [shown]);
 
+  // Bề rộng nút cố định theo mục DÀI NHẤT (kẹp 28 ký tự) → chọn mục khác không làm nút co giãn, xô lệch
+  // các thứ bên cạnh. Chữ dài hơn thì cắt "…".
+  const minCh = useMemo(() => Math.min(28, items.reduce((m, it) => Math.max(m, it.label.length), 0)), [items]);
+
   return (
     <div className="picker" ref={box}>
       <button
         className={`picker-btn ${open ? "open" : ""}`}
+        style={minCh ? { minWidth: `calc(${minCh}ch + 34px)` } : undefined}
         title={title}
         disabled={disabled}
         onClick={() => { setOpen(!open); setQ(""); }}
       >
-        <span className="ellipsis">{label}</span>
+        <span className="ellipsis grow">{label}</span>
         <span className="caret"><ChevronDown /></span>
       </button>
       {open && pos && createPortal(

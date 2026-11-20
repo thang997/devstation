@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { memo, useEffect, useRef } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
@@ -8,7 +8,8 @@ import { ssh, errText, type ConnectCfg } from "./api";
 import { t } from "../../store/lang";
 
 /** Terminal SSH: mở ConPTY qua ssh.exe, nối hai chiều với xterm. */
-export function SshTerminal({ cfg, onStatus, onCd }: { cfg: Omit<ConnectCfg, "cols" | "rows">; onStatus?: (s: string) => void; onCd?: (arg: string) => void }) {
+// memo: tab cha vẽ lại (trạng thái, cd…) không vẽ lại terminal; mọi thứ chạy trong effect một lần.
+export const SshTerminal = memo(function SshTerminal({ cfg, onStatus, onCd }: { cfg: Omit<ConnectCfg, "cols" | "rows">; onStatus?: (s: string) => void; onCd?: (arg: string) => void }) {
   const box = useRef<HTMLDivElement>(null);
   const onCdRef = useRef(onCd);
   onCdRef.current = onCd;
@@ -132,4 +133,4 @@ export function SshTerminal({ cfg, onStatus, onCd }: { cfg: Omit<ConnectCfg, "co
   }, []);
 
   return <div className="xterm-host" ref={box} />;
-}
+});

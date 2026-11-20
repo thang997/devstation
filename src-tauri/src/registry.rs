@@ -384,6 +384,54 @@ fn pick_platform(index: &Value, want: Option<&str>) -> Result<String, String> {
         .ok_or_else(|| "Image không có nền tảng nào tải được".into())
 }
 
+/* Blob tạm dùng CHUNG giữa các lượt tải (image cùng base có chung layer). Mỗi lượt giữ "lease" trên các digest
+ * nó cần: tải một digest thì khoá theo digest (lượt kia chờ rồi dùng lại file đã tải), chỉ xoá file khi lượt
+ * cuối cùng dùng nó ráp xong. Trước đây lượt xong trước xoá luôn blob chung → lượt song song báo
+ * "The system cannot find the file specified". */
+struct BlobRef {
+    refs: usize,
+    lock: Arc<tokio::sync::Mutex<()>>,
+}
+fn blob_refs() -> &'static Mutex<HashMap<String, BlobRef>> {
+    static R: OnceLock<Mutex<HashMap<String, BlobRef>>> = OnceLock::new();
+    R.get_or_init(|| Mutex::new(HashMap::new()))
+}
+struct BlobLease {
+    keys: Vec<String>,
+}
+impl BlobLease {
+    fn new(keys: Vec<String>) -> Self {
+        let mut m = blob_refs().lock().unwrap();
+        for k in &keys {
+            m.entry(k.clone()).or_insert_with(|| BlobRef { refs: 0, lock: Arc::new(tokio::sync::Mutex::new(())) }).refs += 1;
+        }
+        Self { keys }
+    }
+    fn lock_of(&self, k: &str) -> Arc<tokio::sync::Mutex<()>> {
+        blob_refs().lock().unwrap().get(k).map(|b| b.lock.clone()).unwrap_or_default()
+    }
+    /// Trả lease; trả về các digest không còn lượt nào dùng (xoá file được).
+    fn release(&mut self) -> Vec<String> {
+        let mut m = blob_refs().lock().unwrap();
+        let mut free = Vec::new();
+        for k in self.keys.drain(..) {
+            if let Some(b) = m.get_mut(&k) {
+                b.refs = b.refs.saturating_sub(1);
+                if b.refs == 0 {
+                    m.remove(&k);
+                    free.push(k);
+                }
+            }
+        }
+        free
+    }
+}
+impl Drop for BlobLease {
+    fn drop(&mut self) {
+        let _ = self.release(); // lỗi/hủy: giữ file để lần sau tải tiếp
+    }
+}
+
 /// Tải một blob vào `dir/<hex>` (qua `<hex>.part`, tải tiếp bằng Range, kiểm sha256). Thử lại khi rớt mạng.
 #[allow(clippy::too_many_arguments)]
 async fn download_blob(
@@ -584,6 +632,7 @@ async fn pull(
     }
     let total: u64 = blobs.iter().map(|(_, s)| s).sum();
     let n_layers = blobs.len();
+    let mut lease = BlobLease::new(blobs.iter().map(|(d, _)| d.clone()).collect());
 
     let done = Arc::new(AtomicU64::new(0));
     let finished = Arc::new(AtomicUsize::new(0));
@@ -608,8 +657,11 @@ async fn pull(
     for (d, s) in blobs.clone() {
         let (cfg, auth, repo, dir, done, cancel, sem, finished) =
             (cfg.clone(), auth.clone(), repo.to_string(), dir.clone(), done.clone(), cancel.clone(), sem.clone(), finished.clone());
+        let blob_lock = lease.lock_of(&d);
         set.spawn(async move {
             let _permit = sem.acquire_owned().await.map_err(|e| e.to_string())?;
+            // Lượt khác đang tải đúng blob này → chờ nó xong rồi dùng lại file (không ghi chung một .part).
+            let _blob = blob_lock.lock_owned().await;
             let r = download_blob(cfg, auth, repo, d, s, dir, done, cancel).await;
             if r.is_ok() {
                 finished.fetch_add(1, Ordering::Relaxed);
@@ -629,7 +681,16 @@ async fn pull(
     }
     stop.store(true, Ordering::Relaxed);
     if let Some(e) = first_err {
-        return Err(e); // file .part còn lại → lần tải sau tiếp tục từ chỗ dừng
+        // Người dùng bấm hủy → dọn blob/.part không còn lượt nào dùng (không để file tạm vô nghĩa).
+        // Lỗi mạng thì giữ lại để lần tải sau tiếp tục từ chỗ dừng.
+        if cancel.load(Ordering::Relaxed) && e == "Đã hủy" {
+            for d in lease.release() {
+                let h = d.trim_start_matches("sha256:");
+                let _ = std::fs::remove_file(dir.join(h));
+                let _ = std::fs::remove_file(dir.join(format!("{h}.part")));
+            }
+        }
+        return Err(e);
     }
 
     // Ráp tar docker-archive.
@@ -648,6 +709,9 @@ async fn pull(
     }]))
     .map_err(|e| e.to_string())?;
     let dest_p = PathBuf::from(dest);
+    if let Some(p) = dest_p.parent() {
+        let _ = std::fs::create_dir_all(p);
+    }
     let tmp = PathBuf::from(format!("{dest}.part"));
     let blob_paths: Vec<(String, PathBuf)> = blobs.iter().map(|(d, _)| (hex(d), dir.join(hex(d)))).collect();
     let config_hex = hex(&config);
@@ -668,16 +732,167 @@ async fn pull(
         drop(w);
         let _ = std::fs::remove_file(&dest_p);
         std::fs::rename(&tmp, &dest_p).map_err(|e| e.to_string())?;
-        // Xoá blob tạm (đã nằm trong file tar).
-        for (_, p) in &blob_paths {
-            let _ = std::fs::remove_file(p);
-        }
         Ok(std::fs::metadata(&dest_p).map(|m| m.len()).unwrap_or(0))
     })
     .await
     .map_err(|e| e.to_string())??;
+    // Xoá blob tạm không còn lượt tải nào dùng (đã nằm trong file tar).
+    for d in lease.release() {
+        let _ = std::fs::remove_file(dir.join(hex(&d)));
+    }
     emit("done", total, total, n_layers, n_layers);
     Ok(size)
+}
+
+/// Thư mục tạm chứa file tải xong chờ người dùng chọn nơi lưu: `%TEMP%/devstation-registry/out`.
+/// Dọn luôn thư mục con cũ hơn 1 ngày (lượt tải bỏ dở từ phiên trước).
+#[tauri::command]
+pub fn registry_temp_dir() -> Result<String, String> {
+    let out = std::env::temp_dir().join("devstation-registry").join("out");
+    std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+    if let Ok(rd) = std::fs::read_dir(&out) {
+        for e in rd.flatten() {
+            let old = e.metadata().and_then(|m| m.modified()).ok()
+                .and_then(|t| t.elapsed().ok()).map(|d| d > Duration::from_secs(86_400)).unwrap_or(false);
+            if old {
+                let _ = std::fs::remove_dir_all(e.path());
+            }
+        }
+    }
+    Ok(out.to_string_lossy().to_string())
+}
+
+/// Xoá thư mục cha nếu rỗng (thư mục tạm của một lượt tải).
+fn remove_parent_if_empty(p: &std::path::Path) {
+    if let Some(d) = p.parent() {
+        let _ = std::fs::remove_dir(d);
+    }
+}
+
+/// Chuyển file tải xong từ thư mục tạm tới nơi người dùng chọn (rename; khác ổ đĩa thì copy rồi xoá).
+#[tauri::command]
+pub async fn registry_move(src: String, dest: String) -> Result<u64, String> {
+    tokio::task::spawn_blocking(move || -> Result<u64, String> {
+        let (s, d) = (PathBuf::from(&src), PathBuf::from(&dest));
+        let _ = std::fs::remove_file(&d);
+        if std::fs::rename(&s, &d).is_err() {
+            let tmp = PathBuf::from(format!("{dest}.part"));
+            std::fs::copy(&s, &tmp).map_err(|e| {
+                let _ = std::fs::remove_file(&tmp);
+                format!("Không ghi được {}: {e}", d.display())
+            })?;
+            std::fs::rename(&tmp, &d).map_err(|e| e.to_string())?;
+            let _ = std::fs::remove_file(&s);
+        }
+        remove_parent_if_empty(&s);
+        Ok(std::fs::metadata(&d).map(|m| m.len()).unwrap_or(0))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Bỏ file tải xong mà người dùng không lưu (xoá file + thư mục tạm của lượt nếu rỗng).
+#[tauri::command]
+pub fn registry_discard(paths: Vec<String>) -> Result<(), String> {
+    for p in &paths {
+        let p = PathBuf::from(p);
+        let _ = std::fs::remove_file(&p);
+        remove_parent_if_empty(&p);
+    }
+    Ok(())
+}
+
+/// Gom nhiều file .tar vào MỘT file .zip (lưu nguyên, không nén lại — layer image vốn đã nén), xong thì xoá file
+/// nguồn + thư mục tạm `cleanup` (nếu rỗng). Tiến trình: event `registry-pull` phase `zip` (byte đã ghi / tổng).
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn registry_zip(
+    app: AppHandle,
+    window: tauri::Window,
+    state: State<'_, RegistryState>,
+    files: Vec<String>,
+    dest: String,
+    job: String,
+    cleanup: Option<String>,
+) -> Result<u64, String> {
+    let cancel = Arc::new(AtomicBool::new(false));
+    state.jobs.lock().unwrap().insert(job.clone(), cancel.clone());
+    crate::owners::track(&app, window.label(), crate::owners::Kind::RegJob, &job);
+    let total: u64 = files.iter().map(|f| std::fs::metadata(f).map(|m| m.len()).unwrap_or(0)).sum();
+    let done = Arc::new(AtomicU64::new(0));
+    let stop = Arc::new(AtomicBool::new(false));
+    {
+        let (app, job, done, stop) = (app.clone(), job.clone(), done.clone(), stop.clone());
+        let n = files.len();
+        tauri::async_runtime::spawn(async move {
+            while !stop.load(Ordering::Relaxed) {
+                let _ = app.emit(
+                    "registry-pull",
+                    serde_json::json!({ "job": job, "phase": "zip", "done": done.load(Ordering::Relaxed), "total": total, "layersDone": 0, "layersTotal": n }),
+                );
+                tokio::time::sleep(Duration::from_millis(400)).await;
+            }
+        });
+    }
+    let (d2, c2) = (done.clone(), cancel.clone());
+    let r = tokio::task::spawn_blocking(move || -> Result<u64, String> {
+        let dest_p = PathBuf::from(&dest);
+        let tmp = PathBuf::from(format!("{dest}.part"));
+        let res = (|| -> Result<(), String> {
+            let f = std::fs::File::create(&tmp).map_err(|e| format!("Không tạo được file {}: {e}", tmp.display()))?;
+            let mut zw = zip::ZipWriter::new(std::io::BufWriter::with_capacity(1 << 20, f));
+            let opts = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored)
+                .large_file(true);
+            let mut used = std::collections::HashSet::new();
+            let mut buf = vec![0u8; 1 << 20];
+            for src in &files {
+                let p = PathBuf::from(src);
+                let base = p.file_name().map(|x| x.to_string_lossy().to_string()).unwrap_or_else(|| "image.tar".into());
+                let mut name = base.clone();
+                let mut i = 2;
+                while !used.insert(name.clone()) {
+                    name = format!("{i}_{base}");
+                    i += 1;
+                }
+                zw.start_file(name, opts).map_err(|e| e.to_string())?;
+                let mut rd = std::fs::File::open(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+                loop {
+                    if c2.load(Ordering::Relaxed) {
+                        return Err("Đã hủy".into());
+                    }
+                    let k = rd.read(&mut buf).map_err(|e| e.to_string())?;
+                    if k == 0 {
+                        break;
+                    }
+                    zw.write_all(&buf[..k]).map_err(|e| e.to_string())?;
+                    d2.fetch_add(k as u64, Ordering::Relaxed);
+                }
+            }
+            let mut w = zw.finish().map_err(|e| e.to_string())?;
+            w.flush().map_err(|e| e.to_string())?;
+            Ok(())
+        })();
+        if let Err(e) = res {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
+        }
+        let _ = std::fs::remove_file(&dest_p);
+        std::fs::rename(&tmp, &dest_p).map_err(|e| e.to_string())?;
+        for src in &files {
+            let _ = std::fs::remove_file(src);
+        }
+        if let Some(c) = cleanup {
+            let _ = std::fs::remove_dir(c); // chỉ xoá khi rỗng
+        }
+        Ok(std::fs::metadata(&dest_p).map(|m| m.len()).unwrap_or(0))
+    })
+    .await
+    .map_err(|e| e.to_string())
+    .and_then(|x| x);
+    stop.store(true, Ordering::Relaxed);
+    state.jobs.lock().unwrap().remove(&job);
+    r
 }
 
 /* ───────────────────────── Mật khẩu (keyring) ───────────────────────── */

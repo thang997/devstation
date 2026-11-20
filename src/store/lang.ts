@@ -120,6 +120,9 @@ export function t(key: TKey, params?: TParams): string {
 
 /** Hook: trả về hàm dịch + tự re-render khi đổi ngôn ngữ. `const tr = useT();` rồi `tr("db.save")`. */
 export function useT(): (key: TKey, params?: TParams) => string {
-  const l = useLang();
-  return (key, params) => translate(l, key, params);
+  return trFor(useLang());
 }
+
+/** Hàm dịch cố định theo ngôn ngữ → `tr` giữ nguyên tham chiếu giữa các lần render (không phá memo/deps). */
+const TR: Partial<Record<Lang, (key: TKey, params?: TParams) => string>> = {};
+const trFor = (l: Lang) => (TR[l] ??= (key, params) => translate(l, key, params));

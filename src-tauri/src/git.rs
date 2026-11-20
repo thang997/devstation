@@ -68,6 +68,16 @@ fn err_text(out: &Output) -> String {
 → Một tiến trình git khác đang ghi index của repo này. Đợi vài giây rồi thử lại; nếu chắc chắn không còn tiến trình git nào, xoá file .git/index.lock."
             );
         }
+        let l = e.to_lowercase();
+        if l.contains("is unmerged") || l.contains("needs merge") || l.contains("unmerged files")
+            || l.contains("resolve your current index first") || l.contains("you have not concluded your merge")
+        {
+            return format!(
+                "{e}
+
+→ Repo đang dở một merge có xung đột chưa giải. Với từng file trong Conflicts: sửa xong rồi Mark resolved, hoặc chọn Use ours / Use theirs (chuột phải). Muốn huỷ hẳn lần merge này: Abort merge."
+            );
+        }
         return e.to_string();
     }
     let o = lossy(&out.stdout);
@@ -118,6 +128,8 @@ pub struct Status {
     files: Vec<FileChange>,
     /// Đang merge/rebase dở (có file xung đột).
     conflicted: bool,
+    /// Có MERGE_HEAD (đang merge dở — commit tiếp theo sẽ hoàn tất merge, hoặc Abort merge để huỷ).
+    merging: bool,
 }
 
 fn xy(s: &str) -> (char, char) {
@@ -185,7 +197,9 @@ fn parse_status(text: &str) -> Status {
 pub async fn git_status(path: String) -> Result<Status, String> {
     let _serial = repo_lock(&path).lock_owned().await;
     let text = git(&path, &["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"]).await?;
-    Ok(parse_status(&text))
+    let mut st = parse_status(&text);
+    st.merging = raw(&path, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).await.map(|o| o.status.success()).unwrap_or(false);
+    Ok(st)
 }
 
 /* ── Repo ────────────────────────────────────────── */
@@ -616,12 +630,46 @@ pub async fn git_unstage(path: String, files: Vec<String>) -> Result<(), String>
 pub async fn git_discard(path: String, tracked: Vec<String>, untracked: Vec<String>) -> Result<(), String> {
     let _serial = repo_lock(&path).lock_owned().await;
     if !tracked.is_empty() {
-        git(&path, &with_files(&["restore"], &tracked)).await?;
+        let unmerged: std::collections::HashSet<String> = git(&path, &["diff", "--name-only", "--diff-filter=U", "-z"]).await
+            .unwrap_or_default().split('\0').filter(|x| !x.is_empty()).map(String::from).collect();
+        let (conf, normal): (Vec<String>, Vec<String>) = tracked.into_iter().partition(|f| unmerged.contains(f));
+        if !normal.is_empty() {
+            git(&path, &with_files(&["restore"], &normal)).await?;
+        }
+        for f in &conf {
+            // Có trong HEAD → lấy lại bản HEAD (index + working tree, coi như giải bằng "ours"); không có (bên kia thêm mới) → bỏ hẳn.
+            if git(&path, &["checkout", "HEAD", "--", f]).await.is_err() {
+                git(&path, &["rm", "-f", "-q", "--", f]).await?;
+            }
+        }
     }
     if !untracked.is_empty() {
         git(&path, &with_files(&["clean", "-f", "-q"], &untracked)).await?;
     }
     Ok(())
+}
+
+/// Giải xung đột bằng nguyên một phía: `ours` (nhánh hiện tại) hoặc `theirs` (nhánh đang merge vào), rồi đánh dấu đã giải.
+#[tauri::command]
+pub async fn git_resolve_side(path: String, files: Vec<String>, side: String) -> Result<(), String> {
+    let _serial = repo_lock(&path).lock_owned().await;
+    let flag = if side == "theirs" { "--theirs" } else { "--ours" };
+    for f in &files {
+        match git(&path, &["checkout", flag, "--", f]).await {
+            Ok(_) => { git(&path, &["add", "--", f]).await?; }
+            // Phía đó đã xoá file (xung đột sửa/xoá) → chọn phía đó nghĩa là xoá.
+            Err(e) if e.contains("does not have") => { git(&path, &["rm", "-q", "--", f]).await?; }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+/// Huỷ lần merge đang dở (`git merge --abort`): trả repo về trạng thái trước khi merge.
+#[tauri::command]
+pub async fn git_merge_abort(path: String) -> Result<(), String> {
+    let _serial = repo_lock(&path).lock_owned().await;
+    git(&path, &["merge", "--abort"]).await.map(|_| ())
 }
 
 /// Bỏ MỌI thay đổi: đưa file đã theo dõi về đúng HEAD (cả staged) và xoá file chưa track.

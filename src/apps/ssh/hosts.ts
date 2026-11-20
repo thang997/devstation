@@ -50,11 +50,12 @@ function commit(next: SavedHost[]) {
 
 export const uid = (p: string) => `${p}${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
+// subscribe/getSnapshot cố định (tạo mới mỗi render → React huỷ đăng ký rồi đăng ký lại mỗi lần vẽ).
+const subscribe = (cb: () => void) => { subs.add(cb); return () => { subs.delete(cb); }; };
+const snapshot = () => hosts;
+
 export function useHosts(): SavedHost[] {
-  return useSyncExternalStore(
-    (cb) => { subs.add(cb); return () => { subs.delete(cb); }; },
-    () => hosts,
-  );
+  return useSyncExternalStore(subscribe, snapshot);
 }
 
 export function saveHost(h: SavedHost) {

@@ -1,3 +1,7 @@
+import { confirmDialog } from "../../shell/confirm";
+import { Swap } from "../../shell/Swap";
+import { renderLog } from "../../shell/renderDebug";
+import { copyText } from "../../shell/clipboard";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -145,7 +149,82 @@ function ignorePattern(p: string, scope: IgnoreScope) {
 
 let jobSeq = 0;
 
+/** Hàm ổn định cho CommitView (memo) — không tạo closure mới mỗi lần vẽ. */
+const copyHash = (h: string) => void copyText(h);
+
+/** Giá trị nhỏ ngoài React: dòng tiến trình git-progress đổi liên tục → chỉ nhãn tiến trình vẽ lại, không phải cả RepoView. */
+function makeValue<T>(init: T) {
+  let v = init;
+  const subs = new Set<() => void>();
+  return {
+    set: (x: T) => { if (x !== v) { v = x; subs.forEach((f) => f()); } },
+    use: () => useSyncExternalStore((cb) => { subs.add(cb); return () => { subs.delete(cb); }; }, () => v),
+  };
+}
+type ValueStore<T> = ReturnType<typeof makeValue<T>>;
+
+function BusyLabel({ busy, progress }: { busy: string; progress: ValueStore<string> }) {
+  const p = progress.use();
+  return <Loading variant="inline" className="small progress-text" label={p || busy} />;
+}
+
+/** Hành động của ô commit — truyền qua ref ổn định để `CommitBox` (memo) không vẽ lại theo RepoView. */
+interface CommitBoxApi {
+  commit: (msg: string) => void;
+  undo: () => void;
+  /** CommitBox gán hàm đặt message vào đây (RepoView dùng khi commit xong / bỏ commit). */
+  setMessage: (s: string) => void;
+}
+
+/** Ô message + nút Commit: state message nằm ở đây → gõ phím chỉ vẽ lại khối này. */
+const CommitBox = memo(function CommitBox({ api, suggestedMsg, branch, ready, checkedCount, showUndo, canUndo, undoShort }: {
+  api: { current: CommitBoxApi };
+  suggestedMsg: string;
+  branch: string | null;
+  /** Đủ điều kiện commit (không bận, có file tick, không conflict) — chưa xét message. */
+  ready: boolean;
+  checkedCount: number;
+  showUndo: boolean;
+  canUndo: boolean;
+  undoShort: string | undefined;
+}) {
+  renderLog("CommitBox");
+  const tr = useT();
+  const [message, setMessage] = useState("");
+  api.current.setMessage = setMessage;
+  const effectiveMsg = message.trim() || suggestedMsg;
+  const canCommit = ready && effectiveMsg !== "";
+  const commit = () => { if (canCommit) api.current.commit(effectiveMsg); };
+  return (
+    <>
+      <textarea
+        className="commit-msg"
+        placeholder={suggestedMsg || `Commit message (Ctrl+Enter)${branch ? ` — ${tr("git.to2")} ${branch}` : ""}`}
+        value={message}
+        onChange={(e) => setMessage(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); commit(); } }}
+      />
+      <div className="toolbar commit-actions">
+        {/* Chỉ hiện khi có commit chưa push để bỏ — không có thì giữ chỗ trống cho Commit. */}
+        {showUndo && (
+          <button
+            disabled={!canUndo}
+            onClick={() => api.current.undo()}
+            title={tr("git.undoLastCommitKeepChangesIn")}
+          >
+            <Undo2 /><span className="ellipsis">{tr("git.undoCommit2")} {undoShort}</span>
+          </button>
+        )}
+        <button className="primary grow" disabled={!canCommit} onClick={commit}>
+          <GitCommitHorizontal /><span className="ellipsis">Commit{checkedCount ? ` ${checkedCount} ${tr("git.files")}` : ""}</span>
+        </button>
+      </div>
+    </>
+  );
+});
+
 function RepoView({ tab }: { tab: Tab }) {
+  renderLog("RepoView");
   const tr = useT();
   const path = String(tab.payload.path);
   const log = useWorkbench((s) => s.log);
@@ -154,11 +233,14 @@ function RepoView({ tab }: { tab: Tab }) {
   const [history, setHistory] = useState<Commit[]>([]);
   const [selected, setSelected] = useState<Selected>(null);
   const [diff, setDiff] = useState("");
-  const [message, setMessage] = useState("");
+  /** Ô commit (message nằm trong CommitBox). */
+  const boxApi = useRef<CommitBoxApi>({ commit: () => {}, undo: () => {}, setMessage: () => {} });
+  const setMessage = (s: string) => boxApi.current.setMessage(s);
   /** Commit cuối đã push → không cho bỏ commit (phải force push mới đẩy được). */
   const [headPushed, setHeadPushed] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
-  const [progress, setProgress] = useState("");
+  const progress = useMemo(() => makeValue(""), []);
+  const setProgress = progress.set;
   const [error, setError] = useState("");
   const [confirmDiscard, setConfirmDiscard] = useState<FileChange[] | null>(null);
   /** Xác nhận bỏ TẤT CẢ thay đổi (reset --hard + clean). */
@@ -222,8 +304,11 @@ function RepoView({ tab }: { tab: Tab }) {
   }, [status]);
 
   // Nạp diff cho mục đang chọn; file biến mất khỏi danh sách thì bỏ chọn.
+  // Chỉ xoá diff (hiện Loading) khi đổi mục chọn — làm mới status (focus cửa sổ) thì giữ diff cũ tới khi có bản mới,
+  // tránh dựng lại toàn bộ khung diff lớn mỗi lần quay lại app.
+  const prevSel = useRef<Selected>(null);
   useEffect(() => {
-    setDiff("");
+    if (prevSel.current !== selected) { prevSel.current = selected; setDiff(""); }
     if (!selected) return;
     let alive = true;
     const p =
@@ -279,8 +364,8 @@ function RepoView({ tab }: { tab: Tab }) {
   // nếu không gõ gì thì commit dùng luôn gợi ý này.
   const soloName = committable.length === 1 ? committable[0].path.split("/").pop()! : null;
   const suggestedMsg = soloName ? `Update ${soloName}` : "";
-  const effectiveMsg = message.trim() || suggestedMsg;
-  const canCommit = !busy && effectiveMsg !== "" && checkedFiles.length > 0 && conflicts.length === 0;
+  /** Đủ điều kiện commit trừ message (CommitBox xét thêm message). */
+  const commitReady = !busy && checkedFiles.length > 0 && conflicts.length === 0;
 
   const toggleCheck = (f: FileChange) =>
     setUnchecked((prev) => {
@@ -291,22 +376,32 @@ function RepoView({ tab }: { tab: Tab }) {
   /** Tick/bỏ tick tất cả: đang tick hết thì bỏ hết, ngược lại tick hết. */
   const toggleCheckAll = () =>
     setUnchecked(checkState === "all" ? new Set(committable.map((f) => f.path)) : new Set());
+  /** Hành động của dòng file — ref ổn định để `FileRow` (memo) chỉ vẽ lại dòng có dữ liệu đổi. */
+  const fileApi = useRef<FileRowApi>(null!);
+  fileApi.current = {
+    select: (f, staged) => setSelected({ type: "file", file: f, staged }),
+    menu: (f, staged, e) => setMenu({ file: f, staged, x: e.clientX, y: e.clientY }),
+    toggle: toggleCheck,
+    action: (f, kind) => (kind === "resolve" ? void run(`stage ${f.path}`, () => git.stage(path, [f.path])) : setConfirmDiscard([f])),
+  };
   /** Chỉ có ý nghĩa khi commit gần nhất chưa push; đã push thì ẩn nút luôn. */
   const showUndo = history.length > 0 && !headPushed;
   const canUndo = !busy && showUndo;
 
-  const commit = () =>
-    canCommit &&
+  const commit = (msg: string) =>
+    commitReady &&
     run("commit", async () => {
       // Đưa index về đúng tập file đã tick: stage file tick, unstage file bỏ tick, rồi commit.
       const toStage = checkedFiles.map((f) => f.path);
       const toUnstage = committable.filter((f) => unchecked.has(f.path)).map((f) => f.path);
       if (toUnstage.length) await git.unstage(path, toUnstage);
       if (toStage.length) await git.stage(path, toStage);
-      const out = await git.commit(path, effectiveMsg);
+      const out = await git.commit(path, msg);
       setMessage("");
       return out;
     });
+  boxApi.current.commit = (msg) => void commit(msg);
+  boxApi.current.undo = () => { if (history[0]) setConfirmUndo(history[0]); };
 
   const doDiscardAll = () => {
     setConfirmDiscardAll(false);
@@ -413,7 +508,7 @@ function RepoView({ tab }: { tab: Tab }) {
 
   /** Các mục của menu chuột phải trên một commit. */
   const commitMenuItems = (c: Commit): CtxItem[] => {
-    const copy = (t: string) => void navigator.clipboard.writeText(t);
+    const copy = (t: string) => void copyText(t);
     const isHead = history[0]?.hash === c.hash;
     return [
       // Sửa message = amend, chỉ áp dụng cho commit mới nhất và chưa push.
@@ -448,7 +543,7 @@ function RepoView({ tab }: { tab: Tab }) {
   const fileMenu = (m: { file: FileChange; staged: boolean }): CtxItem[] => {
     const f = m.file;
     const ext = f.path.includes(".") ? f.path.split(".").pop()! : "";
-    const copy = (text: string) => void navigator.clipboard.writeText(text);
+    const copy = (text: string) => void copyText(text);
     return [
       m.staged
         ? { id: "unstage", icon: <Minus />, label: "Unstage", action: () => void run(`unstage ${f.path}`, () => git.unstage(path, [f.path])) }
@@ -458,6 +553,12 @@ function RepoView({ tab }: { tab: Tab }) {
             label: f.kind === "conflict" ? tr("git.markResolved") : "Stage",
             action: () => void run(`stage ${f.path}`, () => git.stage(path, [f.path])),
           },
+      ...(f.kind === "conflict"
+        ? [
+            { id: "ours", icon: <ArrowUpFromLine />, label: tr("git.useOurs"), action: () => void run(`resolve --ours ${f.path}`, () => git.resolveSide(path, [f.path], "ours")) },
+            { id: "theirs", icon: <ArrowDownToLine />, label: tr("git.useTheirs"), action: () => void run(`resolve --theirs ${f.path}`, () => git.resolveSide(path, [f.path], "theirs")) },
+          ]
+        : []),
       ...(m.staged
         ? []
         : [{ id: "discard", icon: <Undo2 />, label: tr("git.discardChanges"), danger: true, action: () => setConfirmDiscard([f]) }]),
@@ -472,9 +573,25 @@ function RepoView({ tab }: { tab: Tab }) {
     ];
   };
 
-  const byRecent = (a: Branch, b: Branch) => b.time - a.time;
-  const localBranches = branches.filter((b) => !b.remote).sort(byRecent);
-  const remoteBranches = branches.filter((b) => b.remote).sort(byRecent);
+  // Lọc + sắp nhánh chỉ khi danh sách nhánh đổi (không phải mỗi lần RepoView vẽ lại).
+  const { localBranches, remoteBranches, branchItems } = useMemo(() => {
+    const byRecent = (a: Branch, b: Branch) => b.time - a.time;
+    const localBranches = branches.filter((b) => !b.remote).sort(byRecent);
+    const remoteBranches = branches.filter((b) => b.remote).sort(byRecent);
+    const branchItems = [
+      ...localBranches.map((b) => ({
+        id: b.name,
+        label: b.name,
+        group: "Local",
+        icon: <GitBranch />,
+        hint: b.time ? ago(b.time) : undefined,
+        selected: b.current,
+      })),
+      ...remoteBranches.map((b) => ({ id: b.name, label: b.name, group: "Remote", icon: <Cloud />, hint: b.time ? ago(b.time) : undefined })),
+      { id: "\u0000new", label: "New branch…", group: "Other", icon: <Plus /> },
+    ];
+    return { localBranches, remoteBranches, branchItems };
+  }, [branches, tr]); // tr đổi theo ngôn ngữ → chữ "x phút trước" cập nhật khi chuyển EN/VI
   const pushOp: RemoteOp = status?.upstream ? "push" : "push-upstream";
 
   const doMerge = (b: string) => {
@@ -519,7 +636,7 @@ function RepoView({ tab }: { tab: Tab }) {
       action: () => setBranchAction({ kind: "delete", b, force: false }),
     },
     { id: "s2", sep: true },
-    { id: "copy", icon: <Copy />, label: tr("git.copyBranchName"), action: () => void navigator.clipboard.writeText(b.name) },
+    { id: "copy", icon: <Copy />, label: tr("git.copyBranchName"), action: () => void copyText(b.name) },
   ];
 
   return (
@@ -533,18 +650,7 @@ function RepoView({ tab }: { tab: Tab }) {
             disabled={!!busy}
             filterPlaceholder={tr("git.filterBranches")}
             label={<><span className="branch-glyph"><GitBranch /></span> {status?.branch ?? `(detached ${status?.head ?? ""})`}</>}
-            items={[
-              ...localBranches.map((b) => ({
-                id: b.name,
-                label: b.name,
-                group: "Local",
-                icon: <GitBranch />,
-                hint: b.time ? ago(b.time) : undefined,
-                selected: b.current,
-              })),
-              ...remoteBranches.map((b) => ({ id: b.name, label: b.name, group: "Remote", icon: <Cloud />, hint: b.time ? ago(b.time) : undefined })),
-              { id: "\u0000new", label: "New branch…", group: "Other", icon: <Plus /> },
-            ]}
+            items={branchItems}
             onPick={(id) => (id === "\u0000new" ? setNewBranch("") : switchTo(id))}
             onItemContextMenu={(id, e, close) => {
               const b = branches.find((x) => x.name === id);
@@ -584,7 +690,7 @@ function RepoView({ tab }: { tab: Tab }) {
           {status?.upstream ? `→ ${status.upstream}` : status ? tr("git.noUpstream") : ""}
         </span>
         <span className="grow" />
-        {busy && <Loading variant="inline" className="small progress-text" label={progress || busy} />}
+        {busy && <BusyLabel busy={busy} progress={progress} />}
         <button className="icon-btn" disabled={!!busy} onClick={() => void refresh()} title={tr("git.reloadStatus")}><RefreshCw /></button>
         {/* Nhóm remote tách riêng khỏi các nút khác để không bấm nhầm; mỗi nút chỉ bật khi có việc để làm. */}
         <div className="remote-actions">
@@ -706,11 +812,19 @@ function RepoView({ tab }: { tab: Tab }) {
       <div className="split">
         <div className="pane narrow changes" style={{ width: changesW, flex: "0 0 auto" }}>
           <div className="file-lists">
+            {status?.merging && (
+              <div className={`merge-banner${conflicts.length ? " bad" : ""}`}>
+                <GitMerge />
+                <span className="grow">{conflicts.length ? tr("git.mergingConflicts", { n: conflicts.length }) : tr("git.mergingResolved")}</span>
+                <button disabled={!!busy} onClick={() => void (async () => {
+                  if (!(await confirmDialog({ message: tr("git.abortMergeConfirm"), confirmLabel: tr("git.abortMerge") }))) return;
+                  void run("merge --abort", () => git.mergeAbort(path));
+                })()}><X /> {tr("git.abortMerge")}</button>
+              </div>
+            )}
             {conflicts.length > 0 && (
               <FileGroup title={`Conflicts (${conflicts.length})`} files={conflicts} selected={selected} staged={false}
-                onSelect={(f) => setSelected({ type: "file", file: f, staged: false })}
-                onMenu={(f, e) => setMenu({ file: f, staged: false, x: e.clientX, y: e.clientY })}
-                actions={(f) => <button className="icon-btn" title={tr("git.markResolvedStage")} onClick={() => run(`stage ${f.path}`, () => git.stage(path, [f.path]))}><Check /></button>}
+                action="resolve" api={fileApi}
               />
             )}
             {committable.length > 0 && (
@@ -735,39 +849,23 @@ function RepoView({ tab }: { tab: Tab }) {
                     <button className="icon-btn" title={tr("git.stashAllChanges")} onClick={() => run(tr("git.stashAll"), () => git.stash(path, false))}><Archive /></button>
                   </>
                 }
-                isChecked={(f) => !unchecked.has(f.path)}
-                onToggleCheck={toggleCheck}
-                onSelect={(f) => setSelected({ type: "file", file: f, staged: false })}
-                onMenu={(f, e) => setMenu({ file: f, staged: false, x: e.clientX, y: e.clientY })}
-                actions={(f) => (
-                  <button className="icon-btn danger" title={tr("git.discardThisFileSChanges")} onClick={() => setConfirmDiscard([f])}><Undo2 /></button>
-                )}
+                unchecked={unchecked}
+                action="discard"
+                api={fileApi}
               />
             )}
             {status && !files.length && <div className="muted small pad">{tr("git.noChanges")}</div>}
           </div>
-          <textarea
-            className="commit-msg"
-            placeholder={suggestedMsg || `Commit message (Ctrl+Enter)${status?.branch ? ` — ${tr("git.to2")} ${status.branch}` : ""}`}
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); void commit(); } }}
+          <CommitBox
+            api={boxApi}
+            suggestedMsg={suggestedMsg}
+            branch={status?.branch ?? null}
+            ready={commitReady}
+            checkedCount={checkedFiles.length}
+            showUndo={showUndo}
+            canUndo={canUndo}
+            undoShort={history[0]?.short}
           />
-          <div className="toolbar commit-actions">
-            {/* Chỉ hiện khi có commit chưa push để bỏ — không có thì giữ chỗ trống cho Commit. */}
-            {showUndo && (
-              <button
-                disabled={!canUndo}
-                onClick={() => history[0] && setConfirmUndo(history[0])}
-                title={tr("git.undoLastCommitKeepChangesIn")}
-              >
-                <Undo2 /><span className="ellipsis">{tr("git.undoCommit2")} {history[0]?.short}</span>
-              </button>
-            )}
-            <button className="primary grow" disabled={!canCommit} onClick={() => void commit()}>
-              <GitCommitHorizontal /><span className="ellipsis">Commit{checkedFiles.length ? ` ${checkedFiles.length} ${tr("git.files")}` : ""}</span>
-            </button>
-          </div>
           {confirmDiscardAll && (
             <div className="error-box">
               {tr("git.discardAllUncommittedChangesEveryModified")}
@@ -802,7 +900,7 @@ function RepoView({ tab }: { tab: Tab }) {
             </div>
           )}
         </div>
-        <Splitter axis="x" onResize={(d) => setChangesW((w) => w + d)} onReset={() => setChangesW(280)} />
+        <Splitter axis="x" live="prev" min={200} max={600} onResize={(d) => setChangesW((w) => w + d)} onReset={() => setChangesW(280)} />
         <div className="pane">
           {selected?.type !== "commit" && (
             <div className="pane-title ellipsis">
@@ -811,12 +909,12 @@ function RepoView({ tab }: { tab: Tab }) {
           )}
           {!selected ? <div className="empty">{tr("git.pickAFileOrCommitTo")}</div>
             : !diff ? <Loading />
-            : selected.type === "commit" ? <CommitView text={diff} commit={selected.commit} onCopy={(h) => void navigator.clipboard.writeText(h)} />
+            : selected.type === "commit" ? <CommitView text={diff} commit={selected.commit} onCopy={copyHash} />
             : <FileDiff text={diff} />}
         </div>
       </div>
 
-      <Splitter axis="y" onResize={(d) => setHistoryH((h) => h - d)} onReset={() => setHistoryH(200)} />
+      <Splitter axis="y" live="next" min={80} max={560} onResize={(d) => setHistoryH((h) => h - d)} onReset={() => setHistoryH(200)} />
       <div className="pane history" style={{ height: historyH, flex: "0 0 auto" }}>
         <div className="pane-title">History ({history.length}{history.length >= 200 ? "+" : ""})</div>
         <HistoryList
@@ -952,48 +1050,68 @@ const HistoryList = memo(function HistoryList({
   return (
     <div className="history-list">
       {history.map((c) => (
-        <div
-          key={c.hash}
-          className={`history-row ${c.hash === selectedHash ? "on" : ""}`}
-          onClick={() => onSelect(c)}
-          onContextMenu={(e) => onMenu(c, e)}
-          title={c.subject}
-        >
-          <span className="mono muted">{c.short}</span>
-          <span className="grow ellipsis">
-            {c.refs &&
-              c.refs.split(", ").map((r) => (
-                <span key={r} className={`ref ${r.startsWith("HEAD") ? "head" : r.includes("/") ? "remote" : ""}`}>
-                  {r.replace("HEAD -> ", "")}
-                </span>
-              ))}
-            {c.subject}
-          </span>
-          <span className="muted small ellipsis author">{c.author}</span>
-          <span className="muted small time">{ago(c.time)}</span>
-        </div>
+        <HistoryRow key={c.hash} c={c} on={c.hash === selectedHash} onSelect={onSelect} onMenu={onMenu} />
       ))}
       {loaded && !history.length && <div className="muted small pad">{tr("git.noCommitsYet")}</div>}
     </div>
   );
 });
 
+/** Một dòng commit: memo → đổi commit đang chọn chỉ vẽ lại 2 dòng (cũ + mới). */
+const HistoryRow = memo(function HistoryRow({ c, on, onSelect, onMenu }: {
+  c: Commit;
+  on: boolean;
+  onSelect: (c: Commit) => void;
+  onMenu: (c: Commit, e: React.MouseEvent) => void;
+}) {
+  renderLog("HistoryRow");
+  return (
+    <div
+      className={`history-row ${on ? "on" : ""}`}
+      onClick={() => onSelect(c)}
+      onContextMenu={(e) => onMenu(c, e)}
+      title={c.subject}
+    >
+      <span className="mono muted">{c.short}</span>
+      <span className="grow ellipsis">
+        {c.refs &&
+          c.refs.split(", ").map((r) => (
+            <span key={r} className={`ref ${r.startsWith("HEAD") ? "head" : r.includes("/") ? "remote" : ""}`}>
+              {r.replace("HEAD -> ", "")}
+            </span>
+          ))}
+        {c.subject}
+      </span>
+      <span className="muted small ellipsis author">{c.author}</span>
+      <span className="muted small time">{ago(c.time)}</span>
+    </div>
+  );
+});
+
+type FileAction = "resolve" | "discard";
+interface FileRowApi {
+  select: (f: FileChange, staged: boolean) => void;
+  menu: (f: FileChange, staged: boolean, e: React.MouseEvent) => void;
+  toggle: (f: FileChange) => void;
+  action: (f: FileChange, kind: FileAction) => void;
+}
+
 function FileGroup(props: {
   title: string;
   files: FileChange[];
   staged: boolean;
   selected: Selected;
-  onSelect: (f: FileChange) => void;
-  onMenu: (f: FileChange, e: React.MouseEvent) => void;
-  actions: (f: FileChange) => React.ReactNode;
+  /** Nút ở cuối mỗi dòng: đánh dấu đã giải conflict / bỏ thay đổi. */
+  action: FileAction;
+  api: { current: FileRowApi };
   headerAction?: React.ReactNode;
   /** Ô tick "chọn tất cả" hiện trước tiêu đề nhóm. */
   headerLead?: React.ReactNode;
-  /** Có bật ô tick từng dòng không (và trạng thái của nó). */
-  isChecked?: (f: FileChange) => boolean;
-  onToggleCheck?: (f: FileChange) => void;
+  /** Có thì mỗi dòng có ô tick (file nằm trong tập này = bỏ tick). */
+  unchecked?: Set<string>;
 }) {
-  const tr = useT();
+  const sel = props.selected;
+  const selPath = sel?.type === "file" && sel.staged === props.staged ? sel.file.path : null;
   return (
     <div>
       <div className="file-group">
@@ -1001,39 +1119,66 @@ function FileGroup(props: {
         <span className="grow">{props.title}</span>
         {props.headerAction}
       </div>
-      {props.files.map((f) => {
-        const code = f.kind === "untracked" ? "U" : f.kind === "conflict" ? "!" : props.staged ? f.x : f.y;
-        const on = props.selected?.type === "file" && props.selected.file.path === f.path && props.selected.staged === props.staged;
-        const slash = f.path.lastIndexOf("/");
-        return (
-          <div
-            key={f.path}
-            className={`file-row ${on ? "on" : ""}`}
-            onClick={() => props.onSelect(f)}
-            onContextMenu={(e) => { e.preventDefault(); props.onMenu(f, e); }}
-            title={f.path}
-          >
-            {props.onToggleCheck && (
-              <input
-                type="checkbox"
-                className="file-check"
-                checked={props.isChecked?.(f) ?? true}
-                onClick={(e) => e.stopPropagation()}
-                onChange={() => props.onToggleCheck!(f)}
-                title={tr("git.includeThisFileInTheCommit")}
-              />
-            )}
-            <span className={`st st-${code}`}>{code}</span>
-            <span className="grow ellipsis">
-              {f.path.slice(slash + 1)} <span className="muted small">{slash > 0 ? f.path.slice(0, slash) : ""}</span>
-            </span>
-            <span className="row-actions" onClick={(e) => e.stopPropagation()}>{props.actions(f)}</span>
-          </div>
-        );
-      })}
+      {props.files.map((f) => (
+        <FileRow
+          key={f.path}
+          f={f}
+          staged={props.staged}
+          on={f.path === selPath}
+          checked={props.unchecked ? !props.unchecked.has(f.path) : undefined}
+          action={props.action}
+          api={props.api}
+        />
+      ))}
     </div>
   );
 }
+
+/** Một dòng file: memo + props nguyên thuỷ → tick / chọn một file chỉ vẽ lại dòng đó. */
+const FileRow = memo(function FileRow({ f, staged, on, checked, action, api }: {
+  f: FileChange;
+  staged: boolean;
+  on: boolean;
+  /** undefined = không có ô tick. */
+  checked: boolean | undefined;
+  action: FileAction;
+  api: { current: FileRowApi };
+}) {
+  renderLog("FileRow");
+  const tr = useT();
+  const code = f.kind === "untracked" ? "U" : f.kind === "conflict" ? "!" : staged ? f.x : f.y;
+  const slash = f.path.lastIndexOf("/");
+  return (
+    <div
+      className={`file-row ${on ? "on" : ""}`}
+      onClick={() => api.current.select(f, staged)}
+      onContextMenu={(e) => { e.preventDefault(); api.current.menu(f, staged, e); }}
+      title={f.path}
+    >
+      {checked !== undefined && (
+        <input
+          type="checkbox"
+          className="file-check"
+          checked={checked}
+          onClick={(e) => e.stopPropagation()}
+          onChange={() => api.current.toggle(f)}
+          title={tr("git.includeThisFileInTheCommit")}
+        />
+      )}
+      <span className={`st st-${code}`}>{code}</span>
+      <span className="grow ellipsis">
+        {f.path.slice(slash + 1)} <span className="muted small">{slash > 0 ? f.path.slice(0, slash) : ""}</span>
+      </span>
+      <span className="row-actions" onClick={(e) => e.stopPropagation()}>
+        {action === "resolve" ? (
+          <button className="icon-btn" title={tr("git.markResolvedStage")} onClick={() => api.current.action(f, "resolve")}><Check /></button>
+        ) : (
+          <button className="icon-btn danger" title={tr("git.discardThisFileSChanges")} onClick={() => api.current.action(f, "discard")}><Undo2 /></button>
+        )}
+      </span>
+    </div>
+  );
+});
 
 function ago(unix: number) {
   const s = Math.floor(Date.now() / 1000) - unix;
@@ -1122,7 +1267,7 @@ function CloneView({ onClose }: { onClose: () => void }) {
           <div className="muted small mono">→ {parent}\{folder || suggested}</div>
         )}
         <div className="toolbar">
-          <button className="primary" disabled={busy} onClick={() => void clone()}><Download />{busy ? tr("git.cloning") : "Clone"}</button>
+          <button className="primary" disabled={busy} onClick={() => void clone()}><Download /><Swap on={busy} a={tr("git.cloning")} b="Clone" /></button>
           {busy && <Loading variant="inline" className="small progress-text" label={progress || tr("git.cloning")} />}
         </div>
         {error && <div className="error-box pre"><TriangleAlert /> {error}</div>}

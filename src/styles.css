@@ -827,6 +827,7 @@ button.link:hover { background: none; border: none; color: #79c0ff; }
 .reg-actions { white-space: nowrap; text-align: right; }
 .reg-actions button { padding: 2px 8px; margin-left: 4px; }
 .reg-jobs { border-top: 1px solid var(--line); max-height: 180px; overflow: auto; padding: 4px 10px; }
+.reg-jobs-total { padding: 2px 0 4px; text-align: right; }
 .reg-job { display: flex; align-items: center; gap: 10px; padding: 3px 0; }
 .reg-job-name { width: 32%; min-width: 160px; }
 .reg-job-stat { width: 34%; min-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1044,3 +1045,76 @@ svg.lucide.spin { animation: spin .8s linear infinite; }
 .csr-dl dt { color: var(--muted); }
 .csr-dl dd { margin: 0; word-break: break-word; }
 .csr-fmt { padding: 0; border-bottom: none; }
+
+/* Thông báo "Đã copy" (copyText trong shell/clipboard.tsx) — nổi trên mọi thứ, phía trên status bar. */
+.copy-toast {
+  position: fixed; left: 50%; bottom: 38px; transform: translateX(-50%); z-index: 1000;
+  display: inline-flex; align-items: center; gap: 8px; max-width: min(560px, 90vw);
+  padding: 7px 12px; border-radius: 6px; font-size: 12.5px; pointer-events: none;
+  background: var(--bg-2); color: var(--fg); border: 1px solid var(--line);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35); animation: copy-toast-in 0.14s ease-out;
+}
+.copy-toast > svg { color: var(--ok, #3fb950); flex: none; }
+.copy-toast.bad > svg { color: var(--danger, #f85149); }
+.copy-toast-text { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+@keyframes copy-toast-in { from { opacity: 0; transform: translate(-50%, 6px); } to { opacity: 1; transform: translate(-50%, 0); } }
+
+/* Combobox (shell/Combo.tsx): ô nhập + nút ▾, danh sách dùng kiểu .picker-menu. */
+.combo { position: relative; display: flex; align-items: stretch; min-width: 120px; width: 100%; }
+.combo .cell-input { flex: 1; min-width: 0; padding-right: 22px; }
+.combo-btn { position: absolute; right: 1px; top: 1px; bottom: 1px; width: 20px; padding: 0; border: none; border-radius: 0;
+  background: transparent; color: var(--muted); display: inline-flex; align-items: center; justify-content: center; }
+.combo-btn:hover { background: var(--bg-3); color: var(--fg); border: none; }
+.combo-btn svg.lucide { width: 13px; height: 13px; }
+.combo-menu { min-width: 220px; z-index: 1100; }
+.combo-item { padding: 3px 10px; font-size: 12px; }
+.combo-item.hi { background: var(--sel); }
+
+/* Edit table: dòng đang sửa mục đã có. */
+.struct-edit td { background: color-mix(in srgb, var(--primary) 7%, transparent); }
+.struct-edit.changed td { background: color-mix(in srgb, var(--warn) 12%, transparent); }
+.struct-edit.bad td { background: color-mix(in srgb, var(--danger) 10%, transparent); }
+.struct-edit .cell-input { width: 100%; min-width: 80px; }
+.struct-edit-line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.struct-edit-line .picker-btn { max-width: 240px; }
+.struct-body .grid tbody tr { height: 26px; }
+
+/* Header bảng trong Edit table: modal không tự cuộn (chỉ lưới cuộn) + header dính đúng đỉnh, phủ kín hàng bên dưới. */
+.modal-body:has(> .struct-modal) { padding: 0; overflow: hidden; display: flex; flex-direction: column; }
+.modal-body > .struct-modal { margin: 0; }
+.struct-body .grid { border-collapse: separate; border-spacing: 0; width: 100%; }
+.struct-body .grid th, .struct-body .grid td { border-width: 0 1px 1px 0; }
+.struct-body .grid th { top: 0; z-index: 3; box-shadow: 0 1px 0 var(--line); }
+.struct-bad td { background: color-mix(in srgb, var(--danger) 10%, transparent); }
+.struct-ref-t { margin-right: 6px; color: var(--muted); }
+.grid td.cell.editing .picker-btn { max-width: 260px; }
+
+/* Bảng kết quả lớn: cô lập bố cục — đổi cỡ khung (kéo thanh ngăn, đổi cỡ cửa sổ) không bắt trình duyệt đo lại
+   kích thước nội tại của cả bảng (min-content của flex item) mỗi khung hình. Khung cuộn vẫn giãn theo flex. */
+.result-pane > .grid-wrap { contain: strict; }
+
+/* Mọi bảng .grid: viền TÁCH RỜI (separate) thay vì collapse — với collapse, header sticky không mang viền theo
+   nên dữ liệu lộ qua khe khi cuộn ("header bay"). Mỗi ô chỉ vẽ viền phải + dưới, cột đầu thêm viền trái. */
+.grid { border-collapse: separate; border-spacing: 0; }
+.grid th, .grid td { border-width: 0 1px 1px 0; }
+.grid tr > :first-child { border-left-width: 1px; }
+.grid thead th { border-top-width: 1px; z-index: 3; }
+/* Lưới kết quả: cột cố định (bề rộng tính sẵn) + dòng đệm của virtualization. */
+.grid.fixed { table-layout: fixed; }
+.grid.fixed .cell-input { min-width: 0; }
+.grid-pad td { padding: 0 !important; border: 0 !important; background: none !important; }
+.grid tbody tr.grid-pad:hover { background: none; }
+
+/* Số có cùng bề rộng (đếm dòng, trang, ms, %, KB/s…) → giá trị đổi không làm chữ/nút xung quanh nhảy. */
+body { font-variant-numeric: tabular-nums; }
+.picker-btn .grow { text-align: left; min-width: 0; }
+
+/* <Swap>: hai nhãn chồng nhau, nhãn không dùng ẩn nhưng vẫn giữ chỗ → nút không đổi bề rộng. */
+.swap { display: inline-grid; }
+.swap > span { grid-area: 1 / 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap; }
+.swap > .swap-off { visibility: hidden; }
+
+/* Git: banner đang merge dở (MERGE_HEAD) + nút Abort merge. */
+.merge-banner { display: flex; align-items: center; gap: 8px; padding: 6px 8px; margin: 6px 0; font-size: 12px; border: 1px solid var(--line); background: color-mix(in srgb, var(--ok) 10%, transparent); }
+.merge-banner.bad { background: color-mix(in srgb, var(--warn) 14%, transparent); }
+.merge-banner button { flex: none; }

@@ -1,4 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { Swap } from "../../shell/Swap";
+import { renderLog } from "../../shell/renderDebug";
+import { copyText } from "../../shell/clipboard";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Braces, ChevronDown, ChevronRight, ChevronsDown, Copy, Database, Folder, FolderOpen, FolderTree, Info, KeyRound, List, Minimize2, Pencil, Plug, Plus, RefreshCw, Save, Trash2, TriangleAlert, Unplug, WandSparkles, X } from "lucide-react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -91,10 +94,10 @@ interface TreeRow {
   count: number;  // số key dưới folder
   full?: string;  // full key (leaf)
 }
-interface TNode { name: string; path: string; full?: string; children: Map<string, TNode>; count: number }
+interface TNode { name: string; path: string; full?: string; children: Map<string, TNode>; count: number; sorted?: TNode[] }
 
-/** Dựng danh sách hàng hiển thị (phẳng, có depth) cho cây key, tôn trọng folder đang mở. */
-function treeRows(keys: string[], open: Set<string>, sep = ":"): TreeRow[] {
+/** Dựng cây key một lần cho mỗi danh sách key (mở/đóng folder chỉ đi lại cây, không dựng lại). */
+function buildTree(keys: string[], sep = ":"): TNode {
   const root: TNode = { name: "", path: "", children: new Map(), count: 0 };
   for (const key of keys) {
     const parts = key.split(sep);
@@ -109,9 +112,15 @@ function treeRows(keys: string[], open: Set<string>, sep = ":"): TreeRow[] {
       node = child;
     }
   }
+  return root;
+}
+
+/** Danh sách hàng hiển thị (phẳng, có depth) cho cây key, tôn trọng folder đang mở. */
+function treeRows(root: TNode, open: Set<string>): TreeRow[] {
   const rows: TreeRow[] = [];
   const walk = (n: TNode, depth: number) => {
-    const entries = [...n.children.values()].sort((a, b) => {
+    // Sắp con một lần rồi cache trên node (cây dựng lại khi danh sách key đổi).
+    const entries = n.sorted ??= [...n.children.values()].sort((a, b) => {
       const fa = a.children.size > 0, fb = b.children.size > 0;
       if (fa !== fb) return fa ? -1 : 1; // folder trước
       return a.name.localeCompare(b.name);
@@ -133,6 +142,63 @@ function treeRows(keys: string[], open: Set<string>, sep = ":"): TreeRow[] {
   return rows;
 }
 
+/** Hành động của hàng key — ref ổn định để hàng (memo) không vẽ lại khi Session đổi state
+ *  (gõ pattern, sửa giá trị, chọn key…). Chỉ hàng đổi `on`/`isOpen` mới vẽ lại. */
+interface KeyRowApi { toggle: (path: string) => void; open: (key: string) => void }
+
+const TreeKeyRow = memo(function TreeKeyRow({ row, isOpen, on, api }: { row: TreeRow; isOpen: boolean; on: boolean; api: { current: KeyRowApi } }) {
+  renderLog("TreeKeyRow");
+  return (
+    <div
+      className={`rkey ${row.kind === "folder" ? "rkey-folder" : ""} ${on ? "on" : ""}`}
+      style={{ paddingLeft: 8 + row.depth * 14 }}
+      onClick={() => (row.kind === "folder" ? api.current.toggle(row.path) : api.current.open(row.full!))}
+      title={row.kind === "leaf" ? row.full : `${row.path} (${row.count})`}
+    >
+      {row.kind === "folder" ? (
+        <>
+          <span className="rkey-caret">{isOpen ? <><ChevronDown /><FolderOpen /></> : <><ChevronRight /><Folder /></>}</span>
+          <span className="ellipsis grow">{row.label}</span>
+          <span className="muted small rkey-count">{row.count}</span>
+        </>
+      ) : (
+        <span className="mono ellipsis grow">{row.label}</span>
+      )}
+    </div>
+  );
+}, (a, b) => {
+  // treeRows tạo object hàng mới mỗi lần đi cây → so theo nội dung.
+  const x = a.row, y = b.row;
+  return a.isOpen === b.isOpen && a.on === b.on && a.api === b.api &&
+    x.kind === y.kind && x.path === y.path && x.label === y.label && x.depth === y.depth && x.count === y.count && x.full === y.full;
+});
+
+const FlatKeyRow = memo(function FlatKeyRow({ k, on, api }: { k: string; on: boolean; api: { current: KeyRowApi } }) {
+  renderLog("FlatKeyRow");
+  return (
+    <div className={`rkey ${on ? "on" : ""}`} onClick={() => api.current.open(k)} title={k}>
+      <span className="mono ellipsis grow">{k}</span>
+    </div>
+  );
+});
+
+/** Bảng giá trị hash/list/set/zset/stream — memo: chỉ vẽ lại khi đổi key (không theo từng phím gõ ở Session). */
+const DetailGrid = memo(function DetailGrid({ columns, rows }: { columns: string[]; rows: string[][] }) {
+  renderLog("DetailGrid");
+  return (
+    <div className="grid-wrap">
+      <table className="grid mono">
+        <thead><tr>{columns.map((c, i) => <th key={i}>{c}</th>)}</tr></thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={i}>{r.map((v, j) => <td key={j} title={v.length > 60 ? v : undefined}>{v}</td>)}</tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+});
+
 /* Form kết nối mở dạng MODAL (như app DB) — dùng store nhỏ để mở từ bất cứ đâu. */
 let formReq: { connId?: string; seq: number } | null = null;
 let formSeq = 0;
@@ -145,16 +211,16 @@ function closeForm() {
   formReq = null;
   formSubs.forEach((f) => f());
 }
+const subForm = (cb: () => void) => { formSubs.add(cb); return () => { formSubs.delete(cb); }; };
+const snapForm = () => formReq;
 function useFormReq() {
-  return useSyncExternalStore(
-    (cb) => { formSubs.add(cb); return () => { formSubs.delete(cb); }; },
-    () => formReq,
-  );
+  return useSyncExternalStore(subForm, snapForm);
 }
 
 /* ── Sidebar ───────────────────────────────────── */
 
 function Sidebar() {
+  renderLog("Sidebar");
   const tr = useT();
   const conns = useConns((s) => s.conns);
   const [sel, setSel] = useState<string | null>(null);
@@ -309,7 +375,17 @@ const KIND_COLOR: Record<string, string> = {
   set: "#bc8cff", zset: "#ff9bce", stream: "#39c5cf", none: "var(--muted)",
 };
 
+/** Vỏ ngoài: kết nối bị xoá khi tab đang mở → gỡ hẳn phần thân (cleanup ngắt kết nối vẫn chạy) thay vì
+ *  return sớm giữa chừng các hook (đổi thứ tự hook → React lỗi). */
 function Session({ tab }: { tab: Tab }) {
+  const exists = useConns((s) => s.conns.some((c) => c.id === tab.payload.connId));
+  const tr = useT();
+  if (!exists) return <div className="empty">{tr("redis.thisConnectionWasDeleted")}</div>;
+  return <SessionBody tab={tab} />;
+}
+
+function SessionBody({ tab }: { tab: Tab }) {
+  renderLog("SessionBody");
   const tr = useT();
   const conn = useConns((s) => s.conns.find((c) => c.id === tab.payload.connId));
   const log = useWorkbench((s) => s.log);
@@ -344,6 +420,10 @@ function Session({ tab }: { tab: Tab }) {
   const [treeView, setTreeView] = useState(() => localStorage.getItem("redis.treeView") !== "0");
   const [openFolders, setOpenFolders] = useState<Set<string>>(new Set());
   const toggleFolder = (p: string) => setOpenFolders((s) => { const n = new Set(s); n.has(p) ? n.delete(p) : n.add(p); return n; });
+  // Cây dựng lại chỉ khi danh sách key đổi; hàng hiển thị chỉ tính lại khi mở/đóng folder (không theo mỗi phím gõ).
+  const keyTree = useMemo(() => (treeView ? buildTree(keys) : null), [keys, treeView]);
+  const rows = useMemo(() => (keyTree ? treeRows(keyTree, openFolders) : []), [keyTree, openFolders]);
+  const keyRowApi = useRef<KeyRowApi>(null as unknown as KeyRowApi);
 
   useEffect(() => () => {
     if (dbIdRef.current) void call("redis_disconnect", { id: dbIdRef.current }).catch(() => {});
@@ -438,6 +518,8 @@ function Session({ tab }: { tab: Tab }) {
     }
   };
 
+  keyRowApi.current = { toggle: toggleFolder, open: (k) => void openKey(k) };
+
   const del = async () => {
     if (!dbId || !selected) return;
     setConfirmDel(false);
@@ -513,7 +595,7 @@ function Session({ tab }: { tab: Tab }) {
               <button onClick={() => openForm(conn.id)}><Pencil />{tr("redis.editConfig")}</button>
               <span className="grow" />
               <button onClick={() => useWorkbench.getState().closeTab(tab.id)}><X />{tr("redis.cancel")}</button>
-              <button className="primary" disabled={connecting} onClick={() => connect()}><Plug />{connecting ? tr("redis.connecting") : tr("redis.connect")}</button>
+              <button className="primary" disabled={connecting} onClick={() => connect()}><Plug /><Swap on={connecting} a={tr("redis.connecting")} b={tr("redis.connect")} /></button>
             </div>
           </div>
         </Modal>
@@ -565,30 +647,16 @@ function Session({ tab }: { tab: Tab }) {
           </div>
           <div className="rkey-list">
             {treeView
-              ? treeRows(keys, openFolders).map((row) => (
-                  <div
+              ? rows.map((row) => (
+                  <TreeKeyRow
                     key={`${row.kind}:${row.path}`}
-                    className={`rkey ${row.kind === "folder" ? "rkey-folder" : ""} ${row.kind === "leaf" && row.full === selected ? "on" : ""}`}
-                    style={{ paddingLeft: 8 + row.depth * 14 }}
-                    onClick={() => (row.kind === "folder" ? toggleFolder(row.path) : void openKey(row.full!))}
-                    title={row.kind === "leaf" ? row.full : `${row.path} (${row.count})`}
-                  >
-                    {row.kind === "folder" ? (
-                      <>
-                        <span className="rkey-caret">{openFolders.has(row.path) ? <><ChevronDown /><FolderOpen /></> : <><ChevronRight /><Folder /></>}</span>
-                        <span className="ellipsis grow">{row.label}</span>
-                        <span className="muted small rkey-count">{row.count}</span>
-                      </>
-                    ) : (
-                      <span className="mono ellipsis grow">{row.label}</span>
-                    )}
-                  </div>
+                    row={row}
+                    isOpen={row.kind === "folder" && openFolders.has(row.path)}
+                    on={row.kind === "leaf" && row.full === selected}
+                    api={keyRowApi}
+                  />
                 ))
-              : keys.map((k) => (
-                  <div key={k} className={`rkey ${k === selected ? "on" : ""}`} onClick={() => void openKey(k)} title={k}>
-                    <span className="mono ellipsis grow">{k}</span>
-                  </div>
-                ))}
+              : keys.map((k) => <FlatKeyRow key={k} k={k} on={k === selected} api={keyRowApi} />)}
             {loadingKeys && <Loading variant={keys.length ? "row" : "center"} />}
             {!keys.length && !loadingKeys && <div className="muted small pad">{tr("redis.noKeysMatchPattern", { pattern })}</div>}
             {!loadingKeys && cursor !== 0 && (
@@ -596,7 +664,7 @@ function Session({ tab }: { tab: Tab }) {
             )}
           </div>
         </div>
-        <Splitter axis="x" onResize={(d) => setKeysW((w) => w + d)} onReset={() => setKeysW(300)} />
+        <Splitter axis="x" live="prev" min={180} max={600} onResize={(d) => setKeysW((w) => w + d)} onReset={() => setKeysW(300)} />
 
         <div className="pane">
           <div className="pane-title ellipsis">
@@ -607,7 +675,7 @@ function Session({ tab }: { tab: Tab }) {
                 <span className="muted small">TTL {fmtTtl(detail.ttl)} · {detail.size} {tr("redis.elements")}</span>
                 <span className="grow" />
                 <button className="icon-btn" title={tr("redis.reload")} onClick={() => void openKey(detail.key)}><RefreshCw /></button>
-                <button className="icon-btn" title={tr("redis.copyKeyName")} onClick={() => void navigator.clipboard.writeText(detail.key)}><Copy /></button>
+                <button className="icon-btn" title={tr("redis.copyKeyName")} onClick={() => void copyText(detail.key)}><Copy /></button>
                 <button className="icon-btn danger" title={tr("redis.deleteKey")} onClick={() => setConfirmDel(true)}><Trash2 /></button>
               </>
             ) : tr("redis.value")}
@@ -636,8 +704,8 @@ function Session({ tab }: { tab: Tab }) {
                 {editValue === null ? (
                   <>
                     <button onClick={startEdit}><Pencil />{tr("redis.editValue")}</button>
-                    {isJson && <button onClick={togglePretty} title={tr("redis.prettyJsonHint")}><Braces />{pretty ? tr("redis.showRaw") : tr("redis.prettyJson")}</button>}
-                    <button onClick={() => void navigator.clipboard.writeText(isJson && pretty ? JSON.stringify(json, null, 2) : detail.text ?? "")}><Copy />{tr("redis.copyValue")}</button>
+                    {isJson && <button onClick={togglePretty} title={tr("redis.prettyJsonHint")}><Braces /><Swap on={pretty} a={tr("redis.showRaw")} b={tr("redis.prettyJson")} /></button>}
+                    <button onClick={() => void copyText(isJson && pretty ? JSON.stringify(json, null, 2) : detail.text ?? "")}><Copy />{tr("redis.copyValue")}</button>
                     {isJson && <span className="badge rjson-badge">JSON</span>}
                   </>
                 ) : (
@@ -665,16 +733,7 @@ function Session({ tab }: { tab: Tab }) {
               )}
             </div>
           ) : detail.rows.length ? (
-            <div className="grid-wrap">
-              <table className="grid mono">
-                <thead><tr>{detail.columns.map((c, i) => <th key={i}>{c}</th>)}</tr></thead>
-                <tbody>
-                  {detail.rows.map((r, i) => (
-                    <tr key={i}>{r.map((v, j) => <td key={j} title={v.length > 60 ? v : undefined}>{v}</td>)}</tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <DetailGrid columns={detail.columns} rows={detail.rows} />
           ) : detail.text ? (
             <pre className="io mono">{detail.text}</pre>
           ) : (

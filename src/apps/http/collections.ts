@@ -60,27 +60,45 @@ const uid = (p: string) => `${p}${Date.now().toString(36)}${Math.random().toStri
 
 /* ── Thao tác cây (bất biến) ── */
 
+/** Chép lại nhánh có con đổi, giữ nguyên object các nhánh không đổi (để dòng memo ở UI không vẽ lại). */
+function mapChildren(nodes: TreeNode[], fn: (children: TreeNode[]) => TreeNode[]): TreeNode[] {
+  let changed = false;
+  const out = nodes.map((n) => {
+    if (n.kind !== "folder") return n;
+    const c = fn(n.children);
+    if (c === n.children) return n;
+    changed = true;
+    return { ...n, children: c };
+  });
+  return changed ? out : nodes;
+}
+
 function insert(nodes: TreeNode[], parentId: string | null, node: TreeNode): TreeNode[] {
   if (parentId === null) return [...nodes, node];
-  return nodes.map((n) =>
-    n.kind === "folder"
-      ? n.id === parentId
-        ? { ...n, open: true, children: [...n.children, node] }
-        : { ...n, children: insert(n.children, parentId, node) }
-      : n,
-  );
+  const i = nodes.findIndex((n) => n.kind === "folder" && n.id === parentId);
+  if (i >= 0) {
+    const f = nodes[i] as FolderNode;
+    const copy = [...nodes];
+    copy[i] = { ...f, open: true, children: [...f.children, node] };
+    return copy;
+  }
+  return mapChildren(nodes, (c) => insert(c, parentId, node));
 }
 
 function removeIn(nodes: TreeNode[], id: string): TreeNode[] {
-  return nodes
-    .filter((n) => n.id !== id)
-    .map((n) => (n.kind === "folder" ? { ...n, children: removeIn(n.children, id) } : n));
+  const i = nodes.findIndex((n) => n.id === id);
+  if (i >= 0) return nodes.filter((n) => n.id !== id);
+  return mapChildren(nodes, (c) => removeIn(c, id));
 }
 
 function updateIn(nodes: TreeNode[], id: string, fn: (n: TreeNode) => TreeNode): TreeNode[] {
-  return nodes.map((n) =>
-    n.id === id ? fn(n) : n.kind === "folder" ? { ...n, children: updateIn(n.children, id, fn) } : n,
-  );
+  const i = nodes.findIndex((n) => n.id === id);
+  if (i >= 0) {
+    const copy = [...nodes];
+    copy[i] = fn(nodes[i]);
+    return copy;
+  }
+  return mapChildren(nodes, (c) => updateIn(c, id, fn));
 }
 
 function findNode(nodes: TreeNode[], id: string): TreeNode | null {
@@ -93,7 +111,7 @@ function findNode(nodes: TreeNode[], id: string): TreeNode | null {
 function insertBefore(nodes: TreeNode[], targetId: string, node: TreeNode): TreeNode[] {
   const idx = nodes.findIndex((n) => n.id === targetId);
   if (idx >= 0) { const copy = [...nodes]; copy.splice(idx, 0, node); return copy; }
-  return nodes.map((n) => (n.kind === "folder" ? { ...n, children: insertBefore(n.children, targetId, node) } : n));
+  return mapChildren(nodes, (c) => insertBefore(c, targetId, node));
 }
 
 /** Kéo-thả: chuyển node `dragId` tới trước `targetId` (into=true → thả vào trong folder targetId; targetId=null → về gốc, cuối). */

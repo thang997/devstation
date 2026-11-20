@@ -1,4 +1,5 @@
-import { Component, Suspense, use, useMemo, useState, type ReactNode } from "react";
+import { renderLog } from "./renderDebug";
+import { Component, Suspense, memo, use, useMemo, useState, type ReactNode } from "react";
 import { RefreshCw, TriangleAlert } from "lucide-react";
 import { appById, loadApp } from "../apps/registry";
 import type { AppId } from "../apps/types";
@@ -9,8 +10,10 @@ import { Loading } from "./Loading";
 /**
  * Vỏ của một mini app: tự tải code khi mount lần đầu, chiếm toàn bộ vùng làm việc,
  * và có error boundary riêng để app này lỗi không kéo sập các app khác.
+ * memo: Shell vẽ lại (đổi số tab, panel, launcher…) không kéo theo vẽ lại cả app.
  */
-export function AppHost({ id, active }: { id: AppId; active: boolean }) {
+export const AppHost = memo(function AppHost({ id, active }: { id: AppId; active: boolean }) {
+  renderLog("AppHost");
   const m = appById(id);
   const tr = useT();
   // Lớp modal riêng của app (xem ModalLayerContext): modal chỉ phủ vùng app, không chặn thanh tab app.
@@ -28,7 +31,7 @@ export function AppHost({ id, active }: { id: AppId; active: boolean }) {
       <div className="app-modal-layer" ref={setLayerEl} />
     </div>
   );
-}
+});
 
 function AppView({ id }: { id: AppId }) {
   const { View } = use(loadApp(id));

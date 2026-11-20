@@ -30,8 +30,10 @@ function folderStore(key: string) {
     }
     subs.forEach((f) => f());
   };
+  const subscribe = (cb: () => void) => { subs.add(cb); return () => { subs.delete(cb); }; };
+  const snapshot = () => folders;
   return {
-    use: (): SavedFolder[] => useSyncExternalStore((cb) => { subs.add(cb); return () => { subs.delete(cb); }; }, () => folders),
+    use: (): SavedFolder[] => useSyncExternalStore(subscribe, snapshot),
     add: (name = t("ssh.newFolderName")): string => {
       const f: SavedFolder = { id: uid("f"), name, open: true };
       commit([...folders, f]);

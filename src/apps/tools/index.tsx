@@ -1,4 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { renderLog } from "../../shell/renderDebug";
+import { copyText } from "../../shell/clipboard";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { Braces, CircleCheck, CircleX, Copy, Download, FileUp, Info, KeyRound, TriangleAlert, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { JsonView, parseJsonValue } from "../../shell/JsonView";
@@ -87,7 +89,7 @@ function ResultPane({ output, error, preview, children, body }: { output: string
     <div className="pane">
       <div className="pane-title">
         {tr("tools.result")} <span className="grow" />
-        {output && <button onClick={() => navigator.clipboard.writeText(output)}><Copy />Copy</button>}
+        {output && <button onClick={() => copyText(output)}><Copy />Copy</button>}
       </div>
       {children}
       {error ? <div className="error-box"><TriangleAlert /> {error}</div> : body ?? <pre className="io mono">{preview ?? output}</pre>}
@@ -105,14 +107,18 @@ function TabView({ tab }: { tab: Tab }) {
 }
 
 function TextToolView({ tool, initial }: { tool: ToolId; initial: string }) {
+  renderLog("TextToolView");
   const tr = useT();
   const [input, setInput] = useState(initial);
-  const res = runTool(tool, input);
+  // Gõ chữ: ô nhập cập nhật ngay, phần biến đổi + vẽ kết quả (có thể lớn) chạy ở lượt render hoãn (deferred).
+  const dInput = useDeferredValue(input);
+  const res = useMemo(() => runTool(tool, dInput), [tool, dInput]);
   // Base64 Decode ra JSON → tự format đẹp (tô màu), nút Pretty/Raw để xem bản gốc; Copy lấy đúng bản đang xem.
-  const json = tool === "base64-decode" && !res.error ? parseJsonValue(res.output) : undefined;
+  const json = useMemo(() => (tool === "base64-decode" && !res.error ? parseJsonValue(res.output) : undefined), [tool, res]);
   const [pretty, setPretty] = useState(() => localStorage.getItem("tools.b64Pretty") !== "0");
   const showPretty = json !== undefined && pretty;
-  const output = showPretty ? JSON.stringify(json, null, 2) : res.output;
+  const prettyText = useMemo(() => (showPretty ? JSON.stringify(json, null, 2) : ""), [showPretty, json]);
+  const output = showPretty ? prettyText : res.output;
   const error = res.error;
   return (
     <div className="view">
@@ -156,6 +162,7 @@ interface FileB64 {
 }
 
 function Base64EncodeView({ initial }: { initial: string }) {
+  renderLog("Base64EncodeView");
   const tr = useT();
   const [input, setInput] = useState(initial);
   const [file, setFile] = useState<FileB64 | null>(null);
@@ -186,17 +193,19 @@ function Base64EncodeView({ initial }: { initial: string }) {
     r.readAsDataURL(f);
   };
 
-  let output = "";
-  let error = fileErr;
-  if (file) {
-    // FileReader trả "data:<mime>;base64,<dữ liệu>" — file rỗng có thể là "data:" trơn.
-    const comma = file.dataUri.indexOf(",");
-    output = keepUri ? file.dataUri : comma >= 0 ? file.dataUri.slice(comma + 1) : "";
-  } else if (!error) {
-    ({ output, error } = runTool("base64-encode", input));
-  }
+  // Hoãn ô nhập + memo: kéo file qua (đổi `over`), gõ chữ… không cắt lại chuỗi base64 vài chục MB mỗi lần render.
+  const dInput = useDeferredValue(input);
+  const { output, error } = useMemo(() => {
+    if (file) {
+      // FileReader trả "data:<mime>;base64,<dữ liệu>" — file rỗng có thể là "data:" trơn.
+      const comma = file.dataUri.indexOf(",");
+      return { output: keepUri ? file.dataUri : comma >= 0 ? file.dataUri.slice(comma + 1) : "", error: fileErr };
+    }
+    if (fileErr) return { output: "", error: fileErr };
+    return runTool("base64-encode", dInput);
+  }, [file, keepUri, fileErr, dInput]);
   const truncated = output.length > PREVIEW_CHARS;
-  const preview = truncated ? output.slice(0, PREVIEW_CHARS) : undefined;
+  const preview = useMemo(() => (truncated ? output.slice(0, PREVIEW_CHARS) : undefined), [truncated, output]);
 
   return (
     <div className="view">
@@ -283,6 +292,7 @@ function verifyErrorText(e: unknown): string {
 }
 
 function JwtView({ initial }: { initial: string }) {
+  renderLog("JwtView");
   const tr = useT();
   const [input, setInput] = useState(initial);
   const [key, setKey] = useState("");
@@ -386,6 +396,7 @@ function JwtView({ initial }: { initial: string }) {
 /* ---------- CSR / Certificate → Public key ---------- */
 
 function CsrView({ initial }: { initial: string }) {
+  renderLog("CsrView");
   const tr = useT();
   const [input, setInput] = useState(initial);
   const [der, setDer] = useState<{ name: string; bytes: Uint8Array } | null>(null);
@@ -394,18 +405,18 @@ function CsrView({ initial }: { initial: string }) {
   const [sig, setSig] = useState<boolean | null | "busy">(null);
   const pick = useRef<HTMLInputElement>(null);
 
-  let info: CsrInfo | null = null;
-  let error = "";
-  if (der || input.trim()) {
+  // Chỉ parse lại khi nội dung đổi (không parse khi đổi PEM/JWK hay trạng thái kiểm chữ ký).
+  const { info, error } = useMemo((): { info: CsrInfo | null; error: string } => {
+    if (!der && !input.trim()) return { info: null, error: "" };
     try {
-      info = parseCsrOrCert(der ? der.bytes : input);
+      return { info: parseCsrOrCert(der ? der.bytes : input), error: "" };
     } catch (e) {
       const m = e instanceof Error ? e.message : String(e);
-      error = m === "privateKey" ? tr("tools.csrPrivateKey") : tr("tools.csrBad");
+      return { info: null, error: m === "privateKey" ? tr("tools.csrPrivateKey") : tr("tools.csrBad") };
     }
-  }
-  const pem = info ? spkiToPem(info.spki) : "";
-  const jwk = info ? spkiToJwk(info.spki) : null;
+  }, [der, input, tr]);
+  const pem = useMemo(() => (info ? spkiToPem(info.spki) : ""), [info]);
+  const jwk = useMemo(() => (info ? spkiToJwk(info.spki) : null), [info]);
   const output = !info ? "" : fmt === "jwk" ? (jwk ? JSON.stringify(jwk, null, 2) : "") : pem;
 
   // Kiểm chữ ký (CSR tự ký bằng chính khoá của nó; cert tự ký cũng kiểm được, cert do CA ký thì báo không kiểm).

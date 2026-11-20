@@ -1,4 +1,7 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { Swap } from "../../shell/Swap";
+import { renderLog } from "../../shell/renderDebug";
+import { copyText } from "../../shell/clipboard";
+import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowUp, Check, Container, Copy, CornerLeftUp, Database, Disc, Download, Eye, File, FileArchive, FileAudio,
   FileCode, FileCog, FileImage, FilePlus, FileSpreadsheet, FileText, FileVideo, Folder, FolderOpen, FolderPlus,
@@ -121,9 +124,39 @@ function normalize(p: string): string {
   return "/" + parts.join("/");
 }
 
+/** Hành động của một hàng file — truyền qua ref ổn định để `SftpRow` (memo) không vẽ lại khi panel đổi state
+ *  (chọn, gõ đường dẫn, busy, preview…). Thư mục hàng nghìn mục chỉ vẽ lại hàng đổi `sel`. */
+interface SftpRowApi {
+  select: (name: string) => void;
+  open: (e: SftpEntry) => void;
+  rename: (name: string) => void;
+  menu: (ev: React.MouseEvent, e: SftpEntry) => void;
+}
+
+const SftpRow = memo(function SftpRow({ e, sel, api }: { e: SftpEntry; sel: boolean; api: { current: SftpRowApi } }) {
+  renderLog("SftpRow");
+  return (
+    <div
+      className={`sftp-row ${sel ? "sel" : ""}`}
+      tabIndex={0}
+      title={`${e.perms}${e.linkTarget ? ` → ${e.linkTarget}` : ""}`}
+      onClick={() => api.current.select(e.name)}
+      onDoubleClick={() => api.current.open(e)}
+      onKeyDown={(ev) => { if (ev.key === "F2") { ev.preventDefault(); api.current.rename(e.name); } }}
+      onContextMenu={(ev) => api.current.menu(ev, e)}
+    >
+      <FileIcon entry={e} />
+      <span className="grow ellipsis">{e.name}</span>
+      <span className="muted small sftp-size">{e.kind === "dir" ? "" : human(e.size)}</span>
+      <span className="muted small sftp-time ellipsis">{e.mtime}</span>
+    </div>
+  );
+});
+
 /** Panel SFTP: duyệt file remote + preview, kiểu MobaXterm. Mở phiên sftp.exe riêng cho tab.
- * `followCd`: khi người dùng gõ `cd` ở terminal, panel đi theo (resolve tương đối theo cwd hiện tại). */
-export function SftpPanel({
+ * `followCd`: khi người dùng gõ `cd` ở terminal, panel đi theo (resolve tương đối theo cwd hiện tại).
+ * memo: tab cha vẽ lại (trạng thái terminal…) không vẽ lại danh sách file. */
+export const SftpPanel = memo(function SftpPanel({
   cfg,
   followCd,
   driver,
@@ -139,6 +172,7 @@ export function SftpPanel({
   /** Ẩn nút upload (container chưa hỗ trợ upload). */
   noUpload?: boolean;
 }) {
+  renderLog("SftpPanel");
   const tr = useT();
   const drv = driver ?? sftp;
   const [sid, setSid] = useState<string | null>(null);
@@ -167,7 +201,7 @@ export function SftpPanel({
     const inPreview = !!s?.anchorNode && !!(s.anchorNode.parentElement?.closest(".sftp-text"));
     const sel = inPreview ? s!.toString() : "";
     try {
-      await navigator.clipboard.writeText(sel || all);
+      await copyText(sel || all);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch { /* clipboard bị chặn */ }
@@ -403,7 +437,7 @@ export function SftpPanel({
           { id: "dl", icon: <Download />, label: tr("ssh.downloadFolderRecursive"), action: () => void download(e) },
         ]),
     { id: "rename", icon: <Pencil />, label: tr("ssh.renameF2"), action: () => setRenaming(e.name) },
-    { id: "copy", icon: <Copy />, label: tr("ssh.copyPath"), action: () => void navigator.clipboard.writeText(joinPath(cwd, e.name)) },
+    { id: "copy", icon: <Copy />, label: tr("ssh.copyPath"), action: () => void copyText(joinPath(cwd, e.name)) },
     { id: "s1", sep: true },
     { id: "del", icon: <Trash2 />, label: tr("ssh.delete"), danger: true, action: () => void del(e) },
   ];
@@ -417,6 +451,15 @@ export function SftpPanel({
       ? [{ id: "upload", icon: <Upload />, label: tr("ssh.uploadToCurrentFolder"), action: () => void upload() }]
       : []),
   ];
+
+  // Ref ổn định cho SftpRow (memo) — nội dung cập nhật mỗi lần vẽ; menu dựng lúc chuột phải.
+  const rowApi = useRef<SftpRowApi>(null as unknown as SftpRowApi);
+  rowApi.current = {
+    select: setSel,
+    open: openEntry,
+    rename: setRenaming,
+    menu: (ev, e) => { ev.preventDefault(); ev.stopPropagation(); setSel(e.name); setMenu({ x: ev.clientX, y: ev.clientY, items: entryMenu(e) }); },
+  };
 
   /** Mục đang chọn (để nút tải xuống trên toolbar tác động đúng). */
   const selEntry = sel ? entries.find((e) => e.name === sel) ?? null : null;
@@ -516,21 +559,7 @@ export function SftpPanel({
               />
             </div>
           ) : (
-            <div
-              key={e.name}
-              className={`sftp-row ${sel === e.name ? "sel" : ""}`}
-              tabIndex={0}
-              title={`${e.perms}${e.linkTarget ? ` → ${e.linkTarget}` : ""}`}
-              onClick={() => setSel(e.name)}
-              onDoubleClick={() => openEntry(e)}
-              onKeyDown={(ev) => { if (ev.key === "F2") { ev.preventDefault(); setRenaming(e.name); } }}
-              onContextMenu={(ev) => { ev.preventDefault(); ev.stopPropagation(); setSel(e.name); setMenu({ x: ev.clientX, y: ev.clientY, items: entryMenu(e) }); }}
-            >
-              <FileIcon entry={e} />
-              <span className="grow ellipsis">{e.name}</span>
-              <span className="muted small sftp-size">{e.kind === "dir" ? "" : human(e.size)}</span>
-              <span className="muted small sftp-time ellipsis">{e.mtime}</span>
-            </div>
+            <SftpRow key={e.name} e={e} sel={sel === e.name} api={rowApi} />
           ),
         )}
       </div>
@@ -600,7 +629,7 @@ export function SftpPanel({
             <span className="grow" />
             {preview.p.kind === "text" && (
               <button onClick={() => void copyPreview(preview.p.data)} title={tr("ssh.copyContentHint")}>
-                {copied ? <><Check /> {tr("ssh.copied")}</> : <><Copy /> {tr("ssh.copyContent")}</>}
+                <Swap on={copied} a={<><Check /> {tr("ssh.copied")}</>} b={<><Copy /> {tr("ssh.copyContent")}</>} />
               </button>
             )}
             <button onClick={() => setPreview(null)}><X />{tr("ssh.close")}</button>
@@ -610,4 +639,4 @@ export function SftpPanel({
       )}
     </div>
   );
-}
+});

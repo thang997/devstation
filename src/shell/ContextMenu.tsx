@@ -36,12 +36,12 @@ export function ContextMenu({ x, y, items, onClose }: { x: number; y: number; it
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") { e.stopPropagation(); onClose(); }
     };
-    window.addEventListener("mousedown", onDown);
+    window.addEventListener("mousedown", onDown, true);
     window.addEventListener("keydown", onKey, true);
     window.addEventListener("blur", onClose);
     window.addEventListener("resize", onClose);
     return () => {
-      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("mousedown", onDown, true);
       window.removeEventListener("keydown", onKey, true);
       window.removeEventListener("blur", onClose);
       window.removeEventListener("resize", onClose);

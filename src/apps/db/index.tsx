@@ -1,4 +1,7 @@
-import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { Swap } from "../../shell/Swap";
+import { renderLog } from "../../shell/renderDebug";
+import { copyText } from "../../shell/clipboard";
+import { memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import type { AppModule, Tab } from "../types";
@@ -17,6 +20,8 @@ import { addDbFolder, removeDbFolder, renameDbFolder, toggleDbFolder, useDbFolde
 import { removeQuery, renameQuery, saveQuery, useSavedQueries } from "./queries";
 import { assembleSync, planMysqlSync, type SyncItem, type SyncKind, type SyncPlan, type SyncTable } from "./mysqlSync";
 import { designProblems, designSql, FK_ACTIONS, type Design, type DesignDriver, type NewCol, type NewFk, type NewIdx } from "./tableDesign";
+import { alterColSql, alterFkSql, alterIdxSql, colChanged, fkChanged, filterTypes, idxChanged, parseIndexDef, parseMysqlColDef, parsePgFkDef, splitColList, TYPE_LIST, type EditCol, type EditFk, type EditIdx, type IdxKind } from "./tableEdit";
+import { Combo, type ComboItem } from "../../shell/Combo";
 import { parseCreateTable } from "./mysqlSync";
 import { buildUpdates, countSql, isPageable, pagedSql, parseSourceTable, quoteIdent, sortRows, stripSql, type GridDriver, type GridEdits, type GridSort } from "./gridEdit";
 import { t, useT } from "../../store/lang";
@@ -246,6 +251,7 @@ function useNewDbReq() {
 /* ── Sidebar ───────────────────────────────────── */
 
 function Sidebar() {
+  renderLog("Sidebar");
   const tr = useT();
   const conns = useConns((s) => s.conns);
   const [dragId, setDragId] = useState<string | null>(null);
@@ -608,7 +614,374 @@ function deriveQueryName(sql: string): string {
   return s || "Query";
 }
 
+/** Session đọc/ghi nội dung ô SQL (state nằm trong <SqlEditor>). */
+interface SqlApi { get: () => string; set: (v: string) => void }
+/** Dữ liệu cho gợi ý khi gõ SQL. */
+interface SugSrc { tables: TableInfo[]; cols: { table: string; column: string }[]; dbs: string[] }
+/** Thao tác của Session cho các con memo — object ổn định, luôn gọi bản mới nhất. */
+interface SessApi {
+  run: () => void;
+  openDb: (db: string) => void;
+  toggleExpand: (db: string) => void;
+  selectDb: (db: string) => void;
+  dbMenu: (db: string, x: number, y: number) => void;
+  selectTable: (t: TableInfo) => void;
+  openTable: (t: TableInfo) => void;
+  tableMenu: (t: TableInfo, x: number, y: number) => void;
+  renameTable: (t: TableInfo, name: string) => void;
+  editStruct: (t: TableInfo) => void;
+  openRoutine: (r: RoutineInfo) => void;
+  routineMenu: (r: RoutineInfo, x: number, y: number) => void;
+  newRoutine: (db: string, kind: RoutineKind) => void;
+}
+
+/** Ô soạn SQL + popup gợi ý. Giữ state văn bản riêng → gõ phím chỉ vẽ lại phần này, không vẽ lại cả phiên
+ *  (cây bảng, toolbar, kết quả, khung thông tin). */
+const SqlEditor = memo(function SqlEditor({ api, textRef, src, onRun, onEmptyChange }: {
+  api: RefObject<SqlApi | null>;
+  textRef: RefObject<HTMLTextAreaElement | null>;
+  src: SugSrc;
+  onRun: () => void;
+  onEmptyChange: (empty: boolean) => void;
+}) {
+  renderLog("SqlEditor");
+  const tr = useT();
+  const [sql, setSqlState] = useState("");
+  /** Gợi ý khi gõ SQL (tên bảng / cột / database / từ khoá). */
+  const [sug, setSug] = useState<{ items: Sug[]; x: number; y: number; start: number; end: number; q: string } | null>(null);
+  const [sugIdx, setSugIdx] = useState(0);
+  const sqlRef = useRef("");
+  const emptyRef = useRef(true);
+  const setSql = (v: string) => {
+    sqlRef.current = v;
+    setSqlState(v);
+    const empty = !v.trim();
+    if (empty !== emptyRef.current) { emptyRef.current = empty; onEmptyChange(empty); }
+  };
+  useImperativeHandle(api, () => ({ get: () => sqlRef.current, set: setSql }));
+
+  const updateSug = (el: HTMLTextAreaElement) => {
+    const pos = el.selectionStart;
+    const before = el.value.slice(0, pos);
+    const m = before.match(/([A-Za-z0-9_$]+\.[A-Za-z0-9_$]*|[A-Za-z0-9_$]*)$/);
+    if (!m) return setSug(null);
+    const token = m[0];
+    if (token === "") return setSug(null);
+    const start = pos - token.length;
+    const dot = token.lastIndexOf(".");
+    const qualifier = dot >= 0 ? token.slice(0, dot).toLowerCase() : null;
+    const prefix = (dot >= 0 ? token.slice(dot + 1) : token).toLowerCase();
+
+    const items: Sug[] = [];
+    const seen = new Set<string>();
+    const push = (s: Sug) => { const k = s.kind + s.label.toLowerCase(); if (!seen.has(k)) { seen.add(k); items.push(s); } };
+
+    if (qualifier) {
+      // Sau "bảng." → chỉ cột của bảng đó.
+      for (const c of src.cols) if (c.table.toLowerCase() === qualifier) push({ label: c.column, kind: "col", hint: c.table });
+    } else {
+      for (const t of src.tables) push({ label: t.name, kind: "table", hint: t.schema });
+      for (const c of src.cols) push({ label: c.column, kind: "col", hint: c.table });
+      for (const d of src.dbs) push({ label: d, kind: "db", hint: "database" });
+      for (const w of SQL_WORDS) push({ label: w, kind: "kw" });
+    }
+
+    // Bảng / cột / database khớp kiểu CONTAINS (gõ "order" ra cả "sale_order", "order_item"); từ khoá SQL chỉ khớp
+    // tiền tố (contains với từ khoá rất nhiễu: "or" → ORDER, FOR…). Xếp: khớp đúng → khớp đầu → khớp giữa
+    // (vị trí càng sớm càng trên), cùng mức thì giữ ưu tiên bảng → cột → database → từ khoá.
+    const ranked: { s: Sug; rank: number; order: number }[] = [];
+    items.forEach((s, order) => {
+      const l = s.label.toLowerCase();
+      const at = l.indexOf(prefix);
+      if (at < 0 || (s.kind === "kw" && at > 0)) return;
+      ranked.push({ s, order, rank: l === prefix ? 0 : at === 0 ? 1 : 2 + at });
+    });
+    const KIND = { table: 0, col: 1, db: 2, kw: 3 } as const;
+    ranked.sort((a, b) => (Math.min(a.rank, 2) - Math.min(b.rank, 2)) || (KIND[a.s.kind] - KIND[b.s.kind]) || (a.rank - b.rank) || (a.order - b.order));
+    const matched = ranked.slice(0, 20).map((r) => r.s);
+    if (!matched.length) return setSug(null);
+    const { x, y } = caretXY(el, pos);
+    setSug({ items: matched, x, y, start, end: pos, q: prefix });
+    setSugIdx(0);
+  };
+
+  const acceptSug = (i: number) => {
+    if (!sug) return;
+    const el = textRef.current;
+    const it = sug.items[i];
+    if (!el || !it) return setSug(null);
+    // Chọn xong thêm dấu cách để gõ tiếp; ngay sau đã có khoảng trắng thì chỉ đưa con trỏ qua nó (không nhân đôi).
+    const rest = el.value.slice(sug.end);
+    const gap = /^\s/.test(rest) ? "" : " ";
+    const next = el.value.slice(0, sug.start) + it.label + gap + rest;
+    const caret = sug.start + it.label.length + 1;
+    setSql(next);
+    setSug(null);
+    requestAnimationFrame(() => { el.focus(); el.setSelectionRange(caret, caret); });
+  };
+
+  return (
+    <>
+      <textarea
+        ref={textRef}
+        className="db-editor mono"
+        value={sql}
+        spellCheck={false}
+        placeholder={tr("db.selectCtrlEnterOrCtrlR")}
+        onChange={(e) => { setSql(e.target.value); updateSug(e.currentTarget); }}
+        // Gợi ý chỉ hiện khi đang GÕ; bấm chuột / di con trỏ bằng phím thì đóng.
+        onClick={() => setSug(null)}
+        onBlur={() => setSug(null)}
+        onKeyDown={(e) => {
+          // Điều hướng popup gợi ý khi đang mở.
+          if (sug && sug.items.length) {
+            if (e.key === "ArrowDown") { e.preventDefault(); setSugIdx((i) => (i + 1) % sug.items.length); return; }
+            if (e.key === "ArrowUp") { e.preventDefault(); setSugIdx((i) => (i - 1 + sug.items.length) % sug.items.length); return; }
+            if (e.key === "Tab" || (e.key === "Enter" && !e.ctrlKey && !e.metaKey)) { e.preventDefault(); acceptSug(sugIdx); return; }
+            if (e.key === "Escape") { e.preventDefault(); setSug(null); return; }
+          }
+          if (sug && /^(ArrowLeft|ArrowRight|Home|End|PageUp|PageDown)$/.test(e.key)) setSug(null);
+          if ((e.ctrlKey || e.metaKey) && (e.key === "Enter" || e.key === "r" || e.key === "R")) {
+            e.preventDefault();
+            onRun();
+          }
+        }}
+      />
+      {sug && sug.items.length > 0 && (
+        <div
+          className="sql-sug"
+          style={{
+            left: Math.min(sug.x, window.innerWidth - 280),
+            top: Math.min(sug.y, window.innerHeight - 260),
+          }}
+        >
+          {sug.items.map((it, i) => (
+            <div
+              key={`${it.kind}:${it.label}:${i}`}
+              className={`sug-item ${i === sugIdx ? "on" : ""}`}
+              onMouseDown={(e) => { e.preventDefault(); acceptSug(i); }}
+              onMouseEnter={() => setSugIdx(i)}
+            >
+              <span className={`sug-kind ${it.kind}`}>{it.kind === "table" ? <Table /> : it.kind === "col" ? <Columns3 /> : it.kind === "db" ? <Database /> : "K"}</span>
+              <span className="grow ellipsis">{hlMatch(it.label, sug.q)}</span>
+              {it.hint && <span className="muted small ellipsis">{it.hint}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  );
+});
+
+/** Một hàng bảng trong cây — memo, props nguyên thuỷ + api ổn định → chọn/lọc/mở rộng chỉ vẽ lại hàng đổi. */
+const TableRow = memo(function TableRow({ t, pad, sel, hint, canRename, api, onRename }: {
+  t: TableInfo; pad: number; sel: boolean; hint: string; canRename: boolean; api: SessApi; onRename: (t: TableInfo) => void;
+}) {
+  renderLog("TableRow");
+  return (
+    <div className={`side-item ${sel ? "sel" : ""}`} style={{ paddingLeft: pad }}
+      tabIndex={0}
+      onClick={() => api.selectTable(t)}
+      onDoubleClick={() => api.openTable(t)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") { e.preventDefault(); api.openTable(t); }
+        else if (e.key === "F2" && canRename) { e.preventDefault(); onRename(t); }
+      }}
+      onContextMenu={(e) => { e.preventDefault(); api.selectTable(t); api.tableMenu(t, e.clientX, e.clientY); }}
+      title={`${t.schema}.${t.name} — ${hint}`}>
+      <span style={{ display: "inline-flex", alignItems: "center" }}>{t.kind === "view" ? <Eye /> : <TableIcon />}</span>
+      <span className="grow ellipsis">{t.name}</span>
+    </div>
+  );
+});
+
+/** Cây database / bảng / routine của một phiên. Memo: chạy query, kết quả, modal… của Session không vẽ lại cây;
+ *  ô lọc + trạng thái gập nhóm + đổi tên tại chỗ giữ ở đây nên gõ lọc chỉ vẽ lại cây. */
+const DbTree = memo(function DbTree({ width, driver, singleDb, dbs, opened, expanded, tablesByDb, loadingDbs, routinesByDb, activeDb, selDb, selTable, api }: {
+  width: number;
+  driver: Driver;
+  singleDb: string | null;
+  dbs: string[];
+  opened: Set<string>;
+  expanded: Set<string>;
+  tablesByDb: Record<string, TableInfo[]>;
+  loadingDbs: Set<string>;
+  routinesByDb: Record<string, RoutineInfo[]>;
+  activeDb: string;
+  selDb: string | null;
+  selTable: TableInfo | null;
+  api: SessApi;
+}) {
+  renderLog("DbTree");
+  const tr = useT();
+  const [filter, setFilter] = useState("");
+  /** Đổi tên bảng tại chỗ (F2). */
+  const [renaming, setRenaming] = useState<{ t: TableInfo; name: string } | null>(null);
+  /** Nhóm mở thêm (mặc-định-đóng: routines) — key `db|kind`. */
+  const [openSecs, setOpenSecs] = useState<Set<string>>(new Set());
+  /** Nhóm đóng bớt (mặc-định-mở: Tables/Views) — key `db|tables|views`. */
+  const [closedSecs, setClosedSecs] = useState<Set<string>>(new Set());
+  const startRename = useCallback((t: TableInfo) => setRenaming({ t, name: t.name }), []);
+  const doRename = (t: TableInfo, name: string) => { setRenaming(null); api.renameTable(t, name); };
+
+  /* ── Nhóm trong cây (Tables/Views + routines) ─────── */
+  const toggleSet = (set: Set<string>, key: string) => { const n = new Set(set); if (n.has(key)) n.delete(key); else n.add(key); return n; };
+  /** Nhóm có đang mở? defOpen = mở sẵn (Tables/Views) → theo closedSecs; ngược lại (routines) → theo openSecs. */
+  const secOpen = (key: string, defOpen: boolean) => (defOpen ? !closedSecs.has(key) : openSecs.has(key));
+  const toggleSec = (key: string, defOpen: boolean) =>
+    defOpen ? setClosedSecs((s) => toggleSet(s, key)) : setOpenSecs((s) => toggleSet(s, key));
+
+  const fl = filter.trim().toLowerCase();
+  // Danh sách bảng đã lọc theo db — tính một lần mỗi khi dữ liệu/ô lọc đổi (không phải mỗi lần chọn bảng).
+  const filtered = useMemo(() => {
+    const m: Record<string, TableInfo[]> = {};
+    for (const db of Object.keys(tablesByDb)) m[db] = fl ? tablesByDb[db].filter((t) => t.name.toLowerCase().includes(fl)) : tablesByDb[db];
+    return m;
+  }, [tablesByDb, fl]);
+  const tablesOf = (db: string) => filtered[db] ?? [];
+  // Khi đang lọc: ẩn db không khớp tên và không có bảng khớp (đã tải).
+  const shownDbs = dbs.filter((db) => !fl || db.toLowerCase().includes(fl) || tablesOf(db).length > 0);
+  const rowHint = tr("db.tableRowHint");
+  const canRename = driver !== "cassandra";
+
+  /** Một hàng bảng (dùng cho cả cây lẫn danh sách phẳng khi chỉ có 1 db). */
+  const tableRow = (t: TableInfo, padLeft: number) =>
+    renaming && renaming.t.schema === t.schema && renaming.t.name === t.name ? (
+      <div key={`${t.schema}.${t.name}`} className="side-item" style={{ paddingLeft: padLeft }} onClick={(e) => e.stopPropagation()}>
+        <input
+          autoFocus
+          className="tree-rename grow"
+          value={renaming.name}
+          onChange={(e) => setRenaming({ t, name: e.target.value })}
+          onBlur={() => doRename(t, renaming.name)}
+          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); doRename(t, renaming.name); } if (e.key === "Escape") setRenaming(null); }}
+        />
+      </div>
+    ) : (
+      <TableRow key={`${t.schema}.${t.name}`} t={t} pad={padLeft} hint={rowHint} canRename={canRename} api={api} onRename={startRename}
+        sel={selTable?.schema === t.schema && selTable?.name === t.name} />
+    );
+
+  /** Một nhóm gập được trong cây (header .tree-row.sub + danh sách con). */
+  const section = (
+    key: string, pad: number, defOpen: boolean, icon: ReactNode, label: string,
+    count: number, children: () => ReactNode, onNew?: () => void,
+  ) => {
+    const open = (!!fl && count > 0) || secOpen(key, defOpen);
+    return (
+      <div key={key}>
+        <div className="tree-row sub" style={{ paddingLeft: pad }} onClick={() => toggleSec(key, defOpen)}
+          onContextMenu={onNew ? (e) => { e.preventDefault(); onNew(); } : undefined}
+          title={onNew ? tr("db.rightClickNew") : undefined}>
+          <span className="tree-caret">{open ? <ChevronDown /> : <ChevronRight />}</span>
+          <span className="routine-ic">{icon}</span>
+          <span className="grow ellipsis muted small">{label}</span>
+          <span className="muted small">{count}</span>
+        </div>
+        {open && children()}
+      </div>
+    );
+  };
+
+  /** Một hàng routine. */
+  const routineRow = (r: RoutineInfo, pad: number) => (
+    <div key={`${r.kind}.${r.name}`} className="side-item" style={{ paddingLeft: pad }} tabIndex={0}
+      onDoubleClick={() => api.openRoutine(r)}
+      onContextMenu={(e) => { e.preventDefault(); api.routineMenu(r, e.clientX, e.clientY); }}
+      title={`${r.name} — ${tr("db.doubleClickToViewEditRight")}`}>
+      <span className="routine-ic">{ROUTINE_ICON[r.kind]}</span>
+      <span className="grow ellipsis">{r.name}</span>
+    </div>
+  );
+
+  /** Toàn bộ nhóm con của một database: Tables / Views / Procedures / Functions / Events. */
+  const dbChildren = (db: string, pad: number): ReactNode => {
+    const ip = pad + 16; // thụt vào của item trong nhóm
+    const all = tablesOf(db);
+    const tables = all.filter((t) => t.kind !== "view");
+    const views = all.filter((t) => t.kind === "view");
+    const list = routinesByDb[db];
+    const canRoutine = driver === "mysql" || driver === "postgres";
+    const kinds: RoutineKind[] = driver === "postgres" ? ["procedure", "function"] : ["procedure", "function", "event"];
+    const rlabel: Record<RoutineKind, string> = { procedure: tr("db.procedures"), function: tr("db.functions"), event: tr("db.events") };
+    return (
+      <>
+        {(!fl || tables.length > 0) && section(`${db}|tables`, pad, true, <TableIcon />, tr("db.tables"), tables.length, () => tables.map((t) => tableRow(t, ip)))}
+        {views.length > 0 && section(`${db}|views`, pad, true, <Eye />, tr("db.views"), views.length, () => views.map((t) => tableRow(t, ip)))}
+        {canRoutine && list && kinds.map((kind) => {
+          const items = list.filter((r) => r.kind === kind && (!fl || r.name.toLowerCase().includes(fl)));
+          if (fl && !items.length) return null;
+          return section(`${db}|${kind}`, pad, false, ROUTINE_ICON[kind], rlabel[kind], items.length, () => items.map((r) => routineRow(r, ip)), () => api.newRoutine(db, kind));
+        })}
+      </>
+    );
+  };
+
+  return (
+    <div className="db-tables" style={{ width, flex: "0 0 auto" }}>
+      <input
+        placeholder={singleDb ? tr("db.filterTablesIn", { singleDb }) : tr("db.filterInDatabases", { dbsLength: dbs.length })}
+        value={filter}
+        onChange={(e) => setFilter(e.target.value)}
+      />
+      <div
+        className="db-table-list"
+        onContextMenu={(e) => {
+          // Hàng con (bảng, routine, nhóm…) đã tự mở menu riêng (preventDefault) → không mở thêm menu database đè lên.
+          if (!singleDb || e.defaultPrevented) return;
+          e.preventDefault();
+          api.dbMenu(singleDb, e.clientX, e.clientY);
+        }}
+      >
+        {singleDb ? (
+          // Đã chỉ đích danh db trong cấu hình → hiện nhóm (Tables/Views/…), không có node database.
+          loadingDbs.has(singleDb) && !tablesByDb[singleDb]
+            ? <Loading variant="row" />
+            : dbChildren(singleDb, 8)
+        ) : (
+          <>
+            {shownDbs.map((db) => (
+              <div key={db}>
+                <div
+                  className={`tree-row ${db === activeDb ? "active-db" : ""} ${selDb === db ? "sel" : ""}`}
+                  onClick={() => api.selectDb(db)}
+                  onDoubleClick={() => (opened.has(db) ? api.toggleExpand(db) : api.openDb(db))}
+                  onContextMenu={(e) => { e.preventDefault(); api.selectDb(db); api.dbMenu(db, e.clientX, e.clientY); }}
+                  title={`${db} — ${opened.has(db) ? tr("db.doubleClickToCollapseExpandRight") : tr("db.doubleClickToOpenUse")}`}
+                >
+                  {opened.has(db)
+                    ? <span className="tree-caret" onClick={(e) => { e.stopPropagation(); api.toggleExpand(db); }} title={expanded.has(db) ? tr("db.collapse") : tr("db.expand")}>{expanded.has(db) ? <ChevronDown /> : <ChevronRight />}</span>
+                    : <span className="tree-caret" />}
+                  <span className="tree-icon"><DbIcon /></span>
+                  <span className="grow ellipsis">{db}</span>
+                  {db === activeDb && <span className="env-tag use" title={tr("db.currentQueryDatabase")}>USE</span>}
+                  {tablesByDb[db] && <span className="muted small">{tablesByDb[db].length}</span>}
+                </div>
+                {expanded.has(db) && (
+                  loadingDbs.has(db) && !tablesByDb[db]
+                    ? <Loading variant="row" style={{ paddingLeft: 24 }} />
+                    : dbChildren(db, 22)
+                )}
+              </div>
+            ))}
+            {!dbs.length && <div className="muted small pad">{tr("db.noDatabases")}</div>}
+          </>
+        )}
+      </div>
+    </div>
+  );
+});
+
+/** Vỏ ngoài: kết nối bị xoá khi tab đang mở → gỡ hẳn phần thân (cleanup ngắt kết nối vẫn chạy) thay vì
+ *  return sớm giữa chừng các hook (đổi thứ tự hook → React lỗi). */
 function Session({ tab }: { tab: Tab }) {
+  const exists = useConns((s) => s.conns.some((c) => c.id === tab.payload.connId));
+  if (!exists) return <div className="empty">{t("db.connectionWasDeleted")}</div>;
+  return <SessionBody tab={tab} />;
+}
+
+function SessionBody({ tab }: { tab: Tab }) {
+  renderLog("SessionBody");
   const conn = useConns((s) => s.conns.find((c) => c.id === tab.payload.connId));
   const allConns = useConns((s) => s.conns);
   const log = useWorkbench((s) => s.log);
@@ -629,18 +1002,15 @@ function Session({ tab }: { tab: Tab }) {
   const [tablesByDb, setTablesByDb] = useState<Record<string, TableInfo[]>>({});
   const [colsByDb, setColsByDb] = useState<Record<string, { table: string; column: string }[]>>({});
   const [loadingDbs, setLoadingDbs] = useState<Set<string>>(new Set());
-  /** Gợi ý khi gõ SQL (tên bảng / cột / database / từ khoá). */
-  const [sug, setSug] = useState<{ items: Sug[]; x: number; y: number; start: number; end: number; q: string } | null>(null);
-  const [sugIdx, setSugIdx] = useState(0);
-  const [filter, setFilter] = useState("");
-  const [sql, setSql] = useState("");
+  /** Nội dung ô SQL nằm trong <SqlEditor> (gõ phím chỉ vẽ lại ô soạn + popup gợi ý); Session đọc/ghi qua `sqlApi`. */
+  const sqlApi = useRef<SqlApi | null>(null);
+  /** Chỉ cần biết ô SQL có trống không (nút Lưu) — đổi khi trống ↔ có chữ, không phải mỗi phím. */
+  const [sqlEmpty, setSqlEmpty] = useState(true);
   const [results, setResults] = useState<QueryOut[]>([]);
   /** Menu chuột phải trên một bảng (thêm cột/index, copy tên…). */
   const [tblMenu, setTblMenu] = useState<{ x: number; y: number; t: TableInfo } | null>(null);
   /** Modal ALTER TABLE / CREATE INDEX. */
   const [ddl, setDdl] = useState<{ kind: "col" | "idx"; t: TableInfo } | null>(null);
-  /** Đổi tên bảng tại chỗ (F2). */
-  const [renaming, setRenaming] = useState<{ t: TableInfo; name: string } | null>(null);
   /** Modal cấu trúc bảng (Edit table) và tạo bảng mới. */
   const [structT, setStructT] = useState<TableInfo | null>(null);
   const [newTable, setNewTable] = useState<{ schema: string } | null>(null);
@@ -675,10 +1045,6 @@ function Session({ tab }: { tab: Tab }) {
   const [qMenu, setQMenu] = useState<{ x: number; y: number; id: string } | null>(null);
   /** Routine (procedure/function/event) theo database — nạp lười cùng bảng. */
   const [routinesByDb, setRoutinesByDb] = useState<Record<string, RoutineInfo[]>>({});
-  /** Nhóm mở thêm (mặc-định-đóng: routines) — key `db|kind`. */
-  const [openSecs, setOpenSecs] = useState<Set<string>>(new Set());
-  /** Nhóm đóng bớt (mặc-định-mở: Tables/Views) — key `db|tables|views`. */
-  const [closedSecs, setClosedSecs] = useState<Set<string>>(new Set());
   /** Menu chuột phải trên một routine. */
   const [routineMenu, setRoutineMenu] = useState<{ x: number; y: number; r: RoutineInfo } | null>(null);
   /** Modal soạn routine (CREATE PROCEDURE/FUNCTION/EVENT). */
@@ -698,6 +1064,37 @@ function Session({ tab }: { tab: Tab }) {
   const [tablesW, setTablesW] = useSplitSize("db.tables", 220, 160, 480);
   const [infoW, setInfoW] = useSplitSize("db.tableInfo", 280, 200, 520);
   const editor = useRef<HTMLTextAreaElement>(null);
+  /** Nguồn gợi ý SQL — chỉ dựng lại khi bảng/cột/db đổi (không phải mỗi lần render). */
+  const sugSrc = useMemo<SugSrc>(() => ({
+    tables: Object.values(tablesByDb).flat(),
+    cols: Object.values(colsByDb).flat(),
+    dbs,
+  }), [tablesByDb, colsByDb, dbs]);
+  /** Tách kết quả: câu không trả bảng → ExecLog, câu trả bảng → lưới (giữ tham chiếu để ExecLog memo không vẽ lại). */
+  const resultParts = useMemo(() => {
+    const all = results.map((o, i) => ({ o, i }));
+    // Câu truy vấn (SELECT…) luôn là một kết quả dạng bảng, kể cả 0 dòng; chỉ câu ghi/DDL mới gom vào khung thông báo.
+    const isGrid = (o: QueryOut) => o.columns.length > 0 || isQueryLike(o.sql ?? "");
+    return { msgs: all.filter((x) => !isGrid(x.o)), grids: all.filter((x) => isGrid(x.o)) };
+  }, [results]);
+  /** Callback ổn định cho các con memo (cây bảng, ô soạn, khung thông tin): luôn gọi bản mới nhất qua ref. */
+  const sessImpl = useRef<SessApi | null>(null);
+  const sessApi = useMemo<SessApi>(() => ({
+    run: () => sessImpl.current!.run(),
+    openDb: (db) => sessImpl.current!.openDb(db),
+    toggleExpand: (db) => sessImpl.current!.toggleExpand(db),
+    selectDb: (db) => sessImpl.current!.selectDb(db),
+    dbMenu: (db, x, y) => sessImpl.current!.dbMenu(db, x, y),
+    selectTable: (t) => sessImpl.current!.selectTable(t),
+    openTable: (t) => sessImpl.current!.openTable(t),
+    tableMenu: (t, x, y) => sessImpl.current!.tableMenu(t, x, y),
+    renameTable: (t, n) => sessImpl.current!.renameTable(t, n),
+    editStruct: (t) => sessImpl.current!.editStruct(t),
+    openRoutine: (r) => sessImpl.current!.openRoutine(r),
+    routineMenu: (r, x, y) => sessImpl.current!.routineMenu(r, x, y),
+    newRoutine: (db, k) => sessImpl.current!.newRoutine(db, k),
+  }), []);
+  const closeInfo = useCallback(() => setSelTable(null), []);
 
   // Đóng tab → đóng kết nối + SSH tunnel phía Rust.
   useEffect(() => () => {
@@ -998,26 +1395,24 @@ function Session({ tab }: { tab: Tab }) {
   };
 
   /** Ctrl+Enter: chạy đoạn đang bôi đen, không bôi đen thì chạy cả ô. */
+  const getSql = () => sqlApi.current?.get() ?? "";
+  const setSql = (v: string) => sqlApi.current?.set(v);
   const runEditor = () => {
     const el = editor.current;
+    const sql = getSql();
     const picked = el && el.selectionStart !== el.selectionEnd ? sql.slice(el.selectionStart, el.selectionEnd) : sql;
     void exec(picked);
   };
   /** EXPLAIN câu lệnh đang chọn (hoặc cả ô), giữ nguyên câu trong ô soạn. */
   const runExplain = () => {
     const el = editor.current;
+    const sql = getSql();
     const text = el && el.selectionStart !== el.selectionEnd ? sql.slice(el.selectionStart, el.selectionEnd) : sql;
     const stmts = splitStatements(text);
     if (!stmts.length) return;
     void exec(stmts.map((s) => (/^\s*explain\b/i.test(s) ? s : `EXPLAIN ${s}`)).join(";\n"));
   };
 
-  /* ── Nhóm trong cây (Tables/Views + routines) ─────── */
-  const toggleSet = (set: Set<string>, key: string) => { const n = new Set(set); if (n.has(key)) n.delete(key); else n.add(key); return n; };
-  /** Nhóm có đang mở? defOpen = mở sẵn (Tables/Views) → theo closedSecs; ngược lại (routines) → theo openSecs. */
-  const secOpen = (key: string, defOpen: boolean) => (defOpen ? !closedSecs.has(key) : openSecs.has(key));
-  const toggleSec = (key: string, defOpen: boolean) =>
-    defOpen ? setClosedSecs((s) => toggleSet(s, key)) : setOpenSecs((s) => toggleSet(s, key));
   const genId = () => `q${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
   const bq = (s: string) => s.replace(/`/g, "``");   // escape backtick (MySQL)
   const dq = (s: string) => s.replace(/"/g, '""');   // escape double-quote (Postgres)
@@ -1126,7 +1521,6 @@ function Session({ tab }: { tab: Tab }) {
 
   /** Đổi tên bảng (DDL khác nhau theo hệ). */
   const doRename = (t: TableInfo, newName: string) => {
-    setRenaming(null);
     const n = newName.trim();
     if (!n || n === t.name) return;
     const qi = (s: string) => (conn.driver === "mysql" ? `\`${s}\`` : `"${s}"`);
@@ -1290,7 +1684,7 @@ function Session({ tab }: { tab: Tab }) {
     items.push(
       { id: "s2", sep: true },
       { id: "refresh", icon: <RefreshCw />, label: tr("db.refresh"), action: () => dbIdRef.current && void loadTables(dbIdRef.current, db) },
-      { id: "copy", icon: <Copy />, label: tr("db.copyName"), action: () => void navigator.clipboard.writeText(db) },
+      { id: "copy", icon: <Copy />, label: tr("db.copyName"), action: () => void copyText(db) },
     );
     return items;
   };
@@ -1301,7 +1695,7 @@ function Session({ tab }: { tab: Tab }) {
     const truncSql = conn.driver === "sqlite" ? `DELETE FROM ${ref};` : `TRUNCATE TABLE ${ref};`;
     const ask = (msg: string, sql: string) => () =>
       void confirmDialog({ message: msg }).then((ok) => { if (ok) void exec(sql); });
-    const copyItem: CtxItem = { id: "copy", icon: <Copy />, label: tr("db.copyTableName"), action: () => void navigator.clipboard.writeText(t.name) };
+    const copyItem: CtxItem = { id: "copy", icon: <Copy />, label: tr("db.copyTableName"), action: () => void copyText(t.name) };
     // Cassandra (CQL): bỏ các mục DDL/dump đặc thù SQL; giữ xem dữ liệu / cấu trúc / TRUNCATE / DROP.
     if (conn.driver === "cassandra") {
       return [
@@ -1368,7 +1762,7 @@ function Session({ tab }: { tab: Tab }) {
               <button onClick={() => openForm(conn.id)}><Pencil /> {tr("db.editConfig2")}</button>
               <span className="grow" />
               <button onClick={() => useWorkbench.getState().closeTab(tab.id)}><X /> {tr("db.cancel")}</button>
-              <button className="primary" disabled={connecting} onClick={() => connect()}><Plug /> {connecting ? tr("db.connecting") : tr("db.connect")}</button>
+              <button className="primary" disabled={connecting} onClick={() => connect()}><Plug /> <Swap on={connecting} a={tr("db.connecting")} b={tr("db.connect")} /></button>
             </div>
           </div>
         </Modal>
@@ -1376,159 +1770,24 @@ function Session({ tab }: { tab: Tab }) {
     );
   }
 
-  /* ── Gợi ý SQL: dựng danh sách từ dữ liệu đã tải ── */
-  const allTables = Object.values(tablesByDb).flat();
-  const allCols = Object.values(colsByDb).flat();
-
-  const updateSug = (el: HTMLTextAreaElement) => {
-    const pos = el.selectionStart;
-    const before = el.value.slice(0, pos);
-    const m = before.match(/([A-Za-z0-9_$]+\.[A-Za-z0-9_$]*|[A-Za-z0-9_$]*)$/);
-    if (!m) return setSug(null);
-    const token = m[0];
-    if (token === "") return setSug(null);
-    const start = pos - token.length;
-    const dot = token.lastIndexOf(".");
-    const qualifier = dot >= 0 ? token.slice(0, dot).toLowerCase() : null;
-    const prefix = (dot >= 0 ? token.slice(dot + 1) : token).toLowerCase();
-
-    const items: Sug[] = [];
-    const seen = new Set<string>();
-    const push = (s: Sug) => { const k = s.kind + s.label.toLowerCase(); if (!seen.has(k)) { seen.add(k); items.push(s); } };
-
-    if (qualifier) {
-      // Sau "bảng." → chỉ cột của bảng đó.
-      for (const c of allCols) if (c.table.toLowerCase() === qualifier) push({ label: c.column, kind: "col", hint: c.table });
-    } else {
-      for (const t of allTables) push({ label: t.name, kind: "table", hint: t.schema });
-      for (const c of allCols) push({ label: c.column, kind: "col", hint: c.table });
-      for (const d of dbs) push({ label: d, kind: "db", hint: "database" });
-      for (const w of SQL_WORDS) push({ label: w, kind: "kw" });
-    }
-
-    // Bảng / cột / database khớp kiểu CONTAINS (gõ "order" ra cả "sale_order", "order_item"); từ khoá SQL chỉ khớp
-    // tiền tố (contains với từ khoá rất nhiễu: "or" → ORDER, FOR…). Xếp: khớp đúng → khớp đầu → khớp giữa
-    // (vị trí càng sớm càng trên), cùng mức thì giữ ưu tiên bảng → cột → database → từ khoá.
-    const ranked: { s: Sug; rank: number; order: number }[] = [];
-    items.forEach((s, order) => {
-      const l = s.label.toLowerCase();
-      const at = l.indexOf(prefix);
-      if (at < 0 || (s.kind === "kw" && at > 0)) return;
-      ranked.push({ s, order, rank: l === prefix ? 0 : at === 0 ? 1 : 2 + at });
-    });
-    const KIND = { table: 0, col: 1, db: 2, kw: 3 } as const;
-    ranked.sort((a, b) => (Math.min(a.rank, 2) - Math.min(b.rank, 2)) || (KIND[a.s.kind] - KIND[b.s.kind]) || (a.rank - b.rank) || (a.order - b.order));
-    const matched = ranked.slice(0, 20).map((r) => r.s);
-    if (!matched.length) return setSug(null);
-    const { x, y } = caretXY(el, pos);
-    setSug({ items: matched, x, y, start, end: pos, q: prefix });
-    setSugIdx(0);
-  };
-
-  const acceptSug = (i: number) => {
-    if (!sug) return;
-    const el = editor.current;
-    const it = sug.items[i];
-    if (!el || !it) return setSug(null);
-    // Chọn xong thêm dấu cách để gõ tiếp; ngay sau đã có khoảng trắng thì chỉ đưa con trỏ qua nó (không nhân đôi).
-    const rest = el.value.slice(sug.end);
-    const gap = /^\s/.test(rest) ? "" : " ";
-    const next = el.value.slice(0, sug.start) + it.label + gap + rest;
-    const caret = sug.start + it.label.length + 1;
-    setSql(next);
-    setSug(null);
-    requestAnimationFrame(() => { el.focus(); el.setSelectionRange(caret, caret); });
-  };
-
-  const fl = filter.trim().toLowerCase();
-  const tablesOf = (db: string) => (tablesByDb[db] ?? []).filter((t) => !fl || t.name.toLowerCase().includes(fl));
-  // Khi đang lọc: ẩn db không khớp tên và không có bảng khớp (đã tải).
-  const shownDbs = dbs.filter((db) => !fl || db.toLowerCase().includes(fl) || tablesOf(db).length > 0);
   // Config đã chỉ đích danh 1 database → bỏ node database ở gốc, hiện thẳng danh sách bảng.
   const singleDb = conn.database.trim() !== "" && dbs.length === 1 ? dbs[0] : null;
 
-  /** Một hàng bảng (dùng cho cả cây lẫn danh sách phẳng khi chỉ có 1 db). */
-  const tableRow = (t: TableInfo, padLeft: number) =>
-    renaming && renaming.t.schema === t.schema && renaming.t.name === t.name ? (
-      <div key={`${t.schema}.${t.name}`} className="side-item" style={{ paddingLeft: padLeft }} onClick={(e) => e.stopPropagation()}>
-        <input
-          autoFocus
-          className="tree-rename grow"
-          value={renaming.name}
-          onChange={(e) => setRenaming({ t, name: e.target.value })}
-          onBlur={() => doRename(t, renaming.name)}
-          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); doRename(t, renaming.name); } if (e.key === "Escape") setRenaming(null); }}
-        />
-      </div>
-    ) : (
-      <div key={`${t.schema}.${t.name}`} className={`side-item ${selTable?.schema === t.schema && selTable?.name === t.name ? "sel" : ""}`} style={{ paddingLeft: padLeft }}
-        tabIndex={0}
-        onClick={() => setSelTable(t)}
-        onDoubleClick={() => openTable(t)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") { e.preventDefault(); openTable(t); }
-          else if (e.key === "F2" && conn.driver !== "cassandra") { e.preventDefault(); setRenaming({ t, name: t.name }); }
-        }}
-        onContextMenu={(e) => { e.preventDefault(); setSelTable(t); setTblMenu({ x: e.clientX, y: e.clientY, t }); }}
-        title={`${t.schema}.${t.name} — ${tr("db.tableRowHint")}`}>
-        <span style={{ display: "inline-flex", alignItems: "center" }}>{t.kind === "view" ? <Eye /> : <TableIcon />}</span>
-        <span className="grow ellipsis">{t.name}</span>
-      </div>
-    );
-
-  /** Một nhóm gập được trong cây (header .tree-row.sub + danh sách con). */
-  const section = (
-    key: string, pad: number, defOpen: boolean, icon: ReactNode, label: string,
-    count: number, children: ReactNode, onNew?: () => void,
-  ) => {
-    const open = (!!fl && count > 0) || secOpen(key, defOpen);
-    return (
-      <div key={key}>
-        <div className="tree-row sub" style={{ paddingLeft: pad }} onClick={() => toggleSec(key, defOpen)}
-          onContextMenu={onNew ? (e) => { e.preventDefault(); onNew(); } : undefined}
-          title={onNew ? tr("db.rightClickNew") : undefined}>
-          <span className="tree-caret">{open ? <ChevronDown /> : <ChevronRight />}</span>
-          <span className="routine-ic">{icon}</span>
-          <span className="grow ellipsis muted small">{label}</span>
-          <span className="muted small">{count}</span>
-        </div>
-        {open && children}
-      </div>
-    );
-  };
-
-  /** Một hàng routine. */
-  const routineRow = (r: RoutineInfo, pad: number) => (
-    <div key={`${r.kind}.${r.name}`} className="side-item" style={{ paddingLeft: pad }} tabIndex={0}
-      onDoubleClick={() => void openRoutine(r)}
-      onContextMenu={(e) => { e.preventDefault(); setRoutineMenu({ x: e.clientX, y: e.clientY, r }); }}
-      title={`${r.name} — ${tr("db.doubleClickToViewEditRight")}`}>
-      <span className="routine-ic">{ROUTINE_ICON[r.kind]}</span>
-      <span className="grow ellipsis">{r.name}</span>
-    </div>
-  );
-
-  /** Toàn bộ nhóm con của một database: Tables / Views / Procedures / Functions / Events. */
-  const dbChildren = (db: string, pad: number): ReactNode => {
-    const ip = pad + 16; // thụt vào của item trong nhóm
-    const all = tablesOf(db);
-    const tables = all.filter((t) => t.kind !== "view");
-    const views = all.filter((t) => t.kind === "view");
-    const list = routinesByDb[db];
-    const canRoutine = conn.driver === "mysql" || conn.driver === "postgres";
-    const kinds: RoutineKind[] = conn.driver === "postgres" ? ["procedure", "function"] : ["procedure", "function", "event"];
-    const rlabel: Record<RoutineKind, string> = { procedure: tr("db.procedures"), function: tr("db.functions"), event: tr("db.events") };
-    return (
-      <>
-        {(!fl || tables.length > 0) && section(`${db}|tables`, pad, true, <TableIcon />, tr("db.tables"), tables.length, tables.map((t) => tableRow(t, ip)))}
-        {views.length > 0 && section(`${db}|views`, pad, true, <Eye />, tr("db.views"), views.length, views.map((t) => tableRow(t, ip)))}
-        {canRoutine && list && kinds.map((kind) => {
-          const items = list.filter((r) => r.kind === kind && (!fl || r.name.toLowerCase().includes(fl)));
-          if (fl && !items.length) return null;
-          return section(`${db}|${kind}`, pad, false, ROUTINE_ICON[kind], rlabel[kind], items.length, items.map((r) => routineRow(r, ip)), () => newRoutine(db, kind));
-        })}
-      </>
-    );
+  // Bản mới nhất của các thao tác cho `sessApi` (ổn định) — con memo gọi qua đây, không cần vẽ lại khi Session đổi.
+  sessImpl.current = {
+    run: runEditor,
+    openDb,
+    toggleExpand,
+    selectDb: setSelDb,
+    dbMenu: (db, x, y) => setDbMenu({ x, y, db }),
+    selectTable: setSelTable,
+    openTable,
+    tableMenu: (t, x, y) => setTblMenu({ x, y, t }),
+    renameTable: doRename,
+    editStruct: setStructT,
+    openRoutine: (r) => void openRoutine(r),
+    routineMenu: (r, x, y) => setRoutineMenu({ x, y, r }),
+    newRoutine,
   };
 
   return (
@@ -1540,58 +1799,22 @@ function Session({ tab }: { tab: Tab }) {
         if ((e.ctrlKey || e.metaKey) && (e.key === "r" || e.key === "R")) { e.preventDefault(); runEditor(); }
       }}
     >
-      <div className="db-tables" style={{ width: tablesW, flex: "0 0 auto" }}>
-        <input
-          placeholder={singleDb ? tr("db.filterTablesIn", { singleDb }) : tr("db.filterInDatabases", { dbsLength: dbs.length })}
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-        />
-        <div
-          className="db-table-list"
-          onContextMenu={(e) => {
-            // Hàng con (bảng, routine, nhóm…) đã tự mở menu riêng (preventDefault) → không mở thêm menu database đè lên.
-            if (!singleDb || e.defaultPrevented) return;
-            e.preventDefault();
-            setDbMenu({ x: e.clientX, y: e.clientY, db: singleDb });
-          }}
-        >
-          {singleDb ? (
-            // Đã chỉ đích danh db trong cấu hình → hiện nhóm (Tables/Views/…), không có node database.
-            loadingDbs.has(singleDb) && !tablesByDb[singleDb]
-              ? <Loading variant="row" />
-              : dbChildren(singleDb, 8)
-          ) : (
-            <>
-              {shownDbs.map((db) => (
-                <div key={db}>
-                  <div
-                    className={`tree-row ${db === activeDb ? "active-db" : ""} ${selDb === db ? "sel" : ""}`}
-                    onClick={() => setSelDb(db)}
-                    onDoubleClick={() => (opened.has(db) ? toggleExpand(db) : openDb(db))}
-                    onContextMenu={(e) => { e.preventDefault(); setSelDb(db); setDbMenu({ x: e.clientX, y: e.clientY, db }); }}
-                    title={`${db} — ${opened.has(db) ? tr("db.doubleClickToCollapseExpandRight") : tr("db.doubleClickToOpenUse")}`}
-                  >
-                    {opened.has(db)
-                      ? <span className="tree-caret" onClick={(e) => { e.stopPropagation(); toggleExpand(db); }} title={expanded.has(db) ? tr("db.collapse") : tr("db.expand")}>{expanded.has(db) ? <ChevronDown /> : <ChevronRight />}</span>
-                      : <span className="tree-caret" />}
-                    <span className="tree-icon"><DbIcon /></span>
-                    <span className="grow ellipsis">{db}</span>
-                    {db === activeDb && <span className="env-tag use" title={tr("db.currentQueryDatabase")}>USE</span>}
-                    {tablesByDb[db] && <span className="muted small">{tablesByDb[db].length}</span>}
-                  </div>
-                  {expanded.has(db) && (
-                    loadingDbs.has(db) && !tablesByDb[db]
-                      ? <Loading variant="row" style={{ paddingLeft: 24 }} />
-                      : dbChildren(db, 22)
-                  )}
-                </div>
-              ))}
-              {!dbs.length && <div className="muted small pad">{tr("db.noDatabases")}</div>}
-            </>
-          )}
-        </div>
-      </div>
-      <Splitter axis="x" onResize={(d) => setTablesW((w) => w + d)} onReset={() => setTablesW(220)} />
+      <DbTree
+        width={tablesW}
+        driver={conn.driver}
+        singleDb={singleDb}
+        dbs={dbs}
+        opened={opened}
+        expanded={expanded}
+        tablesByDb={tablesByDb}
+        loadingDbs={loadingDbs}
+        routinesByDb={routinesByDb}
+        activeDb={activeDb}
+        selDb={selDb}
+        selTable={selTable}
+        api={sessApi}
+      />
+      <Splitter axis="x" live="prev" min={160} max={480} onResize={(d) => setTablesW((w) => w + d)} onReset={() => setTablesW(220)} />
       <div className="view">
         <div className="toolbar db-toolbar">
           <span className="dot green" /> {describe(conn)}
@@ -1623,8 +1846,8 @@ function Session({ tab }: { tab: Tab }) {
             filterPlaceholder={tr("db.filterQueries")}
           />
           <button
-            onClick={() => { if (!sql.trim()) return; setSaveName(curQueryName || deriveQueryName(sql)); }}
-            disabled={!sql.trim()}
+            onClick={() => { const sql = getSql(); if (!sql.trim()) return; setSaveName(curQueryName || deriveQueryName(sql)); }}
+            disabled={sqlEmpty}
             title={tr("db.saveCurrentSqlAsANamed")}
           ><Save /> {tr("db.save")}</button>
           {conn.driver !== "cassandra" && (
@@ -1646,51 +1869,13 @@ function Session({ tab }: { tab: Tab }) {
             ? <button className="danger" onClick={cancelRun} title={tr("db.stopTheRunningStatement")}><Square /> {tr("db.cancel2")}</button>
             : <button className="primary" onClick={runEditor} title={tr("db.runCtrlEnterCtrlRSelect")}><Play /> {tr("db.run")}</button>}
         </div>
-        <textarea
-          ref={editor}
-          className="db-editor mono"
-          value={sql}
-          spellCheck={false}
-          placeholder={tr("db.selectCtrlEnterOrCtrlR")}
-          onChange={(e) => { setSql(e.target.value); updateSug(e.currentTarget); }}
-          onClick={(e) => updateSug(e.currentTarget)}
-          onBlur={() => setSug(null)}
-          onKeyDown={(e) => {
-            // Điều hướng popup gợi ý khi đang mở.
-            if (sug && sug.items.length) {
-              if (e.key === "ArrowDown") { e.preventDefault(); setSugIdx((i) => (i + 1) % sug.items.length); return; }
-              if (e.key === "ArrowUp") { e.preventDefault(); setSugIdx((i) => (i - 1 + sug.items.length) % sug.items.length); return; }
-              if (e.key === "Tab" || (e.key === "Enter" && !e.ctrlKey && !e.metaKey)) { e.preventDefault(); acceptSug(sugIdx); return; }
-              if (e.key === "Escape") { e.preventDefault(); setSug(null); return; }
-            }
-            if ((e.ctrlKey || e.metaKey) && (e.key === "Enter" || e.key === "r" || e.key === "R")) {
-              e.preventDefault();
-              runEditor();
-            }
-          }}
+        <SqlEditor
+          api={sqlApi}
+          textRef={editor}
+          src={sugSrc}
+          onRun={sessApi.run}
+          onEmptyChange={setSqlEmpty}
         />
-        {sug && sug.items.length > 0 && (
-          <div
-            className="sql-sug"
-            style={{
-              left: Math.min(sug.x, window.innerWidth - 280),
-              top: Math.min(sug.y, window.innerHeight - 260),
-            }}
-          >
-            {sug.items.map((it, i) => (
-              <div
-                key={`${it.kind}:${it.label}:${i}`}
-                className={`sug-item ${i === sugIdx ? "on" : ""}`}
-                onMouseDown={(e) => { e.preventDefault(); acceptSug(i); }}
-                onMouseEnter={() => setSugIdx(i)}
-              >
-                <span className={`sug-kind ${it.kind}`}>{it.kind === "table" ? <Table /> : it.kind === "col" ? <Columns3 /> : it.kind === "db" ? <Database /> : "K"}</span>
-                <span className="grow ellipsis">{hlMatch(it.label, sug.q)}</span>
-                {it.hint && <span className="muted small ellipsis">{it.hint}</span>}
-              </div>
-            ))}
-          </div>
-        )}
         {confirmSql && (
           <div className="error-box toolbar">
             {tr("db.thisIsAProdConnectionAnd")}
@@ -1703,8 +1888,7 @@ function Session({ tab }: { tab: Tab }) {
         {(() => {
           // Câu KHÔNG trả bảng (INSERT/UPDATE/DELETE/DDL…) → gom thành MỘT danh sách dòng "n dòng bị ảnh hưởng";
           // chỉ câu trả bảng mới có lưới kết quả riêng.
-          const msgs = results.map((o, i) => ({ o, i })).filter((x) => !x.o.columns.length);
-          const grids = results.map((o, i) => ({ o, i })).filter((x) => x.o.columns.length > 0);
+          const { msgs, grids } = resultParts;
           if (!results.length) return !error && <ResultGrid out={null} />;
           return (
             <>
@@ -1725,15 +1909,14 @@ function Session({ tab }: { tab: Tab }) {
       {/* Thông tin bảng đang chọn: cột bên PHẢI (không che danh sách bảng), kéo giãn được. */}
       {selTable && dbId && (
         <>
-          <Splitter axis="x" onResize={(d) => setInfoW((w) => w - d)} onReset={() => setInfoW(280)} />
+          <Splitter axis="x" live="next" min={200} max={520} onResize={(d) => setInfoW((w) => w - d)} onReset={() => setInfoW(280)} />
           <div className="db-info-side" style={{ width: infoW }}>
             <TableInfoPanel
               conn={conn}
               dbId={dbId}
               table={selTable}
-              onOpen={() => openTable(selTable)}
-              onStructure={() => setStructT(selTable)}
-              onClose={() => setSelTable(null)}
+              api={sessApi}
+              onClose={closeInfo}
             />
           </div>
         </>
@@ -1826,7 +2009,7 @@ function Session({ tab }: { tab: Tab }) {
           onClose={() => setRoutineMenu(null)}
           items={[
             { id: "view", icon: <Code />, label: tr("db.viewEditDefinition"), action: () => void openRoutine(routineMenu.r) },
-            { id: "copy", icon: <Copy />, label: tr("db.copyName"), action: () => void navigator.clipboard.writeText(routineMenu.r.name) },
+            { id: "copy", icon: <Copy />, label: tr("db.copyName"), action: () => void copyText(routineMenu.r.name) },
             { id: "s1", sep: true },
             { id: "drop", icon: <Trash2 />, label: tr("db.deleteDrop"), danger: true, action: () => dropRoutine(routineMenu.r) },
           ] as CtxItem[]}
@@ -1877,7 +2060,7 @@ function Session({ tab }: { tab: Tab }) {
                 autoFocus
                 value={saveName}
                 onChange={(e) => setSaveName(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter" && saveName.trim()) { saveQuery(connId, saveName.trim(), sql); setCurQueryName(saveName.trim()); setSaveName(null); } }}
+                onKeyDown={(e) => { if (e.key === "Enter" && saveName.trim()) { saveQuery(connId, saveName.trim(), getSql()); setCurQueryName(saveName.trim()); setSaveName(null); } }}
                 placeholder={tr("db.eGActiveUsersReport")}
               />
             </label>
@@ -1887,7 +2070,7 @@ function Session({ tab }: { tab: Tab }) {
             <div className="toolbar">
               <span className="grow" />
               <button onClick={() => setSaveName(null)}><X /> {tr("db.cancel")}</button>
-              <button className="primary" disabled={!saveName.trim()} onClick={() => { saveQuery(connId, saveName.trim(), sql); setCurQueryName(saveName.trim()); setSaveName(null); }}><Save /> {tr("db.save")}</button>
+              <button className="primary" disabled={!saveName.trim()} onClick={() => { saveQuery(connId, saveName.trim(), getSql()); setCurQueryName(saveName.trim()); setSaveName(null); }}><Save /> {tr("db.save")}</button>
             </div>
           </div>
         </Modal>
@@ -1917,7 +2100,49 @@ function Session({ tab }: { tab: Tab }) {
 
 /* Memo: bảng kết quả có thể rất lớn — không vẽ lại mỗi lần gõ phím trong ô SQL (out không đổi). */
 /** Số dòng vẽ ngay ở lần đầu; phần còn lại vẽ ở khung hình sau → kết quả lớn hiện tức thì, không khựng. */
-const FIRST_ROWS = 120;
+const FIRST_ROWS = 80;
+/** Câu dạng truy vấn (trả bảng) — kể cả khi kết quả 0 dòng. */
+function isQueryLike(sql: string): boolean {
+  const s = sql.replace(/^(\s|\/\*[\s\S]*?\*\/|--[^\n]*\n)+/, "").toLowerCase();
+  return /^(select|with|show|explain|describe|desc|pragma|values|table)\b/.test(s);
+}
+/** Virtualization lưới kết quả: chiều cao dòng mặc định (đo lại lúc chạy), số dòng đệm trên/dưới, bước làm tròn. */
+const ROW_H = 21;
+const OVERSCAN = 20;
+const CHUNK = 20;
+
+/** Bề rộng chữ monospace 12px (đo một lần bằng phần tử ẩn cùng font với lưới). */
+let chW = 0;
+function charWidth(): number {
+  if (chW) return chW;
+  const probe = document.createElement("span");
+  probe.className = "grid mono";
+  probe.style.cssText = "position:absolute;visibility:hidden;white-space:pre;font-size:12px";
+  probe.textContent = "0".repeat(100);
+  document.body.appendChild(probe);
+  chW = probe.getBoundingClientRect().width / 100 || 7.2;
+  probe.remove();
+  return chW;
+}
+
+/** Bề rộng cố định từng cột (px) theo nội dung dài nhất (quét tối đa 2000 dòng) và tiêu đề; kẹp 48..360. */
+function gridColWidths(out: QueryOut): { num: number; cols: number[]; total: number } {
+  const ch = charWidth();
+  const n = out.columns.length;
+  const maxLen = out.columns.map((c) => c.length * 0.95 + 3); // tiêu đề chữ nhỏ in hoa + mũi tên sắp xếp
+  const scan = Math.min(out.rows.length, 2000);
+  for (let i = 0; i < scan; i++) {
+    const r = out.rows[i];
+    for (let j = 0; j < n; j++) {
+      const v = r[j];
+      const len = v === null ? 4 : v.length > 60 ? 60 : v.length;
+      if (len > maxLen[j]) maxLen[j] = len;
+    }
+  }
+  const cols = maxLen.map((l) => Math.round(Math.max(48, Math.min(360, l * ch + 18))));
+  const num = Math.round(Math.max(36, String(out.rows.length + (out.paging ? out.paging.page * out.paging.size : 0)).length * ch + 18));
+  return { num, cols, total: cols.reduce((a, b) => a + b, 0) };
+}
 
 /** Bảng nguồn + khoá chính của một kết quả (sửa được), hoặc lý do chỉ đọc. */
 type EditTarget =
@@ -1935,6 +2160,7 @@ interface GridEditor {
 
 /** Kết quả các câu không trả bảng: mỗi câu một dòng (số thứ tự · câu lệnh · số dòng bị ảnh hưởng · thời gian). */
 const ExecLog = memo(function ExecLog({ items, total, full }: { items: { o: QueryOut; i: number }[]; total: number; full: boolean }) {
+  renderLog("ExecLog");
   const tr = useT();
   const affected = items.reduce((n, x) => n + x.o.rowsAffected, 0);
   const ms = items.reduce((n, x) => n + x.o.elapsedMs, 0);
@@ -1969,9 +2195,71 @@ interface GridPager {
 }
 const PAGE_SIZES = [100, 200, 500, 1000];
 
+/** Hành động của ô đang sửa — truyền qua ref ổn định để `GridRow` (memo) không vẽ lại khi lưới đổi state. */
+interface GridRowApi {
+  commit: (r: number, c: number, value: string, move?: 1 | -1) => void;
+  cancel: () => void;
+  typed: { current: boolean };
+}
+
+/**
+ * Một dòng của lưới kết quả — `memo`: chỉ vẽ lại khi CHÍNH dòng này đổi (dữ liệu, ô sửa của dòng, ô đang mở,
+ * cột sửa được). Trước đây mỗi lần mở/đóng một ô cả nghìn dòng × cột đều vẽ lại → lag với dữ liệu nhiều.
+ * Double-click / chuột phải bắt một lần ở `<tbody>` (data-r / data-c), không gắn closure cho từng ô.
+ */
+const GridRow = memo(function GridRow({ row, r, num, rowEdits, editCol, mask, api }: {
+  row: (string | null)[]; r: number; num: number;
+  rowEdits: Map<number, string | null> | undefined;
+  /** Cột đang mở ô sửa ở dòng này (-1 = không có). */
+  editCol: number;
+  /** "1"/"0" theo từng cột: sửa được hay không (chuỗi → so sánh rẻ cho memo). */
+  mask: string;
+  api: { current: GridRowApi };
+}) {
+  renderLog("GridRow");
+  return (
+    <tr data-r={r}>
+      {row.map((orig, j) => {
+        const v = rowEdits?.has(j) ? rowEdits.get(j)! : orig;
+        if (j === editCol) {
+          return (
+            <td key={j} className="cell editing">
+              <input
+                autoFocus
+                className="cell-input mono"
+                defaultValue={v ?? ""}
+                placeholder={v === null ? "NULL" : undefined}
+                onFocus={(e) => { api.current.typed.current = false; e.currentTarget.select(); }}
+                onChange={() => { api.current.typed.current = true; }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") { e.preventDefault(); api.current.commit(r, j, e.currentTarget.value); }
+                  else if (e.key === "Tab") { e.preventDefault(); api.current.commit(r, j, e.currentTarget.value, e.shiftKey ? -1 : 1); }
+                  else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); api.current.cancel(); }
+                }}
+                onBlur={(e) => api.current.commit(r, j, e.currentTarget.value)}
+              />
+            </td>
+          );
+        }
+        return (
+          <td
+            key={j}
+            data-c={j}
+            className={`${v === null ? "null" : "cell"}${rowEdits?.has(j) ? " edited" : ""}${mask[j] === "1" ? " editable" : ""}`}
+            title={v !== null && v.length > 40 ? v : undefined}
+          >
+            {v === null ? "NULL" : v}
+          </td>
+        );
+      })}
+    </tr>
+  );
+});
+
 const ResultGrid = memo(function ResultGrid({ out: initial, title, editor, pager }: {
   out: QueryOut | null; title?: string; editor?: GridEditor; pager?: GridPager;
 }) {
+  renderLog("ResultGrid");
   const tr = useT();
   // Trang đang xem: sau khi chuyển trang thì thay cho kết quả ban đầu (gắn với đúng `initial`).
   const [view, setView] = useState<{ src: QueryOut | null; out: QueryOut | null }>({ src: null, out: null });
@@ -1979,14 +2267,55 @@ const ResultGrid = memo(function ResultGrid({ out: initial, title, editor, pager
   const [pageBusy, setPageBusy] = useState(false);
   const [total, setTotal] = useState<{ base: string; n: number | null; busy: boolean } | null>(null);
 
-  // Gắn số dòng đã vẽ với đúng kết quả `out` → kết quả mới luôn bắt đầu lại từ FIRST_ROWS.
-  const [painted, setPainted] = useState<{ out: QueryOut | null; n: number }>({ out: null, n: FIRST_ROWS });
-  const shown = painted.out === out ? painted.n : FIRST_ROWS;
+  /* ── Virtualization: chỉ vẽ các dòng đang nhìn thấy (+ đệm), phần còn lại là 2 dòng đệm chiều cao tương ứng.
+   *  Cột có bề rộng cố định (table-layout: fixed, tính một lần theo dữ liệu) → cuộn / kéo thanh ngăn / đổi cỡ
+   *  không bắt trình duyệt đo lại cả bảng; số dòng lớn cỡ nào cũng chỉ ~vài chục <tr> trong DOM. */
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const rowH = useRef(ROW_H);
+  const [win, setWin] = useState({ start: 0, end: FIRST_ROWS });
+  const winRaf = useRef<number | null>(null);
+  const calcWin = () => {
+    winRaf.current = null;
+    const el = wrapRef.current;
+    if (!el) return;
+    const h = rowH.current;
+    const first = Math.floor(el.scrollTop / h);
+    const start = Math.max(0, Math.floor((first - OVERSCAN) / CHUNK) * CHUNK);
+    // Làm tròn lên theo CHUNK: khung đổi cao vài px (thanh cuộn ngang hiện/ẩn khi kéo) không đổi cửa sổ dòng.
+    const end = start + Math.ceil((Math.ceil(el.clientHeight / h) + OVERSCAN * 2) / CHUNK) * CHUNK + CHUNK;
+    setWin((w) => (w.start === start && w.end === end ? w : { start, end }));
+  };
+  const onGridScroll = () => { if (winRaf.current === null) winRaf.current = requestAnimationFrame(calcWin); };
+  // Kết quả mới (chạy lại / chuyển trang) → về đầu bảng.
   useEffect(() => {
-    if (!out || out.rows.length <= FIRST_ROWS) return;
-    const id = setTimeout(() => setPainted({ out, n: out.rows.length }), 16);
-    return () => clearTimeout(id);
+    if (wrapRef.current) wrapRef.current.scrollTop = 0;
+    setWin({ start: 0, end: FIRST_ROWS });
+    requestAnimationFrame(calcWin);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [out]);
+  // Khung đổi cao (kéo, đổi cỡ cửa sổ) → tính lại số dòng cần vẽ.
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    // Chỉ quan tâm chiều CAO (kéo ngang / đổi bề rộng không đổi số dòng cần vẽ).
+    let lastH = el.clientHeight;
+    const ro = new ResizeObserver(() => {
+      const hNow = el.clientHeight;
+      if (Math.abs(hNow - lastH) < rowH.current) return;
+      lastH = hNow;
+      onGridScroll();
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [out?.columns.length]);
+  // Đo chiều cao dòng thật một lần (font/theme khác nhau).
+  useLayoutEffect(() => {
+    const tr = wrapRef.current?.querySelector<HTMLElement>("tbody tr[data-r]");
+    const h = tr?.getBoundingClientRect().height;
+    if (h && Math.abs(h - rowH.current) > 0.5) { rowH.current = h; calcWin(); }
+  });
+  const colW = useMemo(() => (out ? gridColWidths(out) : null), [out]);
 
   /* ── Sửa dữ liệu trên lưới (kiểu Navicat) ── */
   const [target, setTarget] = useState<{ out: QueryOut | null; t: EditTarget | null }>({ out: null, t: null });
@@ -1997,6 +2326,10 @@ const ResultGrid = memo(function ResultGrid({ out: initial, title, editor, pager
   const [saving, setSaving] = useState(false);
   const [note, setNote] = useState<{ kind: "error" | "info"; text: string } | null>(null);
   const [cellMenu, setCellMenu] = useState<{ x: number; y: number; r: number; c: number } | null>(null);
+  /** Ref ổn định cho GridRow (memo) — nội dung cập nhật mỗi lần render. */
+  const rowApi = useRef<GridRowApi>({ commit: () => {}, cancel: () => {}, typed });
+  const editingRef = useRef(editing);
+  editingRef.current = editing;
 
   useEffect(() => {
     setEdits(new Map());
@@ -2035,12 +2368,18 @@ const ResultGrid = memo(function ResultGrid({ out: initial, title, editor, pager
     return -1;
   };
   const commit = (r: number, c: number, value: string, move?: 1 | -1) => {
+    // Ô đã đóng (Enter rồi blur khi gỡ input) → bỏ qua lần gọi thừa.
+    const cur = editingRef.current;
+    if (!cur || cur.r !== r || cur.c !== c) return;
+    editingRef.current = null;
     // Ô gốc NULL mà chưa gõ gì → giữ NULL (không biến thành chuỗi rỗng chỉ vì mở ô rồi thoát).
     if (typed.current) setCell(r, c, value);
     typed.current = false;
     const nc = move ? nextEditable(c, move) : -1;
     setEditing(nc >= 0 ? { r, c: nc } : null);
   };
+  rowApi.current = { commit, cancel: () => { typed.current = false; editingRef.current = null; setEditing(null); }, typed };
+  const mask = out.columns.map((_, j) => (editable(j) ? "1" : "0")).join("");
 
   const save = async () => {
     if (!t?.ok || !editor || !nChanges) return;
@@ -2119,7 +2458,7 @@ const ResultGrid = memo(function ResultGrid({ out: initial, title, editor, pager
             <span className="grid-dirty">· {tr("db.gridChanges", { n: nChanges })}</span>
             <span className="grow" />
             <button disabled={saving} onClick={() => { setEdits(new Map()); setEditing(null); setNote(null); }}><RotateCcw /> {tr("db.gridDiscard")}</button>
-            <button className="primary" disabled={saving} onClick={() => void save()}><Save /> {saving ? tr("db.gridSaving") : tr("db.gridSave")}</button>
+            <button className="primary" disabled={saving} onClick={() => void save()}><Save /> <Swap on={saving} a={tr("db.gridSaving")} b={tr("db.gridSave")} /></button>
           </>
         ) : (
           <>
@@ -2129,15 +2468,20 @@ const ResultGrid = memo(function ResultGrid({ out: initial, title, editor, pager
           </>
         )}
         {out.columns.length > 0 && (
-          <button onClick={() => navigator.clipboard.writeText(toTsv({ ...out, rows }))} title={tr("db.pasteIntoExcel")}><Copy /> Copy (TSV)</button>
+          <button onClick={() => copyText(toTsv({ ...out, rows }))} title={tr("db.pasteIntoExcel")}><Copy /> Copy (TSV)</button>
         )}
       </div>
       {note && <div className={note.kind === "error" ? "error-box pre grid-note" : "muted small grid-note"}>{note.text}</div>}
       {out.columns.length > 0 ? (
-        <div className={`grid-wrap${pageBusy ? " busy" : ""}`}>
-          <table className="grid mono">
+        <div ref={wrapRef} className={`grid-wrap${pageBusy ? " busy" : ""}`} onScroll={onGridScroll}>
+          <table className="grid mono fixed" style={colW ? { width: colW.total } : undefined}>
+            {colW && (
+              <colgroup>
+                {colW.cols.map((w, i) => <col key={i} style={{ width: w }} />)}
+              </colgroup>
+            )}
             <thead>
-              <tr><th>#</th>{out.columns.map((c, i) => {
+              <tr>{out.columns.map((c, i) => {
                 const s = out.sort?.col === i ? out.sort : null;
                 return canSort ? (
                   <th key={i} className={`sortable${s ? " sorted" : ""}`} title={lockTitle ?? tr("db.sortHint")} onClick={() => sortBy(i)}>
@@ -2146,53 +2490,39 @@ const ResultGrid = memo(function ResultGrid({ out: initial, title, editor, pager
                 ) : <th key={i}>{c}</th>;
               })}</tr>
             </thead>
-            <tbody>
-              {(shown < rows.length ? rows.slice(0, shown) : rows).map((r, i) => (
-                <tr key={i}>
-                  <td className="muted">{offset + i + 1}</td>
-                  {r.map((_, j) => {
-                    if (editing && editing.r === i && editing.c === j) {
-                      const cur = cellValue(i, j);
-                      return (
-                        <td key={j} className="cell editing">
-                          <input
-                            autoFocus
-                            className="cell-input mono"
-                            defaultValue={cur ?? ""}
-                            placeholder={cur === null ? "NULL" : undefined}
-                            onFocus={(e) => { typed.current = false; e.currentTarget.select(); }}
-                            onChange={() => { typed.current = true; }}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") { e.preventDefault(); commit(i, j, e.currentTarget.value); }
-                              else if (e.key === "Tab") { e.preventDefault(); commit(i, j, e.currentTarget.value, e.shiftKey ? -1 : 1); }
-                              else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); typed.current = false; setEditing(null); }
-                            }}
-                            onBlur={(e) => { if (editing && editing.r === i && editing.c === j) commit(i, j, e.currentTarget.value); }}
-                          />
-                        </td>
-                      );
-                    }
-                    const v = cellValue(i, j);
-                    const edited = !!edits.get(i)?.has(j);
-                    return (
-                      <td
-                        key={j}
-                        className={`${v === null ? "null" : "cell"}${edited ? " edited" : ""}${editable(j) ? " editable" : ""}`}
-                        title={v !== null && v.length > 40 ? v : undefined}
-                        onDoubleClick={editable(j) ? () => setEditing({ r: i, c: j }) : undefined}
-                        onContextMenu={(e) => { e.preventDefault(); setCellMenu({ x: e.clientX, y: e.clientY, r: i, c: j }); }}
-                      >
-                        {v === null ? "NULL" : v}
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
+            <tbody
+              onDoubleClick={(e) => {
+                const td = (e.target as HTMLElement).closest("td[data-c]") as HTMLElement | null;
+                const tr = td?.parentElement as HTMLElement | null;
+                if (!td || !tr?.dataset.r) return;
+                const r = Number(tr.dataset.r), c = Number(td.dataset.c);
+                if (editable(c)) setEditing({ r, c });
+              }}
+              onContextMenu={(e) => {
+                const td = (e.target as HTMLElement).closest("td[data-c]") as HTMLElement | null;
+                const tr = td?.parentElement as HTMLElement | null;
+                if (!td || !tr?.dataset.r) return;
+                e.preventDefault();
+                setCellMenu({ x: e.clientX, y: e.clientY, r: Number(tr.dataset.r), c: Number(td.dataset.c) });
+              }}
+            >
+              {(() => {
+                const start = Math.min(win.start, rows.length);
+                const end = Math.min(win.end, rows.length);
+                const h = rowH.current;
+                const out2: ReactNode[] = [];
+                if (start > 0) out2.push(<tr key="pad-top" className="grid-pad" style={{ height: start * h }}><td colSpan={out.columns.length} /></tr>);
+                for (let i = start; i < end; i++) {
+                  out2.push(<GridRow key={i} row={rows[i]} r={i} num={offset + i + 1} rowEdits={edits.get(i)} editCol={editing && editing.r === i ? editing.c : -1} mask={mask} api={rowApi} />);
+                }
+                if (end < rows.length) out2.push(<tr key="pad-bot" className="grid-pad" style={{ height: (rows.length - end) * h }}><td colSpan={out.columns.length} /></tr>);
+                return out2;
+              })()}
             </tbody>
           </table>
         </div>
       ) : (
-        <div className="empty">{tr("db.gridDone")}</div>
+        <div className="empty">{isQueryLike(out.sql ?? "") ? tr("db.gridRowCount", { n: 0 }) : tr("db.gridDone")}</div>
       )}
       {pg && out.columns.length > 0 && (
         <div className="grid-pager">
@@ -2238,7 +2568,7 @@ const ResultGrid = memo(function ResultGrid({ out: initial, title, editor, pager
               if (edits.get(r)?.has(c)) items.push({ id: "revert", icon: <Undo2 />, label: tr("db.gridRevertCell"), action: () => setCell(r, c, rows[r][c]) });
               items.push({ id: "s1", sep: true });
             }
-            items.push({ id: "copy", icon: <Copy />, label: tr("db.gridCopyValue"), action: () => void navigator.clipboard.writeText(v ?? "NULL") });
+            items.push({ id: "copy", icon: <Copy />, label: tr("db.gridCopyValue"), action: () => void copyText(v ?? "NULL") });
             return items;
           })()}
         />
@@ -2350,9 +2680,13 @@ function fmtBytes(v: string | null | undefined): string {
  * Thông tin cơ bản của bảng đang chọn (click đơn trong cây) — kiểu khung "Object info" của Navicat.
  * Double-click / Enter trên bảng mới chạy SELECT.
  */
-function TableInfoPanel({ conn, dbId, table, onOpen, onStructure, onClose }: {
-  conn: Conn; dbId: string; table: TableInfo; onOpen: () => void; onStructure: () => void; onClose: () => void;
+// Memo + callback ổn định: chạy query / đổi trạng thái khác của Session không vẽ lại khung này.
+const TableInfoPanel = memo(function TableInfoPanel({ conn, dbId, table, api, onClose }: {
+  conn: Conn; dbId: string; table: TableInfo; api: SessApi; onClose: () => void;
 }) {
+  renderLog("TableInfoPanel");
+  const onOpen = () => api.openTable(table);
+  const onStructure = () => api.editStruct(table);
   const tr = useT();
   const [rows, setRows] = useState<[string, string][] | null>(null);
   const [err, setErr] = useState("");
@@ -2435,7 +2769,7 @@ function TableInfoPanel({ conn, dbId, table, onOpen, onStructure, onClose }: {
       </div>
     </div>
   );
-}
+});
 
 interface ColDef { name: string; type: string; nullable: string; def: string; key: string }
 type StructTab = "columns" | "indexes" | "fks" | "refs" | "triggers" | "options" | "ddl";
@@ -2456,6 +2790,7 @@ function TableStructModal({ conn, dbId, table, tables, onClose, onChanged, getDd
   onChanged: () => void;
   getDdl: () => Promise<string>;
 }) {
+  renderLog("TableStructModal");
   const tr = useT();
   const d = conn.driver;
   const ref = quote(conn, table);
@@ -2493,17 +2828,87 @@ function TableStructModal({ conn, dbId, table, tables, onClose, onChanged, getDd
   const [refCols, setRefCols] = useState<Record<string, string[]>>({});
   const keySeq = useRef(0);
   const nk = () => `n${++keySeq.current}`;
+  /** Mục ĐÃ CÓ đang sửa (khoá = tên gốc). Lưu = CHANGE/ALTER COLUMN, index/khoá ngoại = xoá + tạo lại. */
+  const [editCols, setEditCols] = useState<Record<string, EditCol>>({});
+  const [editIdx, setEditIdx] = useState<Record<string, EditIdx>>({});
+  const [editFks, setEditFks] = useState<Record<string, EditFk>>({});
   const canReorder = d === "mysql" && Object.keys(colDefs).length > 0;
   const orderChanged = !!order && !!cols && order.some((c, i) => c !== cols[i]?.name);
-  const pending = newCols.length + newIdx.length + newFks.length + (orderChanged ? 1 : 0);
+  const changedCols = Object.values(editCols).filter(colChanged);
+  const changedIdx = Object.values(editIdx).filter(idxChanged);
+  const changedFks = Object.values(editFks).filter(fkChanged);
+  const pending = newCols.length + newIdx.length + newFks.length + (orderChanged ? 1 : 0) + changedCols.length + changedIdx.length + changedFks.length;
   const design = (p: Partial<Design>): Design => ({ table: table.name, schema: table.schema, ref, cols: [], idx: [], fks: [], ...p });
-  const allColNames = [...(cols ?? []).map((c) => c.name), ...newCols.map((c) => c.name.trim()).filter(Boolean)];
+  const allColNames = [
+    ...(cols ?? []).map((c) => editCols[c.name]?.name.trim() || c.name),
+    ...newCols.map((c) => c.name.trim()).filter(Boolean),
+  ];
   const problems = dd ? designProblems(dd, design({ cols: newCols, idx: newIdx, fks: newFks })) : [];
-  const TYPES = d === "mysql"
-    ? ["INT", "BIGINT", "TINYINT(1)", "SMALLINT", "DECIMAL(18,2)", "DOUBLE", "VARCHAR(255)", "CHAR(36)", "TEXT", "LONGTEXT", "JSON", "DATE", "DATETIME", "TIMESTAMP", "BOOLEAN", "BLOB"]
-    : d === "postgres"
-      ? ["integer", "bigint", "serial", "bigserial", "smallint", "numeric(18,2)", "double precision", "varchar(255)", "text", "uuid", "jsonb", "boolean", "date", "timestamp", "timestamptz", "bytea"]
-      : ["INTEGER", "TEXT", "REAL", "NUMERIC", "BLOB"];
+  const editBad = (k: string) =>
+    (k.startsWith("col:") && (() => { const e = editCols[k.slice(4)]; return !!e && (!e.name.trim() || !e.type.trim()); })())
+    || (k.startsWith("idx:") && !!editIdx[k.slice(4)] && !editIdx[k.slice(4)].cols.length)
+    || (k.startsWith("fk:") && (() => { const f = editFks[k.slice(3)]; return !!f && (!f.cols.length || !f.refTable || f.refCols.length !== f.cols.length); })());
+  const editProblems = [
+    ...Object.keys(editCols).map((n) => `col:${n}`), ...Object.keys(editIdx).map((n) => `idx:${n}`), ...Object.keys(editFks).map((n) => `fk:${n}`),
+  ].filter(editBad);
+  const TYPES = dd ? TYPE_LIST[dd] : [];
+  const typeItems = TYPES.map((t) => ({ label: t.name, insert: t.insert, hint: t.insert !== t.name ? t.insert.slice(t.name.length) : undefined }));
+  /** Lọc giữ thứ tự ưu tiên của `filterTypes` (khớp đầu trước). */
+  const typeFilter = (_: unknown, text: string) => filterTypes(TYPES, text).map((x) => typeItems.find((y) => y.label === x.name)!).filter(Boolean);
+
+  /* Bắt đầu sửa một mục đã có — lấy giá trị gốc theo driver. */
+  const makeEditCol = (c: ColDef): EditCol => {
+    const notNull = c.nullable === "NO" || c.nullable === "1";
+    const p = d === "mysql" && colDefs[c.name] ? parseMysqlColDef(colDefs[c.name]) : null;
+    const orig = p
+      ? { name: c.name, type: p.type, notNull: p.notNull, def: p.def, comment: p.comment }
+      : { name: c.name, type: c.type, notNull, def: c.def ?? "", comment: "" };
+    return { key: c.name, ...orig, orig, pre: p?.pre, post: p?.post };
+  };
+  /** Ghi một ô của cột đã có; ô quay về giá trị gốc hết thì bỏ khỏi danh sách sửa. */
+  const patchCol = (c: ColDef, p: Partial<EditCol>) => setEditCols((m) => {
+    const next = { ...(m[c.name] ?? makeEditCol(c)), ...p };
+    const out = { ...m };
+    if (colChanged(next)) out[c.name] = next; else delete out[c.name];
+    return out;
+  });
+  /** Ô đang sửa trong lưới Columns / Indexes / Foreign keys (kiểu lưới kết quả: double-click ô nào sửa ô đó). */
+  const [cellEdit, setCellEdit] = useState<{ key: string; field: string } | null>(null);
+  const endCell = () => setCellEdit(null);
+  const isCell = (key: string, field: string) => cellEdit?.key === key && cellEdit.field === field;
+  /** Một dòng tab Indexes / Foreign keys → bản sửa được; null = không sửa được (index biểu thức, khoá tự sinh…). */
+  const idxFromRow = (r: (string | null)[]): EditIdx | null => {
+    const name = String(r[0] ?? "");
+    let cols: string[] = [];
+    let kind: IdxKind = "INDEX";
+    if (d === "mysql") {
+      cols = splitColList(String(r[1] ?? ""));
+      kind = name === "PRIMARY" ? "PRIMARY" : String(r[3] ?? "").toUpperCase() === "FULLTEXT" ? "FULLTEXT" : r[2] === "UNIQUE" ? "UNIQUE" : "INDEX";
+    } else {
+      const p = parseIndexDef(String(r[1] ?? ""));
+      if (!p || (d === "postgres" && name.endsWith("_pkey"))) return null;
+      cols = p.cols;
+      kind = p.unique ? "UNIQUE" : "INDEX";
+    }
+    if (!cols.length) return null;
+    return { key: name, name, cols, kind, orig: { name, cols, kind } };
+  };
+  const fkFromRow = (r: (string | null)[]): EditFk | null => {
+    const name = String(r[0] ?? "");
+    if (d === "mysql") {
+      const m = /^(?:([^.(]*)\.)?([^(]+)\((.*)\)$/.exec(String(r[2] ?? ""));
+      if (!m || (table.schema && m[1] && m[1] !== table.schema)) return null;
+      const o = { name, cols: splitColList(String(r[1] ?? "")), refTable: m[2], refCols: splitColList(m[3]), onUpdate: String(r[3] ?? ""), onDelete: String(r[4] ?? "") };
+      return { key: name, ...o, orig: o };
+    }
+    if (d === "postgres") {
+      const p = parsePgFkDef(String(r[1] ?? ""));
+      if (!p) return null;
+      const o = { name, ...p };
+      return { key: name, ...o, orig: o };
+    }
+    return null;
+  };
 
   // Cột của bảng đích (để chọn cột tham chiếu cho khoá ngoại).
   const loadRefCols = (t: string) => {
@@ -2624,18 +3029,28 @@ function TableStructModal({ conn, dbId, table, tables, onClose, onChanged, getDd
    *  → giữ lại mục chưa chạy để sửa rồi lưu tiếp, không chạy lại mục đã xong). */
   const save = async () => {
     if (!dd || !pending) return;
-    if (problems.length) { setErr(tr("db.structFillRequired")); return; }
-    const all = designSql(dd, design({ cols: newCols, idx: newIdx, fks: newFks, order: orderChanged && cols ? { before: cols.map((c) => c.name), after: order!, defs: colDefs } : undefined }));
+    if (problems.length || editProblems.length) { setErr(tr("db.structFillRequired")); return; }
+    const without = <T,>(m: Record<string, T>, k: string) => { const n = { ...m }; delete n[k]; return n; };
+    // Thứ tự: đổi vị trí cột (dùng định nghĩa CŨ) → sửa cột → thêm cột → sửa/thêm index → sửa/thêm khoá ngoại.
+    const steps: { sql: string[]; drop: () => void }[] = [
+      ...(orderChanged && cols ? [{ sql: designSql(dd, design({ order: { before: cols.map((c) => c.name), after: order!, defs: colDefs } })), drop: () => setOrder(null) }] : []),
+      ...changedCols.map((e) => ({ sql: alterColSql(dd, ref, e), drop: () => setEditCols((m) => without(m, e.key)) })),
+      ...newCols.map((c) => ({ sql: designSql(dd, design({ cols: [c] })), drop: () => setNewCols((l) => l.filter((x) => x.key !== c.key)) })),
+      ...changedIdx.map((e) => ({ sql: alterIdxSql(dd, design({}), e), drop: () => setEditIdx((m) => without(m, e.key)) })),
+      ...newIdx.map((c) => ({ sql: designSql(dd, design({ idx: [c] })), drop: () => setNewIdx((l) => l.filter((x) => x.key !== c.key)) })),
+      ...changedFks.map((e) => ({ sql: alterFkSql(dd, design({}), e), drop: () => setEditFks((m) => without(m, e.key)) })),
+      ...newFks.map((c) => ({ sql: designSql(dd, design({ fks: [c] })), drop: () => setNewFks((l) => l.filter((x) => x.key !== c.key)) })),
+    ].filter((s) => s.sql.length);
+    const all = steps.flatMap((s) => s.sql);
+    if (!all.length) return;
     const ok = await confirmDialog({ title: tr("db.structSaveTitle"), message: `${prodNote}${tr("db.structSaveConfirm", { n: all.length })}\n\n${all.join("\n")}`, confirmLabel: tr("db.gridSave") });
     if (!ok) return;
     setErr("");
     setBusy(true);
-    const steps: { sql: string[]; drop: () => void }[] = [
-      ...newCols.map((c) => ({ sql: designSql(dd, design({ cols: [c] })), drop: () => setNewCols((l) => l.filter((x) => x.key !== c.key)) })),
-      ...(orderChanged && cols ? [{ sql: designSql(dd, design({ order: { before: cols.map((c) => c.name), after: order!, defs: colDefs } })), drop: () => setOrder(null) }] : []),
-      ...newIdx.map((c) => ({ sql: designSql(dd, design({ idx: [c] })), drop: () => setNewIdx((l) => l.filter((x) => x.key !== c.key)) })),
-      ...newFks.map((c) => ({ sql: designSql(dd, design({ fks: [c] })), drop: () => setNewFks((l) => l.filter((x) => x.key !== c.key)) })),
-    ];
+    // Mục sửa mà không đổi gì → bỏ chế độ sửa luôn.
+    setEditCols((m) => Object.fromEntries(Object.entries(m).filter(([, e]) => colChanged(e))));
+    setEditIdx((m) => Object.fromEntries(Object.entries(m).filter(([, e]) => idxChanged(e))));
+    setEditFks((m) => Object.fromEntries(Object.entries(m).filter(([, e]) => fkChanged(e))));
     for (const st of steps) {
       const n = await execAll(st.sql);
       if (n < st.sql.length) break;
@@ -2645,11 +3060,12 @@ function TableStructModal({ conn, dbId, table, tables, onClose, onChanged, getDd
     onChanged();
     reload();
   };
-  const discard = () => { setNewCols([]); setNewIdx([]); setNewFks([]); setOrder(null); setErr(""); };
+  const discard = () => { setNewCols([]); setNewIdx([]); setNewFks([]); setOrder(null); setEditCols({}); setEditIdx({}); setEditFks({}); setErr(""); };
+  const editing = Object.keys(editCols).length + Object.keys(editIdx).length + Object.keys(editFks).length;
   const addRow = () => {
     if (tab === "indexes") setNewIdx((l) => [...l, { key: nk(), name: "", cols: [], kind: "INDEX" }]);
     else if (tab === "fks") setNewFks((l) => [...l, { key: nk(), name: "", cols: [], refTable: "", refCols: [], onDelete: "", onUpdate: "" }]);
-    else { setTab("columns"); setNewCols((l) => [...l, { key: nk(), name: "", type: TYPES[d === "postgres" ? 6 : d === "mysql" ? 6 : 1], notNull: false, def: "", comment: "" }]); }
+    else { setTab("columns"); setNewCols((l) => [...l, { key: nk(), name: "", type: d === "sqlite" ? "TEXT" : "varchar(255)", notNull: false, def: "", comment: "" }]); }
   };
   const move = (i: number, dir: -1 | 1) => {
     const base = order ?? (cols ?? []).map((c) => c.name);
@@ -2708,30 +3124,68 @@ function TableStructModal({ conn, dbId, table, tables, onClose, onChanged, getDd
                 <table className="grid mono">
                   <thead><tr><th>#</th><th>{tr("db.column")}</th><th>{tr("db.type2")}</th><th>Null</th><th>Key</th><th>Default</th>{d === "mysql" && <th>Comment</th>}{d !== "cassandra" && <th />}</tr></thead>
                   <tbody>
-                    {(order ? order.map((n) => cols.find((c) => c.name === n)!).filter(Boolean) : cols).map((c, i, arr) => (
-                      <tr key={c.name} className={order && cols[i]?.name !== c.name ? "struct-moved" : ""}>
-                        <td className="muted">{i + 1}</td>
-                        <td>{c.name}</td><td className="muted">{c.type}</td>
-                        <td className="muted">{c.nullable === "NO" || c.nullable === "1" ? "NOT NULL" : ""}</td>
-                        <td>{c.key === "PRI" || c.key === "1" ? <><KeyRound /> PRI</> : c.key}</td>
-                        <td className="muted ellipsis">{c.def}</td>
-                        {d === "mysql" && <td className="muted ellipsis">{/COMMENT '((?:[^']|'')*)'/.exec(colDefs[c.name] ?? "")?.[1]?.replace(/''/g, "'") ?? ""}</td>}
-                        {d !== "cassandra" && (
-                          <td className="struct-act">
-                            {canReorder && <button className="icon-btn" title={tr("db.structMoveUp")} disabled={i === 0} onClick={() => move(i, -1)}><ChevronUp /></button>}
-                            {canReorder && <button className="icon-btn" title={tr("db.structMoveDown")} disabled={i === arr.length - 1} onClick={() => move(i, 1)}><ChevronDown /></button>}
-                            <button className="icon-btn danger" title={tr("db.structDropColumn")} onClick={() => void run(tr("db.structDropColumnConfirm", { name: c.name }), dropSql("columns", c.name)!)}><Trash2 /></button>
+                    {(order ? order.map((n) => cols.find((c) => c.name === n)!).filter(Boolean) : cols).map((c, i, arr) => {
+                      const e = editCols[c.name];
+                      const moveBtns = canReorder && (
+                        <>
+                          <button className="icon-btn" title={tr("db.structMoveUp")} disabled={i === 0} onClick={() => move(i, -1)}><ChevronUp /></button>
+                          <button className="icon-btn" title={tr("db.structMoveDown")} disabled={i === arr.length - 1} onClick={() => move(i, 1)}><ChevronDown /></button>
+                        </>
+                      );
+                      const origComment = /COMMENT '((?:[^']|'')*)'/.exec(colDefs[c.name] ?? "")?.[1]?.replace(/''/g, "'") ?? "";
+                      const v = e ?? makeEditCol(c);
+                      const changedF = (f: "name" | "type" | "notNull" | "def" | "comment") => !!e && (f === "notNull" ? e.notNull !== e.orig.notNull : String(e[f]).trim() !== String(e.orig[f]).trim());
+                      // SQLite chỉ đổi được tên; Cassandra chỉ đọc.
+                      const canField = (f: string) => !!dd && (d !== "sqlite" || f === "name");
+                      const cell = (f: "name" | "type" | "def" | "comment", shown: ReactNode, cls = "") => {
+                        const ed = canField(f);
+                        if (isCell(c.name, f)) {
+                          return (
+                            <td className="cell editing">
+                              {f === "type"
+                                ? <TypeCell initial={v.type} items={typeItems} filter={typeFilter} onCommit={(t) => { patchCol(c, { type: t }); endCell(); }} onCancel={endCell} />
+                                : <CellText initial={String(v[f])} placeholder={f === "def" ? "DEFAULT" : undefined} onCommit={(t) => { patchCol(c, { [f]: t }); endCell(); }} onCancel={endCell} />}
+                            </td>
+                          );
+                        }
+                        return (
+                          <td className={`${cls}${changedF(f) ? " edited" : ""}${ed ? " editable" : ""}`} onDoubleClick={ed ? () => setCellEdit({ key: c.name, field: f }) : undefined}>
+                            {shown}
                           </td>
-                        )}
-                      </tr>
-                    ))}
+                        );
+                      };
+                      return (
+                        <tr key={c.name} className={`${order && cols[i]?.name !== c.name ? "struct-moved" : ""}${editProblems.includes(`col:${c.name}`) ? " struct-bad" : ""}`}>
+                          <td className="muted">{i + 1}</td>
+                          {cell("name", v.name)}
+                          {cell("type", e ? v.type : c.type, "muted")}
+                          <td
+                            className={`muted${changedF("notNull") ? " edited" : ""}${canField("notNull") ? " editable" : ""}`}
+                            title={canField("notNull") ? tr("db.structToggleNull") : undefined}
+                            onDoubleClick={canField("notNull") ? () => patchCol(c, { notNull: !v.notNull }) : undefined}
+                          >
+                            {v.notNull ? "NOT NULL" : ""}
+                          </td>
+                          <td>{c.key === "PRI" || c.key === "1" ? <><KeyRound /> PRI</> : c.key}</td>
+                          {cell("def", e ? v.def : c.def, "muted ellipsis")}
+                          {d === "mysql" && cell("comment", e ? v.comment : origComment, "muted ellipsis")}
+                          {d !== "cassandra" && (
+                            <td className="struct-act">
+                              {moveBtns}
+                              {e && <button className="icon-btn" title={tr("db.structCancelEdit")} onClick={() => setEditCols((m) => { const n = { ...m }; delete n[c.name]; return n; })}><Undo2 /></button>}
+                              <button className="icon-btn danger" title={tr("db.structDropColumn")} onClick={() => void run(tr("db.structDropColumnConfirm", { name: c.name }), dropSql("columns", c.name)!)}><Trash2 /></button>
+                            </td>
+                          )}
+                        </tr>
+                      );
+                    })}
                     {newCols.map((c, i) => {
                       const upd = (p: Partial<NewCol>) => setNewCols((l) => l.map((x) => (x.key === c.key ? { ...x, ...p } : x)));
                       return (
                         <tr key={c.key} className={`struct-new${problems.includes(`col:${i}`) ? " bad" : ""}`}>
                           <td className="muted">+</td>
                           <td><input className="cell-input mono" autoFocus={!c.name} placeholder={tr("db.column")} value={c.name} onChange={(e) => upd({ name: e.target.value })} /></td>
-                          <td><input className="cell-input mono" list={`ds-types-${d}`} value={c.type} onChange={(e) => upd({ type: e.target.value })} /></td>
+                          <td><Combo value={c.type} onChange={(v) => upd({ type: v })} items={typeItems} filter={typeFilter} /></td>
                           <td><label className="check"><input type="checkbox" checked={c.notNull} onChange={(e) => upd({ notNull: e.target.checked })} /> NOT NULL</label></td>
                           <td />
                           <td><input className="cell-input mono" placeholder="DEFAULT" value={c.def} onChange={(e) => upd({ def: e.target.value })} /></td>
@@ -2742,7 +3196,6 @@ function TableStructModal({ conn, dbId, table, tables, onClose, onChanged, getDd
                     })}
                   </tbody>
                 </table>
-                <datalist id={`ds-types-${d}`}>{TYPES.map((t) => <option key={t} value={t} />)}</datalist>
               </div>
             )
           ) : tab === "ddl" ? (
@@ -2756,16 +3209,152 @@ function TableStructModal({ conn, dbId, table, tables, onClose, onChanged, getDd
               <table className="grid mono">
                 <thead><tr>{(cur as MiniData).cols.map((h) => <th key={h}>{h}</th>)}{canDropRow(tab) && dropSql(tab, "x") && <th />}</tr></thead>
                 <tbody>
-                  {(cur as MiniData).rows.map((r, i) => (
-                    <tr key={i}>
-                      {r.map((v, j) => <td key={j} className={j === 0 ? "" : "muted"} title={v && v.length > 50 ? v : undefined}>{v ?? <span className="null">NULL</span>}</td>)}
-                      {canDropRow(tab) && dropSql(tab, "x") && (
+                  {(cur as MiniData).rows.map((r, i) => {
+                    const rk = String(r[0] ?? "");
+                    const ei = tab === "indexes" ? editIdx[rk] : undefined;
+                    const ef = tab === "fks" ? editFks[rk] : undefined;
+                    const unEdit = () => (tab === "indexes"
+                      ? setEditIdx((m) => { const n = { ...m }; delete n[rk]; return n; })
+                      : setEditFks((m) => { const n = { ...m }; delete n[rk]; return n; }));
+                    const editable = !!dd && ((tab === "indexes" && !!idxFromRow(r)) || (tab === "fks" && !!fkFromRow(r)));
+                    const startEdit = () => {
+                      if (!editable) return;
+                      if (tab === "indexes" && !editIdx[rk]) { const e = idxFromRow(r); if (e) setEditIdx((m) => ({ ...m, [rk]: e })); }
+                      if (tab === "fks" && !editFks[rk]) { const e = fkFromRow(r); if (e) { setEditFks((m) => ({ ...m, [rk]: e })); loadRefCols(e.refTable); } }
+                    };
+                    // MySQL/MariaDB: sửa TỪNG Ô như lưới kết quả (double-click ô nào sửa ô đó).
+                    if (d === "mysql" && editable && (tab === "indexes" || tab === "fks")) {
+                      const endIf = (f: string) => () => setCellEdit((c) => (c?.key === rk && c.field === f ? null : c));
+                      const actions = canDropRow(tab) && dropSql(tab, "x") && (
                         <td className="struct-act">
-                          <button className="icon-btn danger" title={tr("db.delete")} onClick={() => { const n = String(r[0] ?? ""); void run(tr("db.structDropConfirm", { name: n }), dropSql(tab, n)!); }}><Trash2 /></button>
+                          {(ei || ef) && <button className="icon-btn" title={tr("db.structCancelEdit")} onClick={unEdit}><Undo2 /></button>}
+                          <button className="icon-btn danger" title={tr("db.delete")} onClick={() => void run(tr("db.structDropConfirm", { name: rk }), dropSql(tab, rk)!)}><Trash2 /></button>
                         </td>
-                      )}
-                    </tr>
-                  ))}
+                      );
+                      const td = (field: string, shown: ReactNode, changed: boolean, editor: ReactNode | null, cls = "muted") =>
+                        editor && isCell(rk, field)
+                          ? <td className="cell editing">{editor}</td>
+                          : <td className={`${cls}${changed ? " edited" : ""}${editor ? " editable" : ""}`} onDoubleClick={editor ? () => setCellEdit({ key: rk, field }) : undefined}>{shown}</td>;
+                      if (tab === "indexes") {
+                        const x = ei ?? idxFromRow(r)!;
+                        const patch = (p: Partial<EditIdx>) => setEditIdx((m) => {
+                          const next = { ...(m[rk] ?? idxFromRow(r)!), ...p };
+                          const o = { ...m };
+                          if (idxChanged(next)) o[rk] = next; else delete o[rk];
+                          return o;
+                        });
+                        const kinds: IdxKind[] = x.orig.kind === "PRIMARY" ? ["PRIMARY"] : ["INDEX", "UNIQUE", "FULLTEXT"];
+                        const kindPick = x.orig.kind === "PRIMARY" ? null : (
+                          <Picker autoOpen onClose={endIf("kind")} label={<span>{x.kind}</span>} items={kinds.map((k) => ({ id: k, label: k, selected: x.kind === k }))} onPick={(k) => patch({ kind: k as IdxKind })} />
+                        );
+                        const kindChanged = x.kind !== x.orig.kind;
+                        return (
+                          <tr key={i} className={editProblems.includes(`idx:${rk}`) ? "struct-bad" : ""}>
+                            {td("name", x.name, x.name !== x.orig.name,
+                              x.kind === "PRIMARY" ? null : <CellText initial={x.name} onCommit={(v) => { patch({ name: v.trim() || x.orig.name }); endCell(); }} onCancel={endCell} />, "")}
+                            {td("cols", x.cols.join(", "), x.cols.join() !== x.orig.cols.join(),
+                              <ColPick autoOpen onClose={endIf("cols")} options={allColNames} value={x.cols} onChange={(v) => patch({ cols: v })} />)}
+                            {td("kind", x.kind === "UNIQUE" ? "UNIQUE" : x.kind === "PRIMARY" ? r[2] : "", kindChanged, kindPick)}
+                            {td("kind", x.kind === "FULLTEXT" ? "FULLTEXT" : String(r[3] ?? "") === "FULLTEXT" ? "BTREE" : r[3], kindChanged, kindPick)}
+                            <td className="muted">{r[4]}</td>
+                            {actions}
+                          </tr>
+                        );
+                      }
+                      const x = ef ?? fkFromRow(r)!;
+                      const patch = (p: Partial<EditFk>) => setEditFks((m) => {
+                        const next = { ...(m[rk] ?? fkFromRow(r)!), ...p };
+                        const o = { ...m };
+                        if (fkChanged(next)) o[rk] = next; else delete o[rk];
+                        return o;
+                      });
+                      const act = (field: "onUpdate" | "onDelete") => (
+                        <Picker autoOpen onClose={endIf(field)} label={<span>{x[field] || "—"}</span>}
+                          items={[{ id: "", label: "—", selected: !x[field] }, ...FK_ACTIONS.map((a) => ({ id: a, label: a, selected: x[field].toUpperCase() === a }))]}
+                          onPick={(v) => patch({ [field]: v })} />
+                      );
+                      const refChanged = x.refTable !== x.orig.refTable || x.refCols.join() !== x.orig.refCols.join();
+                      return (
+                        <tr key={i} className={editProblems.includes(`fk:${rk}`) ? "struct-bad" : ""}>
+                          {td("name", x.name, x.name !== x.orig.name, <CellText initial={x.name} onCommit={(v) => { patch({ name: v.trim() || x.orig.name }); endCell(); }} onCancel={endCell} />, "")}
+                          {td("cols", x.cols.join(", "), x.cols.join() !== x.orig.cols.join(),
+                            <ColPick autoOpen onClose={endIf("cols")} options={allColNames} value={x.cols} onChange={(v) => patch({ cols: v })} />)}
+                          {isCell(rk, "refCols") ? (
+                            <td className="cell editing">
+                              <span className="struct-ref-t">{x.refTable}</span>
+                              <ColPick autoOpen onClose={endIf("refCols")} options={refCols[x.refTable] ?? x.refCols} value={x.refCols} onChange={(v) => patch({ refCols: v })} />
+                            </td>
+                          ) : td("refTable", refChanged ? `${x.refTable}(${x.refCols.join(", ")})` : r[2], refChanged,
+                            <Picker autoOpen onClose={endIf("refTable")} filterPlaceholder={tr("db.structPickTable")}
+                              label={<span className="ellipsis">{x.refTable || tr("db.structPickTable")}</span>}
+                              items={tables.map((t) => ({ id: t, label: t, selected: x.refTable === t }))}
+                              onPick={(t) => { patch({ refTable: t, refCols: t === x.refTable ? x.refCols : [] }); loadRefCols(t); setCellEdit({ key: rk, field: "refCols" }); }} />)}
+                          {td("onUpdate", x.onUpdate, x.onUpdate.toUpperCase() !== x.orig.onUpdate.toUpperCase(), act("onUpdate"))}
+                          {td("onDelete", x.onDelete, x.onDelete.toUpperCase() !== x.orig.onDelete.toUpperCase(), act("onDelete"))}
+                          {actions}
+                        </tr>
+                      );
+                    }
+                    if (ei || ef) {
+                      const bad = editProblems.includes(tab === "indexes" ? `idx:${rk}` : `fk:${rk}`);
+                      const changed = ei ? idxChanged(ei) : fkChanged(ef!);
+                      return (
+                        <tr key={i} className={`struct-edit${bad ? " bad" : ""}${changed ? " changed" : ""}`}>
+                          <td colSpan={r.length}>
+                            <div className="struct-edit-line">
+                              {ei && (() => {
+                                const upd = (p: Partial<EditIdx>) => setEditIdx((m) => ({ ...m, [rk]: { ...m[rk], ...p } }));
+                                const kinds: IdxKind[] = ei.orig.kind === "PRIMARY" ? ["PRIMARY"] : d === "mysql" ? ["INDEX", "UNIQUE", "FULLTEXT"] : ["INDEX", "UNIQUE"];
+                                return (
+                                  <>
+                                    <input className="cell-input mono" style={{ maxWidth: 220 }} disabled={ei.kind === "PRIMARY"} placeholder={tr("db.structAutoName")} value={ei.name} onChange={(ev) => upd({ name: ev.target.value })} />
+                                    <ColPick options={allColNames} value={ei.cols} onChange={(v) => upd({ cols: v })} />
+                                    <Picker label={<span>{ei.kind}</span>} items={kinds.map((k) => ({ id: k, label: k, selected: ei.kind === k }))} onPick={(k) => upd({ kind: k as IdxKind })} />
+                                  </>
+                                );
+                              })()}
+                              {ef && (() => {
+                                const upd = (p: Partial<EditFk>) => setEditFks((m) => ({ ...m, [rk]: { ...m[rk], ...p } }));
+                                const act = (label: string, v: string, set: (s: string) => void) => (
+                                  <Picker label={<span>{label}: {v || "—"}</span>} items={[{ id: "", label: "—", selected: !v }, ...FK_ACTIONS.map((a) => ({ id: a, label: a, selected: v.toUpperCase() === a }))]} onPick={set} />
+                                );
+                                return (
+                                  <>
+                                    <input className="cell-input mono" style={{ maxWidth: 200 }} placeholder={tr("db.structAutoName")} value={ef.name} onChange={(ev) => upd({ name: ev.target.value })} />
+                                    <ColPick options={allColNames} value={ef.cols} onChange={(v) => upd({ cols: v })} />
+                                    <ArrowRight className="muted" />
+                                    <Picker
+                                      label={<span className="ellipsis">{ef.refTable || tr("db.structPickTable")}</span>}
+                                      filterPlaceholder={tr("db.structPickTable")}
+                                      items={tables.map((t) => ({ id: t, label: t, selected: ef.refTable === t }))}
+                                      onPick={(t) => { upd({ refTable: t, refCols: [] }); loadRefCols(t); }}
+                                    />
+                                    <ColPick options={refCols[ef.refTable] ?? ef.refCols} value={ef.refCols} onChange={(v) => upd({ refCols: v })} disabled={!ef.refTable} />
+                                    {act("On delete", ef.onDelete, (v) => upd({ onDelete: v }))}
+                                    {act("On update", ef.onUpdate, (v) => upd({ onUpdate: v }))}
+                                  </>
+                                );
+                              })()}
+                            </div>
+                          </td>
+                          {canDropRow(tab) && dropSql(tab, "x") && (
+                            <td className="struct-act"><button className="icon-btn" title={tr("db.structCancelEdit")} onClick={unEdit}><Undo2 /></button></td>
+                          )}
+                        </tr>
+                      );
+                    }
+                    return (
+                      <tr key={i} onDoubleClick={startEdit} title={editable ? tr("db.structDblEdit") : undefined}>
+                        {r.map((v, j) => <td key={j} className={j === 0 ? "" : "muted"} title={v && v.length > 50 ? v : undefined}>{v ?? <span className="null">NULL</span>}</td>)}
+                        {canDropRow(tab) && dropSql(tab, "x") && (
+                          <td className="struct-act">
+                            {editable && <button className="icon-btn" title={tr("db.structEdit")} onClick={startEdit}><Pencil /></button>}
+                            <button className="icon-btn danger" title={tr("db.delete")} onClick={() => void run(tr("db.structDropConfirm", { name: rk }), dropSql(tab, rk)!)}><Trash2 /></button>
+                          </td>
+                        )}
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
               {tab === "indexes" && newIdx.length > 0 && (
@@ -2828,15 +3417,15 @@ function TableStructModal({ conn, dbId, table, tables, onClose, onChanged, getDd
               <Plus /> {tab === "indexes" ? tr("db.structAddIndex") : tab === "fks" ? tr("db.structAddFk") : tr("db.addColumn2")}
             </button>
           )}
-          {tab === "ddl" && typeof cur === "string" && <button onClick={() => void navigator.clipboard.writeText(cur)}><Copy /> {tr("db.structCopyDdl")}</button>}
-          {canReorder && tab === "columns" && !orderChanged && <span className="muted small">{tr("db.structReorderHint")}</span>}
+          {tab === "ddl" && typeof cur === "string" && <button onClick={() => void copyText(cur)}><Copy /> {tr("db.structCopyDdl")}</button>}
+          {dd && !editing && !pending && (tab === "columns" || tab === "indexes" || (tab === "fks" && dd !== "sqlite")) && <span className="muted small">{tr(canReorder && tab === "columns" ? "db.structEditHintReorder" : "db.structEditHint")}</span>}
           <span className="grow" />
           {busy && <Loading variant="inline" label={tr("db.working")} />}
-          {pending > 0 && (
+          {(pending > 0 || editing > 0) && (
             <>
-              <span className="grid-dirty">{tr("db.gridChanges", { n: pending })}</span>
+              {pending > 0 && <span className="grid-dirty">{tr("db.gridChanges", { n: pending })}</span>}
               <button disabled={busy} onClick={discard}><RotateCcw /> {tr("db.gridDiscard")}</button>
-              <button className="primary" disabled={busy} onClick={() => void save()}><Save /> {tr("db.gridSave")}</button>
+              <button className="primary" disabled={busy || !pending} onClick={() => void save()}><Save /> {tr("db.gridSave")}</button>
             </>
           )}
           <button onClick={onClose}><X /> {tr("db.close")}</button>
@@ -2847,10 +3436,52 @@ function TableStructModal({ conn, dbId, table, tables, onClose, onChanged, getDd
 }
 
 /** Chọn nhiều cột (giữ đúng thứ tự bấm — quan trọng với index nhiều cột và khoá ngoại). */
-function ColPick({ options, value, onChange, disabled }: { options: string[]; value: string[]; onChange: (v: string[]) => void; disabled?: boolean }) {
+/** Ô chữ đang sửa trong lưới Edit table — giống ô sửa của lưới kết quả: Enter/rời ô = lưu, Esc = huỷ. */
+function CellText({ initial, placeholder, onCommit, onCancel }: { initial: string; placeholder?: string; onCommit: (v: string) => void; onCancel: () => void }) {
+  const done = useRef(false);
+  return (
+    <input
+      autoFocus
+      className="cell-input mono"
+      defaultValue={initial}
+      placeholder={placeholder}
+      onFocus={(e) => e.currentTarget.select()}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") { e.preventDefault(); done.current = true; onCommit(e.currentTarget.value); }
+        else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); done.current = true; onCancel(); }
+      }}
+      onBlur={(e) => { if (!done.current) onCommit(e.currentTarget.value); }}
+    />
+  );
+}
+
+/** Ô kiểu dữ liệu đang sửa: combobox gợi ý; Enter (khi danh sách đóng) / rời ô = lưu, Esc = huỷ. */
+function TypeCell({ initial, items, filter, onCommit, onCancel }: {
+  initial: string; items: ComboItem[]; filter: (items: ComboItem[], text: string) => ComboItem[];
+  onCommit: (v: string) => void; onCancel: () => void;
+}) {
+  const [v, setV] = useState(initial);
+  const done = useRef(false);
+  const cur = useRef(v);
+  cur.current = v;
+  return (
+    <Combo
+      autoFocus value={v} onChange={setV} items={items} filter={filter}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") { e.preventDefault(); done.current = true; onCommit(cur.current); }
+        else if (e.key === "Escape") { e.stopPropagation(); done.current = true; onCancel(); }
+      }}
+      onBlur={() => { if (!done.current) { done.current = true; onCommit(cur.current); } }}
+    />
+  );
+}
+
+function ColPick({ options, value, onChange, disabled, autoOpen, onClose }: { options: string[]; value: string[]; onChange: (v: string[]) => void; disabled?: boolean; autoOpen?: boolean; onClose?: () => void }) {
   const tr = useT();
   return (
     <Picker
+      autoOpen={autoOpen}
+      onClose={onClose}
       disabled={disabled}
       label={<span className="ellipsis">{value.length ? value.join(", ") : tr("db.structPickColumns")}</span>}
       filterPlaceholder={tr("db.structPickColumns")}
@@ -2920,7 +3551,7 @@ function RoutineModal({ info, driver, running, onClose, onRun }: {
           <span className="muted small">{info.mode === "edit" ? tr("db.savingDropsRecreatesIt") : tr("db.runsAsASingleStatement")}</span>
           <span className="grow" />
           <button onClick={onClose}><X /> {tr("db.cancel")}</button>
-          <button className="primary" disabled={running || !sql.trim()} onClick={() => onRun(sql)}><Play /> {running ? tr("db.running") : tr("db.run")}</button>
+          <button className="primary" disabled={running || !sql.trim()} onClick={() => onRun(sql)}><Play /> <Swap on={running} a={tr("db.running")} b={tr("db.run")} /></button>
         </div>
       </div>
     </Modal>

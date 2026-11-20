@@ -1,6 +1,6 @@
 [package]
 name = "devstation"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 license = "LicenseRef-Proprietary"
 publish = false
@@ -38,6 +38,7 @@ tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 bytes = "1"
+zip = { version = "2", default-features = false }
 
 # Sẽ thêm theo từng giai đoạn:
 #   rusqlite (lưu workspace/history),

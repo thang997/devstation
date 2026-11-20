@@ -1,3 +1,4 @@
+import { renderLog } from "../../shell/renderDebug";
 import { memo, useEffect, useMemo, useState } from "react";
 import { Splitter, useSplitSize } from "../../shell/Resizable";
 import { useT } from "../../store/lang";
@@ -17,6 +18,7 @@ const MAX_LINES = 5000;
 
 /** Thân diff của MỘT file: gutter số dòng cũ | mới, tô màu cả hàng. */
 export const DiffBody = memo(function DiffBody({ file }: { file: DiffFile }) {
+  renderLog("DiffBody");
   const tr = useT();
   if (file.binary) return <div className="empty">{tr("git.binaryFileNoPreview")}</div>;
   if (!file.lines.length) return <div className="empty">{file.status === "R" ? tr("git.renamedOnly") : tr("git.noTextualDifference")}</div>;
@@ -50,6 +52,7 @@ export const DiffBody = memo(function DiffBody({ file }: { file: DiffFile }) {
 
 /** Diff một file đang thay đổi (working tree). Không phải diff chuẩn (lỗi / thông báo) → hiện chữ thô. */
 export const FileDiff = memo(function FileDiff({ text }: { text: string }) {
+  renderLog("FileDiff");
   const parsed = useMemo(() => parseDiff(text), [text]);
   if (!parsed.files.length) return <div className="dv mono"><div className="dv-raw">{text}</div></div>;
   if (parsed.files.length === 1) return <DiffBody file={parsed.files[0]} />;
@@ -83,7 +86,9 @@ function parseHead(head: string[]) {
   return { author: get("Author"), committer: get("Commit"), merge: get("Merge"), subject, body };
 }
 
-export function CommitView({ text, commit, onCopy }: { text: string; commit: Commit; onCopy: (s: string) => void }) {
+/** memo: gõ message commit / tiến trình ở RepoView không vẽ lại khung commit (danh sách file + diff). */
+export const CommitView = memo(function CommitView({ text, commit, onCopy }: { text: string; commit: Commit; onCopy: (s: string) => void }) {
+  renderLog("CommitView");
   const tr = useT();
   const { head, files } = useMemo(() => parseDiff(text), [text]);
   const info = useMemo(() => parseHead(head), [head]);
@@ -93,8 +98,7 @@ export function CommitView({ text, commit, onCopy }: { text: string; commit: Com
   const [open, setOpen] = useState(() => localStorage.getItem("git.commitHeadOpen") === "1");
   const toggle = () => setOpen((v) => { localStorage.setItem("git.commitHeadOpen", v ? "0" : "1"); return !v; });
   useEffect(() => setSel(0), [commit.hash]);
-  const add = files.reduce((a, f) => a + f.add, 0);
-  const del = files.reduce((a, f) => a + f.del, 0);
+  const [add, del] = useMemo(() => [files.reduce((a, f) => a + f.add, 0), files.reduce((a, f) => a + f.del, 0)], [files]);
   const file = files[Math.min(sel, files.length - 1)];
   // Không parse được (lỗi git…) → hiện chữ thô.
   if (!files.length && !info.subject) return <div className="dv mono"><div className="dv-raw">{text}</div></div>;
@@ -137,26 +141,9 @@ export function CommitView({ text, commit, onCopy }: { text: string; commit: Com
       {files.length ? (
         <div className="cv-split">
           <div className="cv-files" style={{ width: listW }}>
-            {files.map((f, i) => {
-              const slash = f.path.lastIndexOf("/");
-              return (
-                <div
-                  key={`${f.path}${i}`}
-                  className={`cv-file ${i === sel ? "on" : ""}`}
-                  onClick={() => setSel(i)}
-                  title={f.oldPath ? `${f.oldPath} → ${f.path}` : f.path}
-                >
-                  <span className={`cv-st st-${f.status}`} title={tr(STATUS_KEY[f.status])}>{f.status}</span>
-                  <span className="grow ellipsis">
-                    <span className="cv-fname">{f.path.slice(slash + 1)}</span>
-                    {slash > 0 && <span className="muted small"> {f.path.slice(0, slash)}</span>}
-                  </span>
-                  {!f.binary && <span className="cv-counts small"><span className="cv-add">+{f.add}</span> <span className="cv-del">−{f.del}</span></span>}
-                </div>
-              );
-            })}
+            {files.map((f, i) => <CvFileRow key={`${f.path}${i}`} f={f} i={i} on={i === sel} onSelect={setSel} />)}
           </div>
-          <Splitter axis="x" onResize={(d) => setListW((w) => w + d)} onReset={() => setListW(280)} />
+          <Splitter axis="x" live="prev" min={160} max={600} onResize={(d) => setListW((w) => w + d)} onReset={() => setListW(280)} />
           <div className="cv-diff">
             {file && (
               <>
@@ -169,4 +156,25 @@ export function CommitView({ text, commit, onCopy }: { text: string; commit: Com
       ) : <div className="empty">{tr("git.noTextualDifference")}</div>}
     </div>
   );
-}
+});
+
+/** Một dòng file của commit: memo → đổi file đang chọn / kéo splitter chỉ vẽ lại dòng đổi. */
+const CvFileRow = memo(function CvFileRow({ f, i, on, onSelect }: { f: DiffFile; i: number; on: boolean; onSelect: (i: number) => void }) {
+  renderLog("CvFileRow");
+  const tr = useT();
+  const slash = f.path.lastIndexOf("/");
+  return (
+    <div
+      className={`cv-file ${on ? "on" : ""}`}
+      onClick={() => onSelect(i)}
+      title={f.oldPath ? `${f.oldPath} → ${f.path}` : f.path}
+    >
+      <span className={`cv-st st-${f.status}`} title={tr(STATUS_KEY[f.status])}>{f.status}</span>
+      <span className="grow ellipsis">
+        <span className="cv-fname">{f.path.slice(slash + 1)}</span>
+        {slash > 0 && <span className="muted small"> {f.path.slice(0, slash)}</span>}
+      </span>
+      {!f.binary && <span className="cv-counts small"><span className="cv-add">+{f.add}</span> <span className="cv-del">−{f.del}</span></span>}
+    </div>
+  );
+});

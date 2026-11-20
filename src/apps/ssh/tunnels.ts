@@ -63,11 +63,16 @@ function setRuntime(id: string, r: TunRuntime) {
 
 export { uid };
 
+// subscribe/getSnapshot cố định (tạo mới mỗi render → React đăng ký lại mỗi lần vẽ).
+const subscribe = (cb: () => void) => { subs.add(cb); return () => { subs.delete(cb); }; };
+const listSnap = () => tunnels;
+const runtimeSnap = () => runtime;
+
 export function useTunnels(): SavedTunnel[] {
-  return useSyncExternalStore((cb) => { subs.add(cb); return () => { subs.delete(cb); }; }, () => tunnels);
+  return useSyncExternalStore(subscribe, listSnap);
 }
 export function useTunnelRuntime(): Record<string, TunRuntime> {
-  return useSyncExternalStore((cb) => { subs.add(cb); return () => { subs.delete(cb); }; }, () => runtime);
+  return useSyncExternalStore(subscribe, runtimeSnap);
 }
 
 export function saveTunnel(t: SavedTunnel) {
