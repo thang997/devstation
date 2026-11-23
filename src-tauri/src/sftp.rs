@@ -677,6 +677,25 @@ pub async fn sftp_touch(state: State<'_, SftpState>, id: String, path: String) -
     .map_err(|e| e.to_string())?
 }
 
+/// Ghi đè nội dung file text (sửa từ preview): ghi file tạm rồi `put` đè lên file remote.
+#[tauri::command]
+pub async fn sftp_write(state: State<'_, SftpState>, id: String, path: String, content: String) -> Result<(), String> {
+    let s = session_of(&state, &id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let tmp = std::env::temp_dir().join(format!("ds-sftp-{}.edit", next_session_id("w")));
+        std::fs::write(&tmp, content.as_bytes()).map_err(|e| e.to_string())?;
+        let tmp_str = tmp.to_string_lossy().to_string();
+        let out = run_cmd(&s, &format!("put {} {}", q(&tmp_str), q(&path)), Duration::from_secs(120));
+        let _ = std::fs::remove_file(&tmp);
+        match looks_like_error(&out?) {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 pub async fn sftp_rm(state: State<'_, SftpState>, id: String, path: String) -> Result<(), String> {
     let s = session_of(&state, &id)?;

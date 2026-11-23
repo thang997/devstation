@@ -5,7 +5,7 @@ import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from "
 import {
   ArrowUp, Check, Container, Copy, CornerLeftUp, Database, Disc, Download, Eye, File, FileArchive, FileAudio,
   FileCode, FileCog, FileImage, FilePlus, FileSpreadsheet, FileText, FileVideo, Folder, FolderOpen, FolderPlus,
-  GitBranch, Globe, Hammer, KeyRound, Link, Lock, Package, Pencil, Plus, Presentation, RefreshCw, Trash2, TriangleAlert, Upload, X,
+  GitBranch, Globe, Hammer, KeyRound, Link, Lock, Package, Pencil, Plus, Presentation, RefreshCw, Save, Trash2, TriangleAlert, Upload, X,
   type LucideIcon,
 } from "lucide-react";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
@@ -13,7 +13,7 @@ import { Modal } from "../../shell/Modal";
 import { ContextMenu, type CtxItem } from "../../shell/ContextMenu";
 import { confirmDialog } from "../../shell/confirm";
 import { useT } from "../../store/lang";
-import { Loading } from "../../shell/Loading";
+import { Loading, Spinner } from "../../shell/Loading";
 import { sftp, errText, type FsDriver, type SftpCfg, type SftpEntry, type SftpPreview } from "./api";
 
 /** Chặn preview ở ~2MB — file lớn hơn chỉ cho Download. */
@@ -193,19 +193,6 @@ export const SftpPanel = memo(function SftpPanel({
   const [mkFileDir, setMkFileDir] = useState<string | null>(null);
   const [mkFileName, setMkFileName] = useState("");
   const [busy, setBusy] = useState(false);
-  /** Vừa copy nội dung preview (hiện ✓ một lúc). */
-  const [copied, setCopied] = useState(false);
-  /** Copy nội dung file text đang xem (đang bôi đen một đoạn trong khung thì chỉ copy đoạn đó). */
-  const copyPreview = async (all: string) => {
-    const s = window.getSelection();
-    const inPreview = !!s?.anchorNode && !!(s.anchorNode.parentElement?.closest(".sftp-text"));
-    const sel = inPreview ? s!.toString() : "";
-    try {
-      await copyText(sel || all);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch { /* clipboard bị chặn */ }
-  };
   const homeRef = useRef("/");
   const cwdRef = useRef("/");
   cwdRef.current = cwd;
@@ -610,33 +597,128 @@ export const SftpPanel = memo(function SftpPanel({
         </Modal>
       )}
 
-      {preview && (
-        <Modal title={preview.e.name} width={820} onClose={() => setPreview(null)}>
-          <div className="sftp-preview">
-            {preview.p.kind === "text" && <pre className="mono sftp-text">{preview.p.data}</pre>}
-            {preview.p.kind === "image" && (
-              <div className="sftp-img"><img src={`data:${preview.p.mime};base64,${preview.p.data}`} alt={preview.e.name} /></div>
-            )}
-            {preview.p.kind === "binary" && (
-              <div className="muted pad">{tr("ssh.binaryFileCanTPreview")} ({human(preview.p.size)})</div>
-            )}
-            {preview.p.kind === "toolarge" && (
-              <div className="muted pad">{tr("ssh.fileTooLargeToPreview")} ({human(preview.p.size)}).</div>
-            )}
-          </div>
-          <div className="toolbar">
-            <span className="muted small">{human(preview.p.size)}</span>
-            <span className="grow" />
-            {preview.p.kind === "text" && (
-              <button onClick={() => void copyPreview(preview.p.data)} title={tr("ssh.copyContentHint")}>
-                <Swap on={copied} a={<><Check /> {tr("ssh.copied")}</>} b={<><Copy /> {tr("ssh.copyContent")}</>} />
-              </button>
-            )}
-            <button onClick={() => setPreview(null)}><X />{tr("ssh.close")}</button>
-            <button className="primary" disabled={busy} onClick={() => void download(preview.e)}><Download /> {tr("ssh.download2")}</button>
-          </div>
-        </Modal>
+      {preview && sid && (
+        <PreviewModal
+          entry={preview.e}
+          p={preview.p}
+          busy={busy}
+          onClose={() => setPreview(null)}
+          onDownload={() => void download(preview.e)}
+          onSave={async (text) => {
+            await drv.write(sid, joinPath(cwd, preview.e.name), text);
+            setPreview((x) => (x ? { ...x, p: { ...x.p, data: text, size: new TextEncoder().encode(text).length } } : x));
+            void load(sid, cwd);
+          }}
+        />
       )}
     </div>
   );
 });
+
+/** Modal xem file: text thì sửa được (Edit → textarea, Ctrl+S lưu, giữ kiểu xuống dòng CRLF/LF của file gốc).
+ *  State gõ phím nằm trong component này → không vẽ lại danh sách file. */
+function PreviewModal({ entry, p, busy, onClose, onDownload, onSave }: {
+  entry: SftpEntry;
+  p: SftpPreview;
+  busy: boolean;
+  onClose: () => void;
+  onDownload: () => void;
+  onSave: (text: string) => Promise<void>;
+}) {
+  const tr = useT();
+  const crlf = p.kind === "text" && p.data.includes("\r\n");
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+  const [copied, setCopied] = useState(false);
+  const orig = p.kind === "text" ? (crlf ? p.data.replace(/\r\n/g, "\n") : p.data) : "";
+  const dirty = editing && draft !== orig;
+
+  const startEdit = () => { setDraft(orig); setErr(""); setEditing(true); };
+  const save = async () => {
+    if (!dirty || saving) return;
+    setSaving(true);
+    setErr("");
+    try {
+      await onSave(crlf ? draft.replace(/\n/g, "\r\n") : draft);
+      setEditing(false);
+    } catch (e) {
+      setErr(errText(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+  const close = async () => {
+    if (dirty && !(await confirmDialog({ message: tr("ssh.discardEdits"), confirmLabel: tr("ssh.discardEditsOk") }))) return;
+    onClose();
+  };
+  const cancelEdit = async () => {
+    if (dirty && !(await confirmDialog({ message: tr("ssh.discardEdits"), confirmLabel: tr("ssh.discardEditsOk") }))) return;
+    setEditing(false);
+    setErr("");
+  };
+  /** Copy nội dung (đang bôi đen một đoạn trong khung xem thì chỉ copy đoạn đó). */
+  const copy = async () => {
+    const sel = window.getSelection();
+    const inPreview = !!sel?.anchorNode && !!sel.anchorNode.parentElement?.closest(".sftp-text");
+    if (await copyText((inPreview && sel!.toString()) || (editing ? draft : p.data))) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }
+  };
+
+  return (
+    <Modal title={entry.name} width={editing ? 980 : 820} onClose={() => void close()}>
+      <div className="sftp-preview">
+        {p.kind === "text" && (editing
+          ? <textarea
+              className="mono sftp-edit"
+              value={draft}
+              autoFocus
+              spellCheck={false}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); void save(); }
+                else if (e.key === "Tab" && !e.shiftKey) {
+                  e.preventDefault();
+                  const t = e.currentTarget, a = t.selectionStart, b = t.selectionEnd;
+                  t.setRangeText("\t", a, b, "end");
+                  setDraft(t.value);
+                }
+              }}
+            />
+          : <pre className="mono sftp-text">{p.data}</pre>)}
+        {p.kind === "image" && (
+          <div className="sftp-img"><img src={`data:${p.mime};base64,${p.data}`} alt={entry.name} /></div>
+        )}
+        {p.kind === "binary" && <div className="muted pad">{tr("ssh.binaryFileCanTPreview")} ({human(p.size)})</div>}
+        {p.kind === "toolarge" && <div className="muted pad">{tr("ssh.fileTooLargeToPreview")} ({human(p.size)}).</div>}
+      </div>
+      {err && <div className="error-box">{err}</div>}
+      <div className="toolbar">
+        <span className="muted small">{human(p.size)}{crlf ? " · CRLF" : ""}{dirty ? ` · ${tr("ssh.unsavedEdits")}` : ""}</span>
+        <span className="grow" />
+        {p.kind === "text" && (
+          <button onClick={() => void copy()} title={tr("ssh.copyContentHint")}>
+            <Swap on={copied} a={<><Check /> {tr("ssh.copied")}</>} b={<><Copy /> {tr("ssh.copyContent")}</>} />
+          </button>
+        )}
+        {editing ? (
+          <>
+            <button disabled={saving} onClick={() => void cancelEdit()}><X />{tr("ssh.cancelEdit")}</button>
+            <button className="primary" disabled={!dirty || saving} onClick={() => void save()} title="Ctrl+S">
+              {saving ? <Spinner /> : <Save />}{tr("ssh.saveFile")}
+            </button>
+          </>
+        ) : (
+          <>
+            <button onClick={() => void close()}><X />{tr("ssh.close")}</button>
+            {p.kind === "text" && <button onClick={startEdit}><Pencil />{tr("ssh.editFile")}</button>}
+            <button className="primary" disabled={busy} onClick={onDownload}><Download /> {tr("ssh.download2")}</button>
+          </>
+        )}
+      </div>
+    </Modal>
+  );
+}

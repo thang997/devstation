@@ -131,6 +131,7 @@ export const sftp = {
   put: (id: string, local: string, remote: string) => invoke<void>("sftp_put", { id, local, remote }),
   mkdir: (id: string, path: string) => invoke<void>("sftp_mkdir", { id, path }),
   touch: (id: string, path: string) => invoke<void>("sftp_touch", { id, path }),
+  write: (id: string, path: string, content: string) => invoke<void>("sftp_write", { id, path, content }),
   rm: (id: string, path: string) => invoke<void>("sftp_rm", { id, path }),
   rmdir: (id: string, path: string) => invoke<void>("sftp_rmdir", { id, path }),
   rename: (id: string, from: string, to: string) => invoke<void>("sftp_rename", { id, from, to }),
@@ -148,6 +149,8 @@ export interface FsDriver {
   put(id: string, local: string, remote: string): Promise<void>;
   mkdir(id: string, path: string): Promise<void>;
   touch(id: string, path: string): Promise<void>;
+  /** Ghi đè nội dung file text (sửa từ preview). */
+  write(id: string, path: string, content: string): Promise<void>;
   rm(id: string, path: string): Promise<void>;
   rmdir(id: string, path: string): Promise<void>;
   rename(id: string, from: string, to: string): Promise<void>;
@@ -182,6 +185,7 @@ export function dockerFs(cfg: ConnectCfg, container: string): FsDriver {
     put: async () => Promise.reject(new Error(t("ssh.containerUploadUnsupported"))),
     mkdir: (_id, path) => invoke<void>("docker_fs_mkdir", { ...C, path }),
     touch: (_id, path) => invoke<void>("docker_fs_touch", { ...C, path }),
+    write: (_id, path, content) => invoke<void>("docker_fs_write", { ...C, path, content }),
     rm: (_id, path) => invoke<void>("docker_fs_rm", { ...C, path }),
     rmdir: (_id, path) => invoke<void>("docker_fs_rmdir", { ...C, path }),
     rename: (_id, from, to) => invoke<void>("docker_fs_rename", { ...C, from, to }),

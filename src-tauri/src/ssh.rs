@@ -602,7 +602,7 @@ struct StatSession {
     _master: Mutex<Box<dyn MasterPty + Send>>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectCfg {
     host: String,
@@ -1619,6 +1619,29 @@ pub async fn docker_fs_rename(cfg: ConnectCfg, container: String, from: String, 
 pub async fn docker_fs_touch(cfg: ConnectCfg, container: String, path: String) -> Result<(), String> {
     let cmd = format!("docker exec {} touch {} 2>&1", shq(&container), shq(&path));
     let out = ssh_run_cmd(cfg, cmd, 20, 100_000).await?;
+    docker_op_result(&out)
+}
+
+/// Ghi đè nội dung file trong container (sửa từ preview). Nội dung đi dạng base64 theo từng khúc
+/// (`printf … >> tmp` trong container — giới hạn độ dài dòng lệnh Windows ~32K), cuối cùng `base64 -d tmp > path`.
+/// Dùng `cat >` để giữ owner/quyền của file gốc.
+#[tauri::command]
+pub async fn docker_fs_write(cfg: ConnectCfg, container: String, path: String, content: String) -> Result<(), String> {
+    use base64::engine::general_purpose::STANDARD;
+    let b64 = STANDARD.encode(content.as_bytes());
+    let tmp = format!("/tmp/.ds-edit-{}", std::process::id());
+    const CHUNK: usize = 12_000;
+    let chunks: Vec<&str> = if b64.is_empty() { vec![""] } else { b64.as_bytes().chunks(CHUNK).map(|c| std::str::from_utf8(c).unwrap_or("")).collect() };
+    for (i, c) in chunks.iter().enumerate() {
+        let redir = if i == 0 { ">" } else { ">>" };
+        let script = format!("printf %s '{c}' {redir} {}", shq(&tmp));
+        let cmd = format!("docker exec {} sh -c {} 2>&1", shq(&container), shq(&script));
+        let out = ssh_run_cmd(cfg.clone(), cmd, 30, 100_000).await?;
+        docker_op_result(&out)?;
+    }
+    let script = format!("base64 -d {t} > {t}.d && cat {t}.d > {p}; r=$?; rm -f {t} {t}.d; exit $r", t = shq(&tmp), p = shq(&path));
+    let cmd = format!("docker exec {} sh -c {} 2>&1", shq(&container), shq(&script));
+    let out = ssh_run_cmd(cfg, cmd, 30, 100_000).await?;
     docker_op_result(&out)
 }
 
