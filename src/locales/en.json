@@ -1048,7 +1048,12 @@
     "working": "Working…",
     "yourMachine": "your machine",
     "currentPath": "Current path",
-    "portInvalid": "Port must be between 1 and 65535"
+    "portInvalid": "Port must be between 1 and 65535",
+    "timedOut": "timed out",
+    "connectTimeout": "Could not connect within {s} seconds — the server may be off, blocked by a firewall, or the address/port is wrong.",
+    "connectTimeoutTitle": "Connection timed out",
+    "connectTimeoutClose": "Could not connect to {host} within {s} seconds. Close this tab?",
+    "closeTab": "Close tab"
   },
   "tools": {
     "showRaw": "Raw",

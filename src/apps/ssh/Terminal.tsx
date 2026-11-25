@@ -9,10 +9,21 @@ import { t } from "../../store/lang";
 
 /** Terminal SSH: mở ConPTY qua ssh.exe, nối hai chiều với xterm. */
 // memo: tab cha vẽ lại (trạng thái, cd…) không vẽ lại terminal; mọi thứ chạy trong effect một lần.
-export const SshTerminal = memo(function SshTerminal({ cfg, onStatus, onCd }: { cfg: Omit<ConnectCfg, "cols" | "rows">; onStatus?: (s: string) => void; onCd?: (arg: string) => void }) {
+/** Không nhận được byte nào từ server sau ngần này → coi là không kết nối được (máy tắt / firewall chặn / sai địa chỉ). */
+export const CONNECT_TIMEOUT_S = 10;
+
+export const SshTerminal = memo(function SshTerminal({ cfg, onStatus, onCd, onTimeout }: {
+  cfg: Omit<ConnectCfg, "cols" | "rows">;
+  onStatus?: (s: string) => void;
+  onCd?: (arg: string) => void;
+  /** Hết CONNECT_TIMEOUT_S giây mà server chưa trả lời gì (phiên đã bị dừng). */
+  onTimeout?: () => void;
+}) {
   const box = useRef<HTMLDivElement>(null);
   const onCdRef = useRef(onCd);
   onCdRef.current = onCd;
+  const onTimeoutRef = useRef(onTimeout);
+  onTimeoutRef.current = onTimeout;
 
   useEffect(() => {
     const el = box.current;
@@ -57,21 +68,44 @@ export const SshTerminal = memo(function SshTerminal({ cfg, onStatus, onCd }: { 
     let alive = true;
     let closed = false; // phiên đã đóng/lỗi → nhấn R để kết nối lại
     const unlisteners: Array<() => void> = [];
+    /** Lượt mở phiên hiện tại — kết quả của lượt cũ (đã timeout / mở lại) bị bỏ qua. */
+    let attempt = 0;
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    const stopWatchdog = () => { if (watchdog) { clearTimeout(watchdog); watchdog = undefined; } };
 
-    /** Mở (hoặc mở lại) một phiên ssh cho terminal này. */
+    /** Mở (hoặc mở lại) một phiên ssh cho terminal này.
+     * "connected" chỉ khi server đã gửi byte đầu tiên (banner, hỏi mật khẩu, dấu nhắc…) — chạy được ssh.exe chưa phải
+     * là kết nối được. Hết CONNECT_TIMEOUT_S giây im lặng → dừng phiên, báo lỗi, gọi onTimeout (tab hỏi có đóng không). */
     const openSession = async () => {
       closed = false;
+      const my = ++attempt;
+      let gotData = false;
+      stopWatchdog();
+      onStatus?.("connecting");
+      watchdog = setTimeout(() => {
+        watchdog = undefined;
+        if (!alive || my !== attempt || gotData || closed) return;
+        attempt++; // phiên đang treo không còn là phiên hiện tại
+        if (sid) void ssh.disconnect(sid).catch(() => {});
+        sid = null;
+        closed = true;
+        term.write(`\r\n\x1b[31m${t("ssh.connectTimeout", { s: CONNECT_TIMEOUT_S })}\x1b[0m\r\n\x1b[90m[${t("ssh.pressRToRetry")}]\x1b[0m\r\n`);
+        onStatus?.("timeout");
+        onTimeoutRef.current?.();
+      }, CONNECT_TIMEOUT_S * 1000);
       try {
-        onStatus?.("connecting");
         const id = await ssh.connect({ ...cfg, cols: term.cols, rows: term.rows }, (bytes) => {
-          if (alive) term.write(bytes);
+          if (!alive || my !== attempt) return;
+          if (!gotData) { gotData = true; stopWatchdog(); onStatus?.("connected"); }
+          term.write(bytes);
         });
-        if (!alive) { void ssh.disconnect(id); return; }
+        if (!alive || my !== attempt) { void ssh.disconnect(id).catch(() => {}); return; }
         sid = id;
-        onStatus?.("connected");
         void ssh.resize(id, term.cols, term.rows).catch(() => {});
         term.focus();
       } catch (e) {
+        if (my !== attempt) return;
+        stopWatchdog();
         sid = null;
         closed = true;
         term.write(`\r\n\x1b[31m${errText(e)}\x1b[0m\r\n\x1b[90m[${t("ssh.pressRToRetry")}]\x1b[0m\r\n`);
@@ -85,6 +119,7 @@ export const SshTerminal = memo(function SshTerminal({ cfg, onStatus, onCd }: { 
       }));
       unlisteners.push(await listen<{ id: string }>("ssh-closed", (ev) => {
         if (ev.payload.id === sid) {
+          stopWatchdog();
           sid = null;
           closed = true;
           term.write(`\r\n\x1b[90m[${t("ssh.sessionClosedPressRToReconnect")}]\x1b[0m\r\n`);
@@ -122,6 +157,7 @@ export const SshTerminal = memo(function SshTerminal({ cfg, onStatus, onCd }: { 
 
     return () => {
       alive = false;
+      stopWatchdog();
       ro.disconnect();
       if (raf) cancelAnimationFrame(raf);
       unlisteners.forEach((u) => u());

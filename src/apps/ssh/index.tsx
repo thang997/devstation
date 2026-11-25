@@ -957,8 +957,19 @@ function TabView({ tab }: { tab: Tab }) {
     : status === "connecting" ? tr("ssh.connecting")
     : status === "closed" ? tr("ssh.closed")
     : status === "error" ? tr("ssh.error")
+    : status === "timeout" ? tr("ssh.timedOut")
     : status;
-  const statusDot = status === "connected" ? "green" : status === "error" ? "red" : status === "connecting" ? "yellow" : "grey";
+  const statusDot = status === "connected" ? "green" : status === "error" || status === "timeout" ? "red" : status === "connecting" ? "yellow" : "grey";
+  // Quá CONNECT_TIMEOUT_S giây không kết nối được: chuyển tới tab này rồi hỏi có đóng tab không.
+  const onTimeout = useCallback(() => {
+    const wb = useWorkbench.getState();
+    wb.focusTab(tab.id);
+    void confirmDialog({
+      title: tr("ssh.connectTimeoutTitle"),
+      message: tr("ssh.connectTimeoutClose", { host: `${String(p.user)}@${String(p.host)}:${String(p.port || 22)}`, s: 10 }),
+      confirmLabel: tr("ssh.closeTab"),
+    }).then((ok) => { if (ok) useWorkbench.getState().closeTab(tab.id); });
+  }, [tab.id, tr]); // eslint-disable-line react-hooks/exhaustive-deps
   // SFTP mở sẵn mỗi khi vào phiên (bên trái terminal).
   const [filesOpen, setFilesOpen] = useState(true);
   const [filesW, setFilesW] = useSplitSize("ssh-files", FILES_DEFAULT, FILES_MIN, FILES_MAX);
@@ -1037,7 +1048,7 @@ function TabView({ tab }: { tab: Tab }) {
             <Splitter axis="x" live="prev" min={FILES_MIN} max={FILES_MAX} onResize={(d) => setFilesW((w) => w + d)} onReset={() => setFilesW(FILES_DEFAULT)} />
           )}
           <div className="ssh-term-wrap">
-            <Suspense fallback={null}><SshTerminal cfg={execCfg} onStatus={setStatus} /></Suspense>
+            <Suspense fallback={null}><SshTerminal cfg={execCfg} onStatus={setStatus} onTimeout={onTimeout} /></Suspense>
           </div>
         </div>
       </div>
@@ -1092,6 +1103,7 @@ function TabView({ tab }: { tab: Tab }) {
               cfg={cfg}
               onStatus={setStatus}
               onCd={onCd}
+              onTimeout={onTimeout}
             />
           </Suspense>
           <SshStats cfg={cfg} />

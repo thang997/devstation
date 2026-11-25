@@ -1048,7 +1048,12 @@
     "working": "Đang xử lý…",
     "yourMachine": "máy bạn",
     "currentPath": "Đường dẫn hiện tại",
-    "portInvalid": "Cổng phải từ 1 đến 65535"
+    "portInvalid": "Cổng phải từ 1 đến 65535",
+    "timedOut": "quá thời gian",
+    "connectTimeout": "Không kết nối được sau {s} giây — server có thể đang tắt, bị firewall chặn, hoặc sai địa chỉ/cổng.",
+    "connectTimeoutTitle": "Không kết nối được",
+    "connectTimeoutClose": "Không kết nối được tới {host} sau {s} giây. Đóng tab này?",
+    "closeTab": "Đóng tab"
   },
   "tools": {
     "showRaw": "Raw",
