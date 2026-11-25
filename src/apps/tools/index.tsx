@@ -1,12 +1,13 @@
 import { renderLog } from "../../shell/renderDebug";
 import { copyText } from "../../shell/clipboard";
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import { Braces, CircleCheck, CircleX, Copy, Download, FileUp, Info, KeyRound, TriangleAlert, X } from "lucide-react";
+import { Binary, Braces, CircleCheck, CircleX, Copy, Download, FileCode, FileKey, FileUp, Info, KeyRound, TriangleAlert, Wrench, X, type LucideIcon } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { JsonView, parseJsonValue } from "../../shell/JsonView";
 import type { AppModule, Tab } from "../types";
 import { useWorkbench } from "../../store/workbench";
 import { TabbedLayout } from "../../shell/TabbedLayout";
+import { listNav, rowKey } from "../../shell/listNav";
 import { t, useT } from "../../store/lang";
 import type { TKey } from "../../store/lang";
 import { parseCsrOrCert, spkiToJwk, spkiToPem, verifyCsrSignature, type CsrInfo } from "./csr";
@@ -28,25 +29,70 @@ function decodeJwt(s: string): { header: unknown; payload: unknown } {
   return { header: JSON.parse(b64urlToText(parts[0])), payload: JSON.parse(b64urlToText(parts[1])) };
 }
 
+/** Base64 → chữ; thử base64 chuẩn trước, lỗi thì thử base64url (-_ → +/, bỏ khoảng trắng, thêm '='). */
+function decodeB64(s: string): string {
+  const toText = (b: string) => new TextDecoder().decode(Uint8Array.from(atob(b), (c) => c.charCodeAt(0)));
+  try {
+    return toText(s.trim());
+  } catch {
+    let u = s.replace(/\s+/g, "").replace(/-/g, "+").replace(/_/g, "/");
+    if (u.length % 4) u += "=".repeat(4 - (u.length % 4));
+    try {
+      return toText(u);
+    } catch {
+      throw new Error(t("tools.b64Invalid"));
+    }
+  }
+}
+
+/** Lỗi JSON.parse → "line N, column M: <message>" (tính từ "position N", hoặc lấy "(line N column M)" của V8 mới). */
+function jsonErrorText(e: unknown, src: string): string {
+  const msg = e instanceof Error ? e.message : String(e);
+  const base = msg.replace(/\s*\(line \d+ column \d+\)/, "").replace(/\s+(in JSON )?at position \d+/, "");
+  const lc = /\(line (\d+) column (\d+)\)/.exec(msg);
+  if (lc) return `line ${lc[1]}, column ${lc[2]}: ${base}`;
+  const pos = /position (\d+)/.exec(msg);
+  if (!pos) return msg;
+  const before = src.slice(0, Number(pos[1]));
+  const line = before.split("\n").length;
+  const col = before.length - before.lastIndexOf("\n");
+  return `line ${line}, column ${col}: ${base}`;
+}
+
 /** Mỗi tool là hàm thuần: vào chuỗi, ra chuỗi hoặc ném lỗi (lỗi là kết quả bình thường). */
-const TOOLS: Record<ToolId, { name: string; run: (s: string) => string }> = {
+const TOOLS: Record<ToolId, { name: string; icon: LucideIcon; run: (s: string) => string }> = {
   "base64-decode": {
     name: "Base64 Decode",
-    run: (s) => new TextDecoder().decode(Uint8Array.from(atob(s.trim()), (c) => c.charCodeAt(0))),
+    icon: Binary,
+    run: decodeB64,
   },
   "base64-encode": {
     name: "Base64 Encode",
+    icon: FileCode,
     run: (s) => bytesToB64(new TextEncoder().encode(s)),
   },
-  json: { name: "JSON Format", run: (s) => JSON.stringify(JSON.parse(s), null, 2) },
+  json: {
+    name: "JSON Format",
+    icon: Braces,
+    run: (s) => {
+      let v: unknown;
+      try {
+        v = JSON.parse(s);
+      } catch (e) {
+        throw new Error(jsonErrorText(e, s));
+      }
+      return JSON.stringify(v, null, 2);
+    },
+  },
   jwt: {
     name: "JWT Decode",
+    icon: KeyRound,
     run: (s) => {
       const { header, payload } = decodeJwt(s);
       return `// header\n${JSON.stringify(header, null, 2)}\n\n// payload\n${JSON.stringify(payload, null, 2)}`;
     },
   },
-  csr: { name: "CSR → Public key", run: (s) => spkiToPem(parseCsrOrCert(s).spki) },
+  csr: { name: "CSR → Public key", icon: FileKey, run: (s) => spkiToPem(parseCsrOrCert(s).spki) },
 };
 
 export function openTool(id: ToolId, input = "") {
@@ -62,13 +108,41 @@ function Sidebar() {
   const tr = useT();
   const activeTabId = useWorkbench((s) => s.apps.tools.activeTabId);
   return (
-    <div className="side-list">
+    <div className="side-list" role="listbox" onKeyDown={(e) => listNav(e, { row: ".side-item", select: true })}>
       <div className="side-head"><span>{tr("tools.tools")}</span></div>
-      {(Object.keys(TOOLS) as ToolId[]).map((id) => (
-        <div key={id} className={`side-item${activeTabId === `tools:${id}` ? " sel" : ""}`} onClick={() => openTool(id)}>
-          {TOOLS[id].name}
-        </div>
-      ))}
+      {(Object.keys(TOOLS) as ToolId[]).map((id) => {
+        const Icon = TOOLS[id].icon;
+        return (
+          <div
+            key={id}
+            className={`side-item${activeTabId === `tools:${id}` ? " sel" : ""}`}
+            tabIndex={0}
+            role="option"
+            aria-selected={activeTabId === `tools:${id}`}
+            onClick={() => openTool(id)}
+            onKeyDown={(e) => rowKey(e, { Enter: () => openTool(id) })}
+          >
+            <Icon />{TOOLS[id].name}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Màn chào khi chưa mở tool nào: liệt kê tool thành nút bấm. */
+function ToolsEmpty() {
+  const tr = useT();
+  return (
+    <div className="welcome">
+      <h1><Wrench /> {tr("apps.tools.title")}</h1>
+      <p className="muted">{tr("apps.tools.description")}</p>
+      <div className="toolbar tools-welcome">
+        {(Object.keys(TOOLS) as ToolId[]).map((id) => {
+          const Icon = TOOLS[id].icon;
+          return <button key={id} onClick={() => openTool(id)}><Icon />{TOOLS[id].name}</button>;
+        })}
+      </div>
     </div>
   );
 }
@@ -403,6 +477,7 @@ function CsrView({ initial }: { initial: string }) {
   const [fmt, setFmt] = useState<"pem" | "jwk">("pem");
   const [over, setOver] = useState(false);
   const [sig, setSig] = useState<boolean | null | "busy">(null);
+  const [saveErr, setSaveErr] = useState("");
   const pick = useRef<HTMLInputElement>(null);
 
   // Chỉ parse lại khi nội dung đổi (không parse khi đổi PEM/JWK hay trạng thái kiểm chữ ký).
@@ -484,8 +559,15 @@ function CsrView({ initial }: { initial: string }) {
                 <button className={fmt === "pem" ? "on" : ""} onClick={() => setFmt("pem")}><KeyRound />PEM</button>
                 <button className={fmt === "jwk" ? "on" : ""} onClick={() => setFmt("jwk")} disabled={!jwk}><Braces />JWK</button>
                 <span className="grow" />
-                <button onClick={() => void saveKey(output, fmt)} disabled={!output}><Download />{tr("tools.csrSave")}</button>
+                <button
+                  onClick={() => {
+                    setSaveErr("");
+                    saveKey(output, fmt).catch((e) => setSaveErr(e instanceof Error ? e.message : String(e)));
+                  }}
+                  disabled={!output}
+                ><Download />{tr("tools.csrSave")}</button>
               </div>
+              {saveErr && <div className="error-box"><TriangleAlert /> {saveErr}</div>}
             </div>
           )}
         </ResultPane>
@@ -497,11 +579,13 @@ function CsrView({ initial }: { initial: string }) {
 async function saveKey(content: string, fmt: "pem" | "jwk") {
   const { save } = await import("@tauri-apps/plugin-dialog");
   const path = await save({ defaultPath: fmt === "pem" ? "public.pem" : "public.jwk.json", filters: [{ name: fmt.toUpperCase(), extensions: [fmt === "pem" ? "pem" : "json"] }] });
-  if (typeof path === "string") await invoke("write_text_file", { path, content });
+  if (typeof path !== "string") return;
+  await invoke("write_text_file", { path, content });
+  useWorkbench.getState().log(`${t("tools.savedTo")} → ${path}`);
 }
 
 const toolsApp: AppModule = {
-  View: () => <TabbedLayout appId="tools" Sidebar={Sidebar} TabView={TabView} />,
+  View: () => <TabbedLayout appId="tools" Sidebar={Sidebar} TabView={TabView} empty={<ToolsEmpty />} />,
   commands: () =>
     (Object.keys(TOOLS) as ToolId[]).map((id) => ({
       id: `tools.${id}`,

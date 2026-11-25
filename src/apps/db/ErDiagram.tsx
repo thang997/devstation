@@ -423,7 +423,7 @@ export function ErDiagram({ dbId, connKey, db, focus: focusTable, onClose, onOpe
     const v = (n: string, d: string) => cs.getPropertyValue(n).trim() || d;
     return {
       bg: v("--bg", "#0d1117"), box: v("--bg-2", "#161b22"), head: v("--bg-3", "#21262d"), line: v("--line", "#30363d"),
-      fg: v("--fg", "#e6edf3"), muted: v("--muted", "#8b949e"), primary: v("--primary", "#1f6feb"), warn: "#d29922",
+      fg: v("--fg", "#e6edf3"), muted: v("--muted", "#8b949e"), primary: v("--primary", "#1f6feb"), warn: v("--warn", "#d29922"),
     };
   }, []);
 

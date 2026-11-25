@@ -156,7 +156,7 @@ export function UpdateHost() {
             {upd.body && <pre className="sql-preview mono" style={{ maxHeight: 200, overflow: "auto", whiteSpace: "pre-wrap" }}>{upd.body}</pre>}
             {s.kind === "downloading" && (
               <div>
-                <div className="update-bar"><div style={{ width: s.total ? `${Math.min(100, (s.done / s.total) * 100)}%` : "30%" }} /></div>
+                <div className={`update-bar${s.total ? "" : " indeterminate"}`}><div style={s.total ? { width: `${Math.min(100, (s.done / s.total) * 100)}%` } : undefined} /></div>
                 <div className="muted small">{tr("shell.downloadingInBackground")}</div>
               </div>
             )}

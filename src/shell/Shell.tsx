@@ -106,8 +106,8 @@ export function Shell() {
         )}
         <span className="grow" />
         <UpdateButton />
-        {current && <span>{tabCount} tab</span>}
-        <button className="sb-lang" title={tr("shell.switchToVietnamese")} onClick={toggleLang}>
+        {current && <span>{tr("shell.tabCount", { n: tabCount })}</span>}
+        <button className="sb-lang" title={tr("shell.switchToVietnamese")} aria-label={tr("shell.switchToVietnamese")} onClick={toggleLang}>
           {lang === "en" ? "EN" : "VI"}
         </button>
         <button
@@ -144,8 +144,8 @@ function OutputPanel() {
   return (
     <section className="panel">
       <div className="pane-title">
-        OUTPUT <span className="grow" />
-        <button className="icon-btn" onClick={useWorkbench.getState().togglePanel}><X /></button>
+        {tr("shell.output")} <span className="grow" />
+        <button className="icon-btn" title={tr("shell.closePanel")} aria-label={tr("shell.closePanel")} onClick={useWorkbench.getState().togglePanel}><X /></button>
       </div>
       <pre className="mono log">{logs.join("\n") || tr("shell.noLogsYet")}</pre>
     </section>

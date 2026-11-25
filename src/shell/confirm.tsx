@@ -51,7 +51,7 @@ export function ConfirmHost() {
   return (
     <Modal title={req.title} width={420} onClose={() => close(false)}>
       <div className="form account-form">
-        <div className="muted small" style={{ whiteSpace: "pre-line" }}>{req.message}</div>
+        <div style={{ whiteSpace: "pre-line" }}>{req.message}</div>
         <div className="toolbar">
           <span className="grow" />
           <button onClick={() => close(false)}><X />{tr("shell.cancel")}</button>

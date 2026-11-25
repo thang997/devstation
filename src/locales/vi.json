@@ -27,6 +27,10 @@
     "registry": {
       "title": "Registry",
       "description": "Duyệt Harbor, tải image về máy (.tar)"
+    },
+    "translate": {
+      "title": "Dịch trang web",
+      "description": "Mở trang web bất kỳ, dịch sang ngôn ngữ của bạn theo thời gian thực"
     }
   },
   "db": {
@@ -385,7 +389,10 @@
     "erExternal": "{n} khoá ngoại trỏ sang database khác (không vẽ)",
     "erExportHtml": "Xuất HTML",
     "erExportHtmlHint": "File HTML độc lập: mở bằng trình duyệt để zoom (cuộn chuột), kéo di chuyển, tìm bảng, rê chuột tô sáng quan hệ",
-    "erHtmlHelp": "cuộn = zoom · kéo = di chuyển · double-click chỗ trống = vừa khung · rê/bấm bảng = tô sáng quan hệ"
+    "erHtmlHelp": "cuộn = zoom · kéo = di chuyển · double-click chỗ trống = vừa khung · rê/bấm bảng = tô sáng quan hệ",
+    "discardGridEditsConfirm": "Còn {n} ô sửa trên bảng kết quả chưa lưu. Bỏ các thay đổi đó và chạy tiếp?",
+    "discardAndRun": "Bỏ và chạy",
+    "copyTsv": "Copy (TSV)"
   },
   "git": {
     "actions": "Thao tác",
@@ -590,7 +597,10 @@
     "statusRenamed": "Renamed",
     "statusCopied": "Copied",
     "collapseCommitInfo": "Thu gọn thông tin commit",
-    "expandCommitInfo": "Mở rộng thông tin commit (message, tác giả, SHA…)"
+    "expandCommitInfo": "Mở rộng thông tin commit (message, tác giả, SHA…)",
+    "commitMessagePlaceholder": "Nội dung commit (Ctrl+Enter)",
+    "loadMore": "Tải thêm…",
+    "noStashToPop": "Không có stash để pop"
   },
   "http": {
     "add": "Thêm",
@@ -695,7 +705,17 @@
     "value2": "giá trị",
     "variableName": "tên biến",
     "variablesVarsButtonInSidebar": "(nút Biến ở sidebar).",
-    "waitingForResponse": "Đang chờ phản hồi…"
+    "waitingForResponse": "Đang chờ phản hồi…",
+    "markProd": "Đánh dấu thư mục PROD",
+    "unmarkProd": "Bỏ đánh dấu PROD",
+    "confirmSendProd": "Request này nằm trong thư mục PROD. Gửi {method} {url}?",
+    "sendToProd": "Gửi lên PROD",
+    "copyResponse": "Copy nội dung response",
+    "deleteVarConfirm": "Xoá biến {name}?",
+    "username": "Username",
+    "password": "Password",
+    "unsavedChanges": "chưa lưu",
+    "dismiss": "Ẩn"
   },
   "redis": {
     "browse": "Chọn…",
@@ -774,7 +794,10 @@
     "treeViewFoldByClickFor": "Dạng cây (gấp theo “:”) — bấm để xem phẳng",
     "useTlsRediss": "Dùng TLS (rediss://)",
     "value": "Giá trị",
-    "viaTheSshServerAbove": "qua SSH server trên."
+    "viaTheSshServerAbove": "qua SSH server trên.",
+    "notConnected": "chưa kết nối",
+    "noKeysHint": "Thử pattern * hoặc chọn database khác.",
+    "showAllKeys": "Hiện tất cả (*)"
   },
   "shell": {
     "copied": "Đã copy vào clipboard",
@@ -858,7 +881,10 @@
     "updateReady": "Bản {version} đã tải xong — khởi động lại để cập nhật",
     "viewing": "đang xem",
     "viewing2": " (đang xem)",
-    "youReOnTheLatestVersion": "Bạn đang dùng phiên bản mới nhất."
+    "youReOnTheLatestVersion": "Bạn đang dùng phiên bản mới nhất.",
+    "tabCount": "{n} tab",
+    "output": "OUTPUT",
+    "closePanel": "Đóng panel"
   },
   "ssh": {
     "addAHostToOpenA": "Thêm host để mở terminal thật (qua ssh.exe của máy), tạo tunnel kiểu MobaXterm (-L/-R/-D).",
@@ -1020,7 +1046,9 @@
     "uploadToCurrentFolder": "Tải file lên thư mục này…",
     "viaJump": "qua jump host {name}",
     "working": "Đang xử lý…",
-    "yourMachine": "máy bạn"
+    "yourMachine": "máy bạn",
+    "currentPath": "Đường dẫn hiện tại",
+    "portInvalid": "Cổng phải từ 1 đến 65535"
   },
   "tools": {
     "showRaw": "Raw",
@@ -1078,7 +1106,9 @@
     "jwtNotYetValid": "Chưa có hiệu lực — từ {p}",
     "jwtActiveSince": "Có hiệu lực từ {p}",
     "jwtIssuedAt": "Phát hành lúc {p}",
-    "jwtIssuedFuture": "Thời điểm phát hành ở tương lai: {p}"
+    "jwtIssuedFuture": "Thời điểm phát hành ở tương lai: {p}",
+    "b64Invalid": "Base64 không hợp lệ (cũng không phải base64url)",
+    "savedTo": "✓ Đã lưu"
   },
   "registry": {
     "anonymous": "ẩn danh",
@@ -1151,6 +1181,45 @@
     "untagged": "không tag",
     "user": "Tài khoản",
     "userHint": "Tài khoản Harbor, hoặc robot account (robot$tên + secret). Để trống = chỉ xem project public.",
-    "welcome": "Duyệt project / repository / tag trên Harbor và tải image về thành file .tar — máy không cần cài Docker."
+    "welcome": "Duyệt project / repository / tag trên Harbor và tải image về thành file .tar — máy không cần cài Docker.",
+    "layersN": "{done}/{total} layer",
+    "cancelled": "Đã huỷ",
+    "selectRepo": "Chọn {name} để tải hàng loạt",
+    "clearFinished": "Xoá mục đã xong",
+    "moreJobs": "+{n} mục nữa"
+  },
+  "webtr": {
+    "intro": "Mở trang thật trong cửa sổ riêng và dịch chữ theo thời gian thực, cả phần tải thêm sau. Đăng nhập, điền form vẫn dùng bình thường.",
+    "open": "Mở và dịch",
+    "from": "Từ",
+    "to": "Sang",
+    "provider": "Dịch vụ dịch",
+    "providerGoogle": "Google (miễn phí, không chính thức)",
+    "providerGoogleCloud": "Google Cloud Translation (API key)",
+    "providerDeepl": "DeepL (API key)",
+    "googleFreeHint": "Endpoint không chính thức — Google có thể giới hạn hoặc chặn. Cần ổn định thì chọn Google Cloud hoặc DeepL.",
+    "keySaved": "Đã lưu API key trong keyring của hệ thống",
+    "keyPlaceholder": "Dán API key…",
+    "saveKey": "Lưu key",
+    "forgetKey": "Quên key",
+    "test": "Kiểm tra",
+    "privacyHint": "Chữ trên trang được gửi tới dịch vụ đã chọn — đừng dùng cho trang nội bộ hoặc nhạy cảm.",
+    "recent": "Gần đây",
+    "recentHint": "Bấm để điền · double-click hoặc Enter để mở",
+    "remove": "Xoá",
+    "mustRunInsideTheApp": "Phải chạy trong app DevStation",
+    "barShowOriginal": "Bản gốc",
+    "barShowTranslated": "Dịch",
+    "barOriginal": "Đang xem bản gốc",
+    "barTranslating": "Đang dịch…",
+    "barTranslated": "Đã dịch",
+    "barNoBridge": "Không kết nối được DevStation",
+    "auto": "Tự nhận diện",
+    "swap": "Đảo chiều ngôn ngữ",
+    "needKey": "Cần lưu API key cho dịch vụ này trước.",
+    "sameLang": "Ngôn ngữ nguồn và đích giống nhau.",
+    "opened": "Đã mở trong cửa sổ mới",
+    "clearRecent": "Xoá danh sách gần đây",
+    "saveKeyFailed": "Không lưu được key: {err}"
   }
 }

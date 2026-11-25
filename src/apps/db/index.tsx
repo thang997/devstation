@@ -1,7 +1,8 @@
 import { Swap } from "../../shell/Swap";
 import { renderLog } from "../../shell/renderDebug";
 import { copyText } from "../../shell/clipboard";
-import { memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
+import { listNav, rowKey } from "../../shell/listNav";
+import { memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import type { AppModule, Tab } from "../types";
@@ -381,6 +382,13 @@ function Sidebar() {
   return (
     <div
       className="side-list fill"
+      onKeyDown={(e) => {
+        // ↑/↓/Home/End giữa kết nối + thư mục; tới hàng kết nối thì chọn (click thư mục = gập/mở nên không click).
+        if (listNav(e, { row: ".side-item[tabindex], .tree-row[tabindex]" })) {
+          const a = document.activeElement as HTMLElement | null;
+          if (a?.classList.contains("side-item")) a.click();
+        }
+      }}
       onDragOver={(e) => { if (dragId) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; } }}
       onDrop={(e) => { if (dragId) { e.preventDefault(); dropOn(null, ""); } }}
       onContextMenu={(e) => {
@@ -411,7 +419,13 @@ function Sidebar() {
             className="tree-row"
             tabIndex={0}
             onClick={() => toggleDbFolder(f.id)}
-            onKeyDown={(e) => { if (e.key === "F2") { e.preventDefault(); setEditingFolder(f.id); } }}
+            onKeyDown={(e) => rowKey(e, {
+              F2: () => setEditingFolder(f.id),
+              Enter: () => toggleDbFolder(f.id),
+              " ": () => toggleDbFolder(f.id),
+              ArrowRight: () => { if (!f.open) toggleDbFolder(f.id); },
+              ArrowLeft: () => { if (f.open) toggleDbFolder(f.id); },
+            })}
             onDragOver={(e) => { if (dragId) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; e.currentTarget.classList.add("drop-into"); } }}
             onDragLeave={(e) => e.currentTarget.classList.remove("drop-into")}
             onDrop={(e) => { e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.remove("drop-into"); dropOn(null, f.id); }}
@@ -435,7 +449,7 @@ function Sidebar() {
             <span className="row-actions" onClick={(e) => e.stopPropagation()}>
               <button className="icon-btn" title={tr("db.newConnectionInFolder2")} onClick={() => openForm(undefined, f.id)}><Plus /></button>
               <button className="icon-btn" title={tr("db.rename")} onClick={() => setEditingFolder(f.id)}><Pencil /></button>
-              <button className="icon-btn danger" title={tr("db.deleteFolder")} onClick={() => void confirmDialog({ message: tr("db.deleteFolderConnectionsInsideMoveOut", { name: f.name }) }).then((ok) => ok && removeDbFolder(f.id))}><X /></button>
+              <button className="icon-btn danger" title={tr("db.deleteFolder")} onClick={() => void confirmDialog({ message: tr("db.deleteFolderConnectionsInsideMoveOut", { name: f.name }) }).then((ok) => ok && removeDbFolder(f.id))}><Trash2 /></button>
             </span>
           </div>
           {f.open && conns.filter((c) => c.folderId === f.id).map((c) => connRow(c, true))}
@@ -779,7 +793,7 @@ const TableRow = memo(function TableRow({ t, pad, sel, hint, canRename, api, onR
 }) {
   renderLog("TableRow");
   return (
-    <div className={`side-item ${sel ? "sel" : ""}`} style={{ paddingLeft: pad }}
+    <div className={`side-item tbl ${sel ? "sel" : ""}`} style={{ paddingLeft: pad }}
       tabIndex={0}
       onClick={() => api.selectTable(t)}
       onDoubleClick={() => api.openTable(t)}
@@ -870,7 +884,13 @@ const DbTree = memo(function DbTree({ width, driver, singleDb, dbs, opened, expa
     const open = (!!fl && count > 0) || secOpen(key, defOpen);
     return (
       <div key={key}>
-        <div className="tree-row sub" style={{ paddingLeft: pad }} onClick={() => toggleSec(key, defOpen)}
+        <div className="tree-row sub" style={{ paddingLeft: pad }} tabIndex={0} onClick={() => toggleSec(key, defOpen)}
+          onKeyDown={(e) => rowKey(e, {
+            Enter: () => toggleSec(key, defOpen),
+            " ": () => toggleSec(key, defOpen),
+            ArrowRight: () => { if (!open) toggleSec(key, defOpen); },
+            ArrowLeft: () => { if (open) toggleSec(key, defOpen); },
+          })}
           onContextMenu={onNew ? (e) => { e.preventDefault(); onNew(); } : undefined}
           title={onNew ? tr("db.rightClickNew") : undefined}>
           <span className="tree-caret">{open ? <ChevronDown /> : <ChevronRight />}</span>
@@ -887,6 +907,7 @@ const DbTree = memo(function DbTree({ width, driver, singleDb, dbs, opened, expa
   const routineRow = (r: RoutineInfo, pad: number) => (
     <div key={`${r.kind}.${r.name}`} className="side-item" style={{ paddingLeft: pad }} tabIndex={0}
       onDoubleClick={() => api.openRoutine(r)}
+      onKeyDown={(e) => rowKey(e, { Enter: () => api.openRoutine(r) })}
       onContextMenu={(e) => { e.preventDefault(); api.routineMenu(r, e.clientX, e.clientY); }}
       title={`${r.name} — ${tr("db.doubleClickToViewEditRight")}`}>
       <span className="routine-ic">{ROUTINE_ICON[r.kind]}</span>
@@ -926,6 +947,13 @@ const DbTree = memo(function DbTree({ width, driver, singleDb, dbs, opened, expa
       />
       <div
         className="db-table-list"
+        onKeyDown={(e) => {
+          // ↑/↓/Home/End giữa mọi hàng; tới hàng bảng / database thì chọn (bảng → khung thông tin). Nhóm (.sub) chỉ focus.
+          if (listNav(e, { row: ".tree-row[tabindex], .side-item[tabindex]" })) {
+            const a = document.activeElement as HTMLElement | null;
+            if (a?.matches(".side-item.tbl, .tree-row.db-node")) a.click();
+          }
+        }}
         onContextMenu={(e) => {
           // Hàng con (bảng, routine, nhóm…) đã tự mở menu riêng (preventDefault) → không mở thêm menu database đè lên.
           if (!singleDb || e.defaultPrevented) return;
@@ -943,8 +971,14 @@ const DbTree = memo(function DbTree({ width, driver, singleDb, dbs, opened, expa
             {shownDbs.map((db) => (
               <div key={db}>
                 <div
-                  className={`tree-row ${db === activeDb ? "active-db" : ""} ${selDb === db ? "sel" : ""}`}
+                  className={`tree-row db-node ${db === activeDb ? "active-db" : ""} ${selDb === db ? "sel" : ""}`}
+                  tabIndex={0}
                   onClick={() => api.selectDb(db)}
+                  onKeyDown={(e) => rowKey(e, {
+                    Enter: () => (opened.has(db) ? api.toggleExpand(db) : api.openDb(db)),
+                    ArrowRight: () => { if (!opened.has(db)) api.openDb(db); else if (!expanded.has(db)) api.toggleExpand(db); },
+                    ArrowLeft: () => { if (expanded.has(db)) api.toggleExpand(db); },
+                  })}
                   onDoubleClick={() => (opened.has(db) ? api.toggleExpand(db) : api.openDb(db))}
                   onContextMenu={(e) => { e.preventDefault(); api.selectDb(db); api.dbMenu(db, e.clientX, e.clientY); }}
                   title={`${db} — ${opened.has(db) ? tr("db.doubleClickToCollapseExpandRight") : tr("db.doubleClickToOpenUse")}`}
@@ -1256,7 +1290,7 @@ function SessionBody({ tab }: { tab: Tab }) {
 
   /* ── Sửa dữ liệu trên bảng kết quả (kiểu Navicat) ── */
   const editTargets = useRef(new Map<string, EditTarget>());
-  const gridEditorImpl = useRef<GridEditor | null>(null);
+  const gridEditorImpl = useRef<Omit<GridEditor, "dirty"> | null>(null);
   gridEditorImpl.current = {
     driver: conn ? (conn.driver as GridDriver) : "mysql",
     resolve: async (sql) => {
@@ -1334,10 +1368,13 @@ function SessionBody({ tab }: { tab: Tab }) {
     count: (b) => gridPagerImpl.current!.count(b),
     setDefaultSize: (n) => gridPagerImpl.current!.setDefaultSize(n),
   }), []);
+  /** Ô đang sửa chưa lưu của từng lưới kết quả → chạy câu mới / mở bảng khác thì hỏi trước (trước đây mất không báo). */
+  const dirtyGrids = useRef(new Map<object, number>());
   const gridEditor = useMemo<GridEditor>(() => ({
     get driver() { return gridEditorImpl.current!.driver; },
     resolve: (sql) => gridEditorImpl.current!.resolve(sql),
     save: (stmts) => gridEditorImpl.current!.save(stmts),
+    dirty: (key, n) => { if (n > 0) dirtyGrids.current.set(key, n); else dirtyGrids.current.delete(key); },
   }), []);
 
   /** Database/schema đang chọn để chạy query → gửi kèm tham số `schema` cho db_query. Backend dùng pool
@@ -1347,6 +1384,11 @@ function SessionBody({ tab }: { tab: Tab }) {
 
   const exec = async (text: string, confirmed = false) => {
     if (!dbId || !text.trim()) return;
+    const pendingEdits = [...dirtyGrids.current.values()].reduce((a, b) => a + b, 0);
+    if (pendingEdits && !confirmed) {
+      if (!(await confirmDialog({ message: tr("db.discardGridEditsConfirm", { n: pendingEdits }), confirmLabel: tr("db.discardAndRun") }))) return;
+      dirtyGrids.current.clear();
+    }
     if (conn.env === "prod" && !confirmed && isWrite(text)) return setConfirmSql(text);
     setConfirmSql(null);
     setRunning(true);
@@ -1817,13 +1859,8 @@ function SessionBody({ tab }: { tab: Tab }) {
       <Splitter axis="x" live="prev" min={160} max={480} onResize={(d) => setTablesW((w) => w + d)} onReset={() => setTablesW(220)} />
       <div className="view">
         <div className="toolbar db-toolbar">
-          <span className="dot green" /> {describe(conn)}
-          {dumpProgress && (
-            <span className="db-progress" title={dumpProgress.table}>
-              <span className="update-bar"><span style={{ width: `${(dumpProgress.done / Math.max(1, dumpProgress.total)) * 100}%` }} /></span>
-              {tr("db.dumpProgress", { db: dumpProgress.db, done: dumpProgress.done, total: dumpProgress.total, table: dumpProgress.table })}
-            </span>
-          )}
+          {/* Mô tả kết nối co lại (cắt …) thay vì đẩy các nút xuống dòng khi khung hẹp; nó cũng thay vai trò `.grow`. */}
+          <span className="muted ellipsis" style={{ flex: "1 1 0", minWidth: 0 }} title={describe(conn)}>{describe(conn)}</span>
           {dbs.length > 0 && conn.driver !== "sqlite" && (
             <span className="db-active" title={tr("db.databaseUsedToRunQueriesUse")}>
               <Picker
@@ -1834,7 +1871,6 @@ function SessionBody({ tab }: { tab: Tab }) {
               />
             </span>
           )}
-          <span className="grow" />
           <Picker
             label={<><BookMarked /> {curQueryName || tr("db.queries")}{savedQueries.length ? ` (${savedQueries.length})` : ""}</>}
             title={tr("db.savedQueriesForThisConnectionPick")}
@@ -1869,6 +1905,15 @@ function SessionBody({ tab }: { tab: Tab }) {
             ? <button className="danger" onClick={cancelRun} title={tr("db.stopTheRunningStatement")}><Square /> {tr("db.cancel2")}</button>
             : <button className="primary" onClick={runEditor} title={tr("db.runCtrlEnterCtrlRSelect")}><Play /> {tr("db.run")}</button>}
         </div>
+        {/* Tiến trình dump (chữ dài, chỉ hiện tạm) nằm dòng riêng để không làm thanh công cụ xuống dòng. */}
+        {dumpProgress && (
+          <div className="toolbar">
+            <span className="db-progress" title={dumpProgress.table}>
+              <span className="update-bar"><span style={{ width: `${(dumpProgress.done / Math.max(1, dumpProgress.total)) * 100}%` }} /></span>
+              {tr("db.dumpProgress", { db: dumpProgress.db, done: dumpProgress.done, total: dumpProgress.total, table: dumpProgress.table })}
+            </span>
+          </div>
+        )}
         <SqlEditor
           api={sqlApi}
           textRef={editor}
@@ -2156,6 +2201,8 @@ interface GridEditor {
   resolve: (sql: string) => Promise<EditTarget | null>;
   /** Chạy lần lượt; `done` = số câu đã xong (dừng ở câu lỗi), `zero` = số câu không khớp dòng nào. */
   save: (stmts: string[]) => Promise<{ done: number; zero: number; error?: string; cancelled?: boolean }>;
+  /** Lưới báo số ô đang sửa chưa lưu (0 = sạch / gỡ). `key` = định danh ổn định của lưới. */
+  dirty: (key: object, n: number) => void;
 }
 
 /** Kết quả các câu không trả bảng: mỗi câu một dòng (số thứ tự · câu lệnh · số dòng bị ảnh hưởng · thời gian). */
@@ -2200,18 +2247,25 @@ interface GridRowApi {
   commit: (r: number, c: number, value: string, move?: 1 | -1) => void;
   cancel: () => void;
   typed: { current: boolean };
+  /** Sau khi đóng ô sửa bằng phím (Enter/Esc) → trả focus về khung lưới để tiếp tục điều hướng bằng phím. */
+  refocus: () => void;
 }
+
+/** Viền ô đang chọn của lưới kết quả (inline để không phụ thuộc styles.css). */
+const ACTIVE_CELL_STYLE = { outline: "1px solid var(--accent)", outlineOffset: -1 } as const;
 
 /**
  * Một dòng của lưới kết quả — `memo`: chỉ vẽ lại khi CHÍNH dòng này đổi (dữ liệu, ô sửa của dòng, ô đang mở,
  * cột sửa được). Trước đây mỗi lần mở/đóng một ô cả nghìn dòng × cột đều vẽ lại → lag với dữ liệu nhiều.
  * Double-click / chuột phải bắt một lần ở `<tbody>` (data-r / data-c), không gắn closure cho từng ô.
  */
-const GridRow = memo(function GridRow({ row, r, num, rowEdits, editCol, mask, api }: {
+const GridRow = memo(function GridRow({ row, r, num, rowEdits, editCol, activeCol, mask, api }: {
   row: (string | null)[]; r: number; num: number;
   rowEdits: Map<number, string | null> | undefined;
   /** Cột đang mở ô sửa ở dòng này (-1 = không có). */
   editCol: number;
+  /** Cột của ô đang chọn (bàn phím / click) ở dòng này (-1 = không có) — chỉ dòng chứa ô đổi mới vẽ lại. */
+  activeCol: number;
   /** "1"/"0" theo từng cột: sửa được hay không (chuỗi → so sánh rẻ cho memo). */
   mask: string;
   api: { current: GridRowApi };
@@ -2232,9 +2286,9 @@ const GridRow = memo(function GridRow({ row, r, num, rowEdits, editCol, mask, ap
                 onFocus={(e) => { api.current.typed.current = false; e.currentTarget.select(); }}
                 onChange={() => { api.current.typed.current = true; }}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") { e.preventDefault(); api.current.commit(r, j, e.currentTarget.value); }
+                  if (e.key === "Enter") { e.preventDefault(); api.current.commit(r, j, e.currentTarget.value); api.current.refocus(); }
                   else if (e.key === "Tab") { e.preventDefault(); api.current.commit(r, j, e.currentTarget.value, e.shiftKey ? -1 : 1); }
-                  else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); api.current.cancel(); }
+                  else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); api.current.cancel(); api.current.refocus(); }
                 }}
                 onBlur={(e) => api.current.commit(r, j, e.currentTarget.value)}
               />
@@ -2245,7 +2299,8 @@ const GridRow = memo(function GridRow({ row, r, num, rowEdits, editCol, mask, ap
           <td
             key={j}
             data-c={j}
-            className={`${v === null ? "null" : "cell"}${rowEdits?.has(j) ? " edited" : ""}${mask[j] === "1" ? " editable" : ""}`}
+            className={`${v === null ? "null" : "cell"}${rowEdits?.has(j) ? " edited" : ""}${mask[j] === "1" ? " editable" : ""}${j === activeCol ? " active-cell" : ""}`}
+            style={j === activeCol ? ACTIVE_CELL_STYLE : undefined}
             title={v !== null && v.length > 40 ? v : undefined}
           >
             {v === null ? "NULL" : v}
@@ -2321,19 +2376,25 @@ const ResultGrid = memo(function ResultGrid({ out: initial, title, editor, pager
   const [target, setTarget] = useState<{ out: QueryOut | null; t: EditTarget | null }>({ out: null, t: null });
   const [base, setBase] = useState<{ out: QueryOut | null; rows: (string | null)[][] }>({ out: null, rows: [] });
   const [edits, setEdits] = useState<GridEdits>(new Map());
+  const dirtyKey = useRef({});
+  useEffect(() => { editor?.dirty(dirtyKey.current, edits.size); }, [editor, edits]);
+  useEffect(() => () => { editor?.dirty(dirtyKey.current, 0); }, [editor]);
   const [editing, setEditing] = useState<{ r: number; c: number } | null>(null);
   const typed = useRef(false);
   const [saving, setSaving] = useState(false);
   const [note, setNote] = useState<{ kind: "error" | "info"; text: string } | null>(null);
   const [cellMenu, setCellMenu] = useState<{ x: number; y: number; r: number; c: number } | null>(null);
   /** Ref ổn định cho GridRow (memo) — nội dung cập nhật mỗi lần render. */
-  const rowApi = useRef<GridRowApi>({ commit: () => {}, cancel: () => {}, typed });
+  const rowApi = useRef<GridRowApi>({ commit: () => {}, cancel: () => {}, typed, refocus: () => {} });
   const editingRef = useRef(editing);
   editingRef.current = editing;
+  /** Ô đang chọn (click / phím mũi tên). Chỉ dòng chứa ô cũ + ô mới nhận `activeCol` khác → chỉ 2 GridRow vẽ lại. */
+  const [active, setActive] = useState<{ r: number; c: number } | null>(null);
 
   useEffect(() => {
     setEdits(new Map());
     setEditing(null);
+    setActive(null);
     setNote(null);
     if (!out || !editor || !out.sql || !out.columns.length) { setTarget({ out, t: null }); return; }
     let alive = true;
@@ -2377,9 +2438,79 @@ const ResultGrid = memo(function ResultGrid({ out: initial, title, editor, pager
     typed.current = false;
     const nc = move ? nextEditable(c, move) : -1;
     setEditing(nc >= 0 ? { r, c: nc } : null);
+    if (nc >= 0) setActive({ r, c: nc });
   };
-  rowApi.current = { commit, cancel: () => { typed.current = false; editingRef.current = null; setEditing(null); }, typed };
+  const refocus = () => requestAnimationFrame(() => {
+    const a = document.activeElement;
+    if (!a || a === document.body) wrapRef.current?.focus({ preventScroll: true });
+  });
+  rowApi.current = { commit, cancel: () => { typed.current = false; editingRef.current = null; setEditing(null); }, typed, refocus };
   const mask = out.columns.map((_, j) => (editable(j) ? "1" : "0")).join("");
+
+  /* ── Ô đang chọn + điều hướng bàn phím (khung .grid-wrap có tabIndex=0) ── */
+  /** Cuộn để ô (r, c) nằm trong khung (tính theo chiều cao dòng + bề rộng cột cố định → dòng chưa vẽ vẫn tới được;
+   *  đổi scrollTop sẽ kích onScroll → cửa sổ virtualization tự cập nhật). */
+  const scrollToCell = (r: number, c: number) => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const h = rowH.current;
+    const headH = el.querySelector("thead")?.getBoundingClientRect().height ?? h;
+    const top = r * h; // so với đáy header (header sticky che phần trên)
+    if (top < el.scrollTop) el.scrollTop = top;
+    else if (headH + top + h > el.scrollTop + el.clientHeight) el.scrollTop = headH + top + h - el.clientHeight;
+    if (colW) {
+      let left = 0;
+      for (let j = 0; j < c; j++) left += colW.cols[j];
+      const w = colW.cols[c] ?? 0;
+      if (left < el.scrollLeft) el.scrollLeft = left;
+      else if (left + w > el.scrollLeft + el.clientWidth) el.scrollLeft = left + w - el.clientWidth;
+    }
+  };
+  const moveActive = (r: number, c: number) => {
+    const nr = Math.max(0, Math.min(rows.length - 1, r));
+    const nc = Math.max(0, Math.min(out.columns.length - 1, c));
+    setActive((cur) => (cur && cur.r === nr && cur.c === nc ? cur : { r: nr, c: nc }));
+    scrollToCell(nr, nc);
+  };
+  const onGridKey = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (e.target !== e.currentTarget || !rows.length || !out.columns.length) return;
+    const cur = active && active.r < rows.length && active.c < out.columns.length ? active : null;
+    const r = cur?.r ?? 0, c = cur?.c ?? 0;
+    const ctrl = e.ctrlKey || e.metaKey;
+    const pageRows = Math.max(1, Math.floor((wrapRef.current?.clientHeight ?? 0) / rowH.current) - 1);
+    const k = e.key;
+    if (ctrl && (k === "PageDown" || k === "PageUp")) return; // Ctrl+PageUp/Down = chuyển tab (phím tắt Shell)
+    if (k === "ArrowDown" || k === "ArrowUp" || k === "ArrowLeft" || k === "ArrowRight" || k === "Home" || k === "End" || k === "PageDown" || k === "PageUp") {
+      e.preventDefault();
+      if (!cur) return moveActive(0, 0);
+      if (k === "ArrowDown") moveActive(ctrl ? rows.length - 1 : r + 1, c);
+      else if (k === "ArrowUp") moveActive(ctrl ? 0 : r - 1, c);
+      else if (k === "ArrowRight") moveActive(r, ctrl ? out.columns.length - 1 : c + 1);
+      else if (k === "ArrowLeft") moveActive(r, ctrl ? 0 : c - 1);
+      else if (k === "Home") moveActive(ctrl ? 0 : r, 0);
+      else if (k === "End") moveActive(ctrl ? rows.length - 1 : r, out.columns.length - 1);
+      else if (k === "PageDown") moveActive(r + pageRows, c);
+      else moveActive(r - pageRows, c);
+      return;
+    }
+    if (!cur) return;
+    if (k === "Enter" || k === "F2") {
+      if (editable(c)) { e.preventDefault(); setEditing({ r, c }); }
+    } else if (ctrl && (k === "c" || k === "C") && !e.shiftKey && !e.altKey) {
+      // Đang bôi đen chữ bằng chuột → để trình duyệt copy đoạn bôi đen.
+      if (String(window.getSelection() ?? "").length) return;
+      e.preventDefault();
+      void copyText(cellValue(r, c) ?? "NULL");
+    } else if (k === "Delete") {
+      if (editable(c) && cellValue(r, c) !== null) { e.preventDefault(); setCell(r, c, null); }
+    }
+  };
+  const cellAt = (target: EventTarget): { r: number; c: number } | null => {
+    const td = (target as HTMLElement).closest("td[data-c]") as HTMLElement | null;
+    const row = td?.parentElement as HTMLElement | null;
+    if (!td || !row?.dataset.r) return null;
+    return { r: Number(row.dataset.r), c: Number(td.dataset.c) };
+  };
 
   const save = async () => {
     if (!t?.ok || !editor || !nChanges) return;
@@ -2468,12 +2599,15 @@ const ResultGrid = memo(function ResultGrid({ out: initial, title, editor, pager
           </>
         )}
         {out.columns.length > 0 && (
-          <button onClick={() => copyText(toTsv({ ...out, rows }))} title={tr("db.pasteIntoExcel")}><Copy /> Copy (TSV)</button>
+          <button onClick={() => copyText(toTsv({ ...out, rows }))} title={tr("db.pasteIntoExcel")}><Copy /> {tr("db.copyTsv")}</button>
         )}
       </div>
       {note && <div className={note.kind === "error" ? "error-box pre grid-note" : "muted small grid-note"}>{note.text}</div>}
       {out.columns.length > 0 ? (
-        <div ref={wrapRef} className={`grid-wrap${pageBusy ? " busy" : ""}`} onScroll={onGridScroll}>
+        <div ref={wrapRef} className={`grid-wrap${pageBusy ? " busy" : ""}`} onScroll={onGridScroll}
+          tabIndex={0}
+          onKeyDown={onGridKey}
+          onFocus={(e) => { if (e.target === e.currentTarget && rows.length) setActive((cur) => cur ?? { r: 0, c: 0 }); }}>
           <table className="grid mono fixed" style={colW ? { width: colW.total } : undefined}>
             {colW && (
               <colgroup>
@@ -2484,13 +2618,18 @@ const ResultGrid = memo(function ResultGrid({ out: initial, title, editor, pager
               <tr>{out.columns.map((c, i) => {
                 const s = out.sort?.col === i ? out.sort : null;
                 return canSort ? (
-                  <th key={i} className={`sortable${s ? " sorted" : ""}`} title={lockTitle ?? tr("db.sortHint")} onClick={() => sortBy(i)}>
+                  <th key={i} className={`sortable${s ? " sorted" : ""}`} aria-sort={s ? (s.desc ? "descending" : "ascending") : "none"} title={lockTitle ?? tr("db.sortHint")} onClick={() => sortBy(i)}>
                     <span className="th-in">{c}{s ? (s.desc ? <ArrowDown /> : <ArrowUp />) : <ArrowUpDown className="th-sort-idle" />}</span>
                   </th>
                 ) : <th key={i}>{c}</th>;
               })}</tr>
             </thead>
             <tbody
+              onMouseDown={(e) => {
+                if (e.button !== 0 && e.button !== 2) return;
+                const at = cellAt(e.target);
+                if (at) setActive((cur) => (cur && cur.r === at.r && cur.c === at.c ? cur : at));
+              }}
               onDoubleClick={(e) => {
                 const td = (e.target as HTMLElement).closest("td[data-c]") as HTMLElement | null;
                 const tr = td?.parentElement as HTMLElement | null;
@@ -2513,7 +2652,7 @@ const ResultGrid = memo(function ResultGrid({ out: initial, title, editor, pager
                 const out2: ReactNode[] = [];
                 if (start > 0) out2.push(<tr key="pad-top" className="grid-pad" style={{ height: start * h }}><td colSpan={out.columns.length} /></tr>);
                 for (let i = start; i < end; i++) {
-                  out2.push(<GridRow key={i} row={rows[i]} r={i} num={offset + i + 1} rowEdits={edits.get(i)} editCol={editing && editing.r === i ? editing.c : -1} mask={mask} api={rowApi} />);
+                  out2.push(<GridRow key={i} row={rows[i]} r={i} num={offset + i + 1} rowEdits={edits.get(i)} editCol={editing && editing.r === i ? editing.c : -1} activeCol={active && active.r === i ? active.c : -1} mask={mask} api={rowApi} />);
                 }
                 if (end < rows.length) out2.push(<tr key="pad-bot" className="grid-pad" style={{ height: (rows.length - end) * h }}><td colSpan={out.columns.length} /></tr>);
                 return out2;

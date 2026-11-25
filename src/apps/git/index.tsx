@@ -14,9 +14,10 @@ import { ContextMenu, type CtxItem } from "../../shell/ContextMenu";
 import { Modal } from "../../shell/Modal";
 import { Splitter, useSplitSize } from "../../shell/Resizable";
 import { Loading } from "../../shell/Loading";
+import { listNav, rowKey } from "../../shell/listNav";
 import { git, errText, type Branch, type Commit, type FileChange, type GitAccount, type RemoteOp, type Status } from "./api";
 import { CommitView, FileDiff } from "./DiffParts";
-import { Archive, ArchiveRestore, ArrowDownToLine, ArrowUpFromLine, Check, Cloud, Copy, Download, ExternalLink, EyeOff, FolderGit2, FolderOpen, GitBranch, GitBranchPlus, GitCommitHorizontal, GitMerge, History, LogIn, LogOut, Minus, Pencil, Plus, RefreshCw, RotateCcw, Save, Settings, Trash2, TriangleAlert, Undo2, X } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowDownToLine, ArrowUpFromLine, Check, ChevronsDown, Cloud, CloudDownload, Copy, Download, ExternalLink, EyeOff, FolderGit2, FolderOpen, GitBranch, GitBranchPlus, GitCommitHorizontal, GitMerge, History, LogIn, LogOut, Minus, Pencil, Plus, RefreshCw, RotateCcw, Save, Settings, Trash2, TriangleAlert, Undo2, X } from "lucide-react";
 import { refreshAllSummaries, refreshSummary, repoName, useRepos, type Repo } from "./repos";
 
 function openRepo(r: Repo) {
@@ -199,7 +200,7 @@ const CommitBox = memo(function CommitBox({ api, suggestedMsg, branch, ready, ch
     <>
       <textarea
         className="commit-msg"
-        placeholder={suggestedMsg || `Commit message (Ctrl+Enter)${branch ? ` — ${tr("git.to2")} ${branch}` : ""}`}
+        placeholder={suggestedMsg || `${tr("git.commitMessagePlaceholder")}${branch ? ` — ${tr("git.to2")} ${branch}` : ""}`}
         value={message}
         onChange={(e) => setMessage(e.target.value)}
         onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); commit(); } }}
@@ -231,6 +232,9 @@ function RepoView({ tab }: { tab: Tab }) {
   const [status, setStatus] = useState<Status | null>(null);
   const [branches, setBranches] = useState<Branch[]>([]);
   const [history, setHistory] = useState<Commit[]>([]);
+  /** Số commit đang nạp trong History (tăng HISTORY_PAGE mỗi lần "Load more"); ref để refresh không đổi identity. */
+  const histLimit = useRef(HISTORY_PAGE);
+  const [histMore, setHistMore] = useState(false);
   const [selected, setSelected] = useState<Selected>(null);
   const [diff, setDiff] = useState("");
   /** Ô commit (message nằm trong CommitBox). */
@@ -242,10 +246,7 @@ function RepoView({ tab }: { tab: Tab }) {
   const progress = useMemo(() => makeValue(""), []);
   const setProgress = progress.set;
   const [error, setError] = useState("");
-  const [confirmDiscard, setConfirmDiscard] = useState<FileChange[] | null>(null);
   /** Xác nhận bỏ TẤT CẢ thay đổi (reset --hard + clean). */
-  const [confirmDiscardAll, setConfirmDiscardAll] = useState(false);
-  const [confirmUndo, setConfirmUndo] = useState<Commit | null>(null);
   /** Kiểu GitHub Desktop: các file người dùng BỎ tick (không commit). File không nằm đây = có tick. */
   const [unchecked, setUnchecked] = useState<Set<string>>(new Set());
   /** Bề rộng cột Thay đổi và chiều cao khung Lịch sử — kéo được, nhớ lại. */
@@ -254,7 +255,6 @@ function RepoView({ tab }: { tab: Tab }) {
   /** Menu chuột phải trên một file. */
   const [menu, setMenu] = useState<{ file: FileChange; staged: boolean; x: number; y: number } | null>(null);
   /** Bỏ qua file đang được theo dõi: cần hỏi lại vì phải bỏ track. */
-  const [confirmIgnore, setConfirmIgnore] = useState<{ file: FileChange; scope: IgnoreScope; pattern: string } | null>(null);
   const [newBranch, setNewBranch] = useState<string | null>(null);
   /** Mở modal chọn nhánh để merge vào nhánh hiện tại. */
   const [mergeOpen, setMergeOpen] = useState(false);
@@ -273,12 +273,24 @@ function RepoView({ tab }: { tab: Tab }) {
 
   const refresh = useCallback(async () => {
     try {
-      const [s, b, h, pushed] = await Promise.all([git.status(path), git.branches(path), git.log(path), git.headPushed(path)]);
+      const [s, b, h, pushed] = await Promise.all([git.status(path), git.branches(path), git.log(path, histLimit.current), git.headPushed(path)]);
       setStatus(s);
       setBranches(b);
       setHistory(h);
+      setHistMore(h.length >= histLimit.current);
       setHeadPushed(pushed);
       void refreshSummary(path);
+    } catch (e) {
+      setError(errText(e));
+    }
+  }, [path]);
+
+  const loadMoreHistory = useCallback(async () => {
+    histLimit.current += HISTORY_PAGE;
+    try {
+      const h = await git.log(path, histLimit.current);
+      setHistory(h);
+      setHistMore(h.length >= histLimit.current);
     } catch (e) {
       setError(errText(e));
     }
@@ -382,7 +394,7 @@ function RepoView({ tab }: { tab: Tab }) {
     select: (f, staged) => setSelected({ type: "file", file: f, staged }),
     menu: (f, staged, e) => setMenu({ file: f, staged, x: e.clientX, y: e.clientY }),
     toggle: toggleCheck,
-    action: (f, kind) => (kind === "resolve" ? void run(`stage ${f.path}`, () => git.stage(path, [f.path])) : setConfirmDiscard([f])),
+    action: (f, kind) => (kind === "resolve" ? void run(`stage ${f.path}`, () => git.stage(path, [f.path])) : askDiscard([f])),
   };
   /** Chỉ có ý nghĩa khi commit gần nhất chưa push; đã push thì ẩn nút luôn. */
   const showUndo = history.length > 0 && !headPushed;
@@ -401,10 +413,18 @@ function RepoView({ tab }: { tab: Tab }) {
       return out;
     });
   boxApi.current.commit = (msg) => void commit(msg);
-  boxApi.current.undo = () => { if (history[0]) setConfirmUndo(history[0]); };
+  /** Xác nhận dùng chung (confirmDialog) thay cho các khung đỏ inline trước đây. */
+  const askDiscard = (list: FileChange[]) =>
+    void confirmDialog({ message: tr("git.discardChangesInFilesNewFiles", { confirmDiscardLength: list.length }), confirmLabel: tr("git.discardChanges2") })
+      .then((ok) => ok && doDiscard(list));
+  const askDiscardAll = () =>
+    void confirmDialog({ message: tr("git.discardAllUncommittedChangesEveryModified"), confirmLabel: tr("git.discardAll") }).then((ok) => ok && doDiscardAll());
+  const askUndo = (c: Commit) =>
+    void confirmDialog({ message: `${tr("git.undoCommit3")} ${c.short} “${c.subject}”? ${tr("git.theCommitLeavesTheBranchIts")}`, confirmLabel: tr("git.undoCommit2"), danger: false })
+      .then((ok) => ok && undoCommit(c));
+  boxApi.current.undo = () => { if (history[0]) askUndo(history[0]); };
 
   const doDiscardAll = () => {
-    setConfirmDiscardAll(false);
     void run(tr("git.discardAllChanges"), async () => {
       await git.discardAll(path);
       setSelected(null);
@@ -414,7 +434,6 @@ function RepoView({ tab }: { tab: Tab }) {
 
   /** Bỏ commit cuối (chỉ khi chưa push): thay đổi về Staged, message cũ điền lại để sửa. */
   const undoCommit = (c: Commit) => {
-    setConfirmUndo(null);
     void run(tr("git.undoCommit"), async () => {
       const msg = await git.undoCommit(path);
       setMessage(msg);
@@ -424,7 +443,6 @@ function RepoView({ tab }: { tab: Tab }) {
   };
 
   const doDiscard = (list: FileChange[]) => {
-    setConfirmDiscard(null);
     void run(tr("git.discardChangesInFileS", { listLength: list.length }), () =>
       git.discard(path, list.filter((f) => f.kind !== "untracked").map((f) => f.path), list.filter((f) => f.kind === "untracked").map((f) => f.path)),
     );
@@ -529,10 +547,12 @@ function RepoView({ tab }: { tab: Tab }) {
     const pattern = ignorePattern(f.path, scope);
     if (!pattern) return setError(tr("git.couldnTBuildAnIgnorePattern"));
     if (f.kind === "untracked") return doIgnore(f, scope, false);
-    setConfirmIgnore({ file: f, scope, pattern });
+    void confirmDialog({
+      message: `${f.path} ${tr("git.isTrackedByGitIgnoringWith")} ${pattern} ${tr("git.addsToGitignoreAnd")} ${tr("git.untracks")} ${tr("git.thisFileFileStaysOnDisk")}`,
+      confirmLabel: tr("git.ignoreUntrack"),
+    }).then((ok) => ok && doIgnore(f, scope, true));
   };
   const doIgnore = (f: FileChange, scope: IgnoreScope, untrack: boolean) => {
-    setConfirmIgnore(null);
     void run(tr("git.ignore", { path: f.path }), async () => {
       const p = await git.ignore(path, f.path, scope, untrack);
       return tr(untrack ? "git.addedToGitignoreUntracked" : "git.addedToGitignore", { p });
@@ -561,7 +581,7 @@ function RepoView({ tab }: { tab: Tab }) {
         : []),
       ...(m.staged
         ? []
-        : [{ id: "discard", icon: <Undo2 />, label: tr("git.discardChanges"), danger: true, action: () => setConfirmDiscard([f]) }]),
+        : [{ id: "discard", icon: <Undo2 />, label: tr("git.discardChanges"), danger: true, action: () => askDiscard([f]) }]),
       { id: "s1", sep: true },
       { id: "copyRel", icon: <Copy />, label: tr("git.copyRelativePath"), action: () => copy(f.path) },
       { id: "copyAbs", icon: <Copy />, label: tr("git.copyFullPath"), action: () => copy(`${path}/${f.path}`) },
@@ -699,7 +719,7 @@ function RepoView({ tab }: { tab: Tab }) {
             onClick={() => remote("fetch", "fetch")}
             title={tr("git.fetchDownloadNewCommitsFromRemote")}
           >
-            <RefreshCw /> Fetch
+            <CloudDownload /> Fetch
           </button>
           <button
             disabled={!!busy || !status?.behind}
@@ -723,20 +743,12 @@ function RepoView({ tab }: { tab: Tab }) {
           </button>
         </div>
         <button disabled={!!busy || !files.length} onClick={() => run("stash", () => git.stash(path, false))} title={tr("git.stashShelveAllChangesInclNew")}><Archive />Stash</button>
-        <button disabled={!!busy} onClick={() => run("stash pop", () => git.stash(path, true))} title={tr("git.popRestoreStashedChanges")}><ArchiveRestore />Pop</button>
+        <button disabled={!!busy || !status?.stashCount} onClick={() => run("stash pop", () => git.stash(path, true))} title={status?.stashCount ? tr("git.popRestoreStashedChanges") : tr("git.noStashToPop")}><ArchiveRestore />Pop{status?.stashCount ? ` (${status.stashCount})` : ""}</button>
       </div>
 
       {error && <div className="error-box pre"><TriangleAlert /> {error}</div>}
-      {confirmDiscard && (
-        <div className="error-box toolbar">
-          {tr("git.discardChangesInFilesNewFiles", { confirmDiscardLength: confirmDiscard.length })}
-          <span className="grow" />
-          <button onClick={() => setConfirmDiscard(null)}><X />{tr("git.cancel")}</button>
-          <button className="primary danger" onClick={() => doDiscard(confirmDiscard)}><Undo2 />{tr("git.discardChanges2")}</button>
-        </div>
-      )}
       {commitAction && (
-        <div className="error-box commit-action">
+        <div className="inline-panel commit-action">
           {commitAction.kind === "reword" && (
             <>
               <div>{tr("git.editMessageOfCommit")} <b>{commitAction.c.short}</b> {tr("git.amendOnlyForTheLatestUnpushed")}</div>
@@ -802,7 +814,7 @@ function RepoView({ tab }: { tab: Tab }) {
                 <span className="grow" />
                 <button onClick={() => setCommitAction(null)}><X />{tr("git.cancel")}</button>
                 <button className="primary" title={tr("git.keepAllChangesInStagedTo")} onClick={() => doReset(commitAction.c, false)}><History />{tr("git.keepChangesSoft")}</button>
-                <button className="primary danger" title={tr("git.wipeAllChangesResetWorkingTree")} onClick={() => doReset(commitAction.c, true)}><History />{tr("git.wipeAllHard")}</button>
+                <button className="danger" title={tr("git.wipeAllChangesResetWorkingTree")} onClick={() => doReset(commitAction.c, true)}><History />{tr("git.wipeAllHard")}</button>
               </div>
             </>
           )}
@@ -811,7 +823,7 @@ function RepoView({ tab }: { tab: Tab }) {
 
       <div className="split">
         <div className="pane narrow changes" style={{ width: changesW, flex: "0 0 auto" }}>
-          <div className="file-lists">
+          <div className="file-lists" role="listbox" onKeyDown={(e) => listNav(e, { row: ".file-row", select: true })}>
             {status?.merging && (
               <div className={`merge-banner${conflicts.length ? " bad" : ""}`}>
                 <GitMerge />
@@ -838,6 +850,7 @@ function RepoView({ tab }: { tab: Tab }) {
                     type="checkbox"
                     className="file-check"
                     title={tr("git.selectDeselectAll")}
+                    aria-label={tr("git.selectDeselectAll")}
                     checked={checkState === "all"}
                     ref={(el) => { if (el) el.indeterminate = checkState === "some"; }}
                     onChange={toggleCheckAll}
@@ -845,7 +858,7 @@ function RepoView({ tab }: { tab: Tab }) {
                 }
                 headerAction={
                   <>
-                    <button className="icon-btn danger" title={tr("git.discardAllChangesResetToHead")} onClick={() => setConfirmDiscardAll(true)}><Undo2 /></button>
+                    <button className="icon-btn danger" title={tr("git.discardAllChangesResetToHead")} onClick={askDiscardAll}><Undo2 /></button>
                     <button className="icon-btn" title={tr("git.stashAllChanges")} onClick={() => run(tr("git.stashAll"), () => git.stash(path, false))}><Archive /></button>
                   </>
                 }
@@ -866,39 +879,6 @@ function RepoView({ tab }: { tab: Tab }) {
             canUndo={canUndo}
             undoShort={history[0]?.short}
           />
-          {confirmDiscardAll && (
-            <div className="error-box">
-              {tr("git.discardAllUncommittedChangesEveryModified")}
-              <div className="toolbar">
-                <span className="grow" />
-                <button onClick={() => setConfirmDiscardAll(false)}><X />{tr("git.cancel")}</button>
-                <button className="primary danger" onClick={doDiscardAll}><Undo2 />{tr("git.discardAll")}</button>
-              </div>
-            </div>
-          )}
-          {confirmUndo && (
-            <div className="error-box">
-              {tr("git.undoCommit3")} <b>{confirmUndo.short}</b> “{confirmUndo.subject}”? {tr("git.theCommitLeavesTheBranchIts")}
-              <div className="toolbar">
-                <span className="grow" />
-                <button onClick={() => setConfirmUndo(null)}><X />{tr("git.cancel")}</button>
-                <button className="primary danger" onClick={() => undoCommit(confirmUndo)}><Undo2 />{tr("git.undoCommit2")}</button>
-              </div>
-            </div>
-          )}
-          {confirmIgnore && (
-            <div className="error-box">
-              ⚠ <span className="mono">{confirmIgnore.file.path}</span> {tr("git.isTrackedByGitIgnoringWith")}{" "}
-              <span className="mono">{confirmIgnore.pattern}</span> {tr("git.addsToGitignoreAnd")} <b>{tr("git.untracks")}</b> {tr("git.thisFileFileStaysOnDisk")}
-              <div className="toolbar">
-                <span className="grow" />
-                <button onClick={() => setConfirmIgnore(null)}><X />{tr("git.cancel")}</button>
-                <button className="primary danger" onClick={() => doIgnore(confirmIgnore.file, confirmIgnore.scope, true)}>
-                  <EyeOff />{tr("git.ignoreUntrack")}
-                </button>
-              </div>
-            </div>
-          )}
         </div>
         <Splitter axis="x" live="prev" min={200} max={600} onResize={(d) => setChangesW((w) => w + d)} onReset={() => setChangesW(280)} />
         <div className="pane">
@@ -916,13 +896,14 @@ function RepoView({ tab }: { tab: Tab }) {
 
       <Splitter axis="y" live="next" min={80} max={560} onResize={(d) => setHistoryH((h) => h - d)} onReset={() => setHistoryH(200)} />
       <div className="pane history" style={{ height: historyH, flex: "0 0 auto" }}>
-        <div className="pane-title">History ({history.length}{history.length >= 200 ? "+" : ""})</div>
+        <div className="pane-title">History ({history.length}{histMore ? "+" : ""})</div>
         <HistoryList
           history={history}
           loaded={!!status}
           selectedHash={selected?.type === "commit" ? selected.commit.hash : null}
           onSelect={selectCommit}
           onMenu={onCommitMenu}
+          onMore={histMore ? loadMoreHistory : undefined}
         />
       </div>
 
@@ -1032,6 +1013,9 @@ function RepoView({ tab }: { tab: Tab }) {
   );
 }
 
+/** Số commit nạp mỗi trang trong History. */
+const HISTORY_PAGE = 200;
+
 /** Danh sách commit: memo để kéo giãn khối không phải vẽ lại 200 dòng mỗi khung hình. */
 const HistoryList = memo(function HistoryList({
   history,
@@ -1039,20 +1023,24 @@ const HistoryList = memo(function HistoryList({
   selectedHash,
   onSelect,
   onMenu,
+  onMore,
 }: {
   history: Commit[];
   loaded: boolean;
   selectedHash: string | null;
   onSelect: (c: Commit) => void;
   onMenu: (c: Commit, e: React.MouseEvent) => void;
+  /** Có thì còn commit cũ hơn → hiện nút "Load more" cuối danh sách. */
+  onMore?: () => void;
 }) {
   const tr = useT();
   return (
-    <div className="history-list">
+    <div className="history-list" role="listbox" onKeyDown={(e) => listNav(e, { row: ".history-row", select: true })}>
       {history.map((c) => (
         <HistoryRow key={c.hash} c={c} on={c.hash === selectedHash} onSelect={onSelect} onMenu={onMenu} />
       ))}
       {loaded && !history.length && <div className="muted small pad">{tr("git.noCommitsYet")}</div>}
+      {onMore && <button className="rkey-more" onClick={onMore}><ChevronsDown />{tr("git.loadMore")}</button>}
     </div>
   );
 });
@@ -1068,7 +1056,11 @@ const HistoryRow = memo(function HistoryRow({ c, on, onSelect, onMenu }: {
   return (
     <div
       className={`history-row ${on ? "on" : ""}`}
+      tabIndex={0}
+      role="option"
+      aria-selected={on}
       onClick={() => onSelect(c)}
+      onKeyDown={(e) => rowKey(e, { Enter: () => onSelect(c) })}
       onContextMenu={(e) => onMenu(c, e)}
       title={c.subject}
     >
@@ -1151,7 +1143,15 @@ const FileRow = memo(function FileRow({ f, staged, on, checked, action, api }: {
   return (
     <div
       className={`file-row ${on ? "on" : ""}`}
+      tabIndex={0}
+      role="option"
+      aria-selected={on}
       onClick={() => api.current.select(f, staged)}
+      onKeyDown={(e) => rowKey(e, {
+        Enter: () => api.current.select(f, staged),
+        " ": checked !== undefined ? () => api.current.toggle(f) : undefined,
+        Delete: action === "discard" && !staged ? () => api.current.action(f, "discard") : undefined,
+      })}
       onContextMenu={(e) => { e.preventDefault(); api.current.menu(f, staged, e); }}
       title={f.path}
     >
@@ -1163,6 +1163,7 @@ const FileRow = memo(function FileRow({ f, staged, on, checked, action, api }: {
           onClick={(e) => e.stopPropagation()}
           onChange={() => api.current.toggle(f)}
           title={tr("git.includeThisFileInTheCommit")}
+          aria-label={tr("git.includeThisFileInTheCommit")}
         />
       )}
       <span className={`st st-${code}`}>{code}</span>

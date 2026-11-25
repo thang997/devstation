@@ -12,6 +12,7 @@ mod redis;
 mod registry;
 mod sftp;
 mod ssh;
+mod webtr;
 
 /// Lệnh mẫu để UI kiểm tra cầu nối Rust ↔ webview.
 /// Các module git / http / ssh sẽ đăng ký lệnh của mình vào đây.
@@ -35,6 +36,7 @@ fn main() {
         // Tự cập nhật: đọc latest.json trên GitHub Releases, kiểm chữ ký bằng pubkey trong tauri.conf.json.
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(webtr::plugin())
         .manage(db::DbState::default())
         .manage(ssh::SshState::default())
         .manage(sftp::SftpState::default())
@@ -167,6 +169,13 @@ fn main() {
             registry::registry_pull,
             registry::registry_cancel,
             registry::registry_zip,
+            webtr::webtr_open,
+            webtr::webtr_test,
+            webtr::webtr_save_key,
+            webtr::webtr_has_key,
+            webtr::webtr_forget_key,
+            webtr::webtr_clear_cache,
+            webtr::webtr_cache_size,
             registry::registry_temp_dir,
             registry::registry_move,
             registry::registry_discard,

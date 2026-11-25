@@ -5,7 +5,7 @@ import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState
 import { listen } from "@tauri-apps/api/event";
 import {
   ChevronDown, ChevronRight, Container, Copy, CornerDownRight, FileUp, Folder, FolderOpen, FolderPlus, Hash, Image, KeyRound, List, Lock,
-  Monitor, Pencil, Play, Plus, RefreshCw, Save, Search, Settings, Square, SquareTerminal, Target, Trash2, Waypoints, X, Zap,
+  Monitor, Pencil, Play, Plus, RefreshCw, Save, Search, Server, Settings, Square, SquareTerminal, Target, Trash2, TriangleAlert, Waypoints, X, Zap,
 } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { AppModule, Tab } from "../types";
@@ -16,6 +16,7 @@ import { Picker, type PickerItem } from "../../shell/Picker";
 import { Loading, Spinner } from "../../shell/Loading";
 import { ContextMenu, type CtxItem } from "../../shell/ContextMenu";
 import { confirmDialog } from "../../shell/confirm";
+import { listNav, rowKey } from "../../shell/listNav";
 import { t, useT } from "../../store/lang";
 import { Splitter, useSplitSize } from "../../shell/Resizable";
 import { SftpPanel } from "./SftpPanel";
@@ -122,7 +123,7 @@ const HostRow = memo(function HostRow({ h, inFolder, sel, dragging, renaming, ju
   const style = inFolder ? INDENT : undefined;
   if (renaming) return (
     <div className="side-item ssh-host" style={style} onClick={(e) => e.stopPropagation()}>
-      <span className="dot green" />
+      <Server className="muted" />
       <input
         autoFocus
         className="tree-rename grow"
@@ -146,18 +147,22 @@ const HostRow = memo(function HostRow({ h, inFolder, sel, dragging, renaming, ju
       onDrop={(e) => { e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.remove("drop-before"); api.current.drop(h.id, h.folderId ?? ""); }}
       onClick={() => api.current.select(h.id)}
       onDoubleClick={() => connect(h)}
-      onKeyDown={(e) => { if (e.key === "F2") { e.preventDefault(); api.current.rename(h.id); } }}
+      onKeyDown={(e) => rowKey(e, {
+        Enter: () => connect(h),
+        F2: () => api.current.rename(h.id),
+        Delete: () => void confirmDialog({ message: tr("ssh.deleteHost2", { p: h.name || h.host }) }).then((ok) => ok && removeHost(h.id)),
+      })}
       onContextMenu={(e) => api.current.menu(e, h)}
       title={`${tr("ssh.doubleClickToConnect")} ${h.user}@${h.host}${h.prod ? " (PROD)" : ""} · ${tr("ssh.f2ToRename")}`}
     >
-      <span className="dot green" />
+      <Server className="muted" />
       <span className="grow ellipsis">{h.name || h.host}</span>
       {jumpName !== undefined && <span className="muted small" title={tr("ssh.viaJump", { name: jumpName })}><CornerDownRight /></span>}
       {h.prod && <span className="prod-tag">PROD</span>}
       <span className="muted small ellipsis">{h.user}@{h.host}</span>
       <span className="row-actions" onClick={(e) => e.stopPropagation()}>
         <button className="icon-btn" title={tr("ssh.edit")} onClick={() => openHostForm(h)}><Pencil /></button>
-        <button className="icon-btn danger" title={tr("ssh.delete")} onClick={() => void confirmDialog({ message: tr("ssh.deleteHost2", { p: h.name || h.host }) }).then((ok) => ok && removeHost(h.id))}><X /></button>
+        <button className="icon-btn danger" title={tr("ssh.delete")} onClick={() => void confirmDialog({ message: tr("ssh.deleteHost2", { p: h.name || h.host }) }).then((ok) => ok && removeHost(h.id))}><Trash2 /></button>
       </span>
     </div>
   );
@@ -199,7 +204,11 @@ const TunRow = memo(function TunRow({ tn, inFolder, sel, dragging, renaming, st,
   return (
     <div
       tabIndex={0}
-      onKeyDown={(e) => { if (e.key === "F2") { e.preventDefault(); api.current.rename(tn.id); } }}
+      onKeyDown={(e) => rowKey(e, {
+        Enter: () => api.current.edit(tn),
+        F2: () => api.current.rename(tn.id),
+        Delete: () => void confirmDialog({ message: tr("ssh.deleteTunnel", { name: tn.name }) }).then((ok) => ok && removeTunnel(tn.id)),
+      })}
       className={`side-item ssh-tunnel ${sel ? "sel" : ""} ${dragging ? "dragging" : ""}`}
       onClick={() => api.current.select(tn.id)}
       onDoubleClick={() => api.current.edit(tn)}
@@ -223,11 +232,12 @@ const TunRow = memo(function TunRow({ tn, inFolder, sel, dragging, renaming, st,
       </button>
       <span className={`dot tun-${st}`} />
       <span className="grow ellipsis">{tn.name}</span>
-      {tn.autostart && <span title={tr("ssh.autoStartOnAppLaunch")} style={{ opacity: 0.7, display: "inline-flex" }}><Zap /></span>}
+      {st === "error" && <span className="tun-err-ic danger-text" title={msg || tr("ssh.sshExitedCheckKeyPort")}><TriangleAlert /></span>}
+      {tn.autostart && <span className="tun-autostart" title={tr("ssh.autoStartOnAppLaunch")}><Zap /></span>}
       <span className="muted small ellipsis">{tunnelDesc(tn)}</span>
       <span className="row-actions" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
         <button className="icon-btn" title={tr("ssh.edit")} onClick={() => api.current.edit(tn)}><Pencil /></button>
-        <button className="icon-btn danger" title={tr("ssh.delete")} onClick={() => void confirmDialog({ message: tr("ssh.deleteTunnel", { name: tn.name }) }).then((ok) => ok && removeTunnel(tn.id))}><X /></button>
+        <button className="icon-btn danger" title={tr("ssh.delete")} onClick={() => void confirmDialog({ message: tr("ssh.deleteTunnel", { name: tn.name }) }).then((ok) => ok && removeTunnel(tn.id))}><Trash2 /></button>
       </span>
     </div>
   );
@@ -437,6 +447,14 @@ function Sidebar() {
   return (
     <div
       className="side-list fill"
+      onKeyDown={(e) => {
+        // ↑/↓/Home/End giữa hàng host/tunnel/thư mục. Chỉ "chọn" (click) hàng host/tunnel —
+        // click thư mục là gập/mở nên không tự click khi đi qua.
+        if (listNav(e, { row: ".side-item.ssh-host[tabindex], .side-item.ssh-tunnel[tabindex], .tree-row" })) {
+          const a = document.activeElement as HTMLElement | null;
+          if (a?.matches(".side-item")) a.click();
+        }
+      }}
       onContextMenu={(e) => openMenu(e, emptyMenu())}
       onDragOver={(e) => { if (dragId || tunDrag) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; } }}
       onDrop={(e) => { if (dragId) { e.preventDefault(); dropHost(null, ""); } else if (tunDrag) { e.preventDefault(); dropTunnel(null, ""); } }}
@@ -482,7 +500,13 @@ function Sidebar() {
             className="tree-row"
             tabIndex={0}
             onClick={() => toggleFolder(f.id)}
-            onKeyDown={(e) => { if (e.key === "F2") { e.preventDefault(); setEditingFolder(f.id); } }}
+            onKeyDown={(e) => rowKey(e, {
+              Enter: () => toggleFolder(f.id),
+              " ": () => toggleFolder(f.id),
+              ArrowLeft: () => { if (f.open) toggleFolder(f.id); },
+              ArrowRight: () => { if (!f.open) toggleFolder(f.id); },
+              F2: () => setEditingFolder(f.id),
+            })}
             onDragOver={(e) => { if (dragId) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; e.currentTarget.classList.add("drop-into"); } }}
             onDragLeave={(e) => e.currentTarget.classList.remove("drop-into")}
             onDrop={(e) => { e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.remove("drop-into"); dropHost(null, f.id); }}
@@ -506,7 +530,7 @@ function Sidebar() {
                 <span className="row-actions" onClick={(e) => e.stopPropagation()}>
                   <button className="icon-btn" title={tr("ssh.addHostToFolder2")} onClick={() => openHostForm(newHost(f.id))}><Plus /></button>
                   <button className="icon-btn" title={tr("ssh.rename")} onClick={() => setEditingFolder(f.id)}><Pencil /></button>
-                  <button className="icon-btn danger" title={tr("ssh.deleteFolderHostsMoveOut")} onClick={() => void confirmDialog({ message: tr("ssh.deleteFolderHostsInsideMoveOut", { name: f.name }) }).then((ok) => ok && removeFolder(f.id))}><X /></button>
+                  <button className="icon-btn danger" title={tr("ssh.deleteFolderHostsMoveOut")} onClick={() => void confirmDialog({ message: tr("ssh.deleteFolderHostsInsideMoveOut", { name: f.name }) }).then((ok) => ok && removeFolder(f.id))}><Trash2 /></button>
                 </span>
               </div>
               {f.open && (hostsByFolder.get(f.id) ?? []).map((h) => hostRow(h, true))}
@@ -535,7 +559,13 @@ function Sidebar() {
               className="tree-row"
               tabIndex={0}
               onClick={() => tunnelFolders.toggle(f.id)}
-              onKeyDown={(e) => { if (e.key === "F2") { e.preventDefault(); setEditingTunFolder(f.id); } }}
+              onKeyDown={(e) => rowKey(e, {
+                Enter: () => tunnelFolders.toggle(f.id),
+                " ": () => tunnelFolders.toggle(f.id),
+                ArrowLeft: () => { if (f.open) tunnelFolders.toggle(f.id); },
+                ArrowRight: () => { if (!f.open) tunnelFolders.toggle(f.id); },
+                F2: () => setEditingTunFolder(f.id),
+              })}
               onDragOver={(e) => { if (tunDrag) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; e.currentTarget.classList.add("drop-into"); } }}
               onDragLeave={(e) => e.currentTarget.classList.remove("drop-into")}
               onDrop={(e) => { if (!tunDrag) return; e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.remove("drop-into"); dropTunnel(null, f.id); }}
@@ -560,7 +590,7 @@ function Sidebar() {
               <span className="row-actions" onClick={(e) => e.stopPropagation()}>
                 <button className="icon-btn" title={tr("ssh.addTunnelToFolder")} onClick={() => setTunModal(newTunnel(f.id))}><Plus /></button>
                 <button className="icon-btn" title={tr("ssh.rename")} onClick={() => setEditingTunFolder(f.id)}><Pencil /></button>
-                <button className="icon-btn danger" title={tr("ssh.deleteFolderTunnelsMoveOut")} onClick={() => deleteTunFolder(f)}><X /></button>
+                <button className="icon-btn danger" title={tr("ssh.deleteFolderTunnelsMoveOut")} onClick={() => deleteTunFolder(f)}><Trash2 /></button>
               </span>
             </div>
             {f.open && inside.map((tn) => tunRow(tn, true))}
@@ -583,6 +613,30 @@ async function pickKey(set: (p: string) => void) {
   if (typeof f === "string") set(f);
 }
 
+/* ── Ô cổng: giữ chuỗi người dùng gõ, kiểm 1–65535 (không âm thầm lùi về 22/0) ── */
+
+/** Parse chuỗi cổng; trống + `emptyDefault` → dùng mặc định; sai → null. */
+function parsePort(text: string, emptyDefault?: number): number | null {
+  const s = text.trim();
+  if (!s) return emptyDefault ?? null;
+  if (!/^d+$/.test(s)) return null;
+  const n = Number(s);
+  return n >= 1 && n <= 65535 ? n : null;
+}
+
+function PortInput({ label, text, setText, bad, width, placeholder }: {
+  label: React.ReactNode; text: string; setText: (v: string) => void; bad: boolean; width: number; placeholder?: string;
+}) {
+  const tr = useT();
+  return (
+    <label style={{ width }}>{label}
+      <input className={`mono ${bad ? "invalid" : ""}`} type="number" min={1} max={65535} value={text} placeholder={placeholder}
+        aria-invalid={bad} onChange={(e) => setText(e.target.value)} />
+      {bad && <span className="field-error danger-text small">{tr("ssh.portInvalid")}</span>}
+    </label>
+  );
+}
+
 /* ── Modal thêm/sửa host ── */
 
 function HostModal({ host, onClose }: { host: SavedHost; onClose: () => void }) {
@@ -594,6 +648,11 @@ function HostModal({ host, onClose }: { host: SavedHost; onClose: () => void }) 
   const jumpHost = allHosts.find((x) => x.id === h.jumpHostId && x.id !== h.id);
   const [hasPw, setHasPw] = useState(false);
   const set = (p: Partial<SavedHost>) => setH((x) => ({ ...x, ...p }));
+  // Host mới: để trống ô Port → 22; host đã có: trống = lỗi.
+  const [isNew] = useState(() => !allHosts.some((x) => x.id === host.id));
+  const [portText, setPortText] = useState(isNew && host.port === 22 ? "" : String(host.port || ""));
+  const port = parsePort(portText, isNew ? 22 : undefined);
+  const setPort = (v: string) => { setPortText(v); const n = parsePort(v, isNew ? 22 : undefined); if (n != null) set({ port: n }); };
   // Host này đã lưu mật khẩu trong Windows Credential Manager chưa (để hiện trạng thái / nút quên).
   useEffect(() => {
     let alive = true;
@@ -604,8 +663,8 @@ function HostModal({ host, onClose }: { host: SavedHost; onClose: () => void }) 
   }, [h.host, h.user, h.port]);
   const forget = () => void ssh.forgetPassword(h.user.trim(), h.host.trim(), h.port).then(() => setHasPw(false));
   const save = () => {
-    if (!h.host.trim() || !h.user.trim()) return;
-    saveHost({ ...h, name: h.name.trim() || h.host.trim() });
+    if (!h.host.trim() || !h.user.trim() || port == null) return;
+    saveHost({ ...h, port, name: h.name.trim() || h.host.trim() });
     onClose();
   };
   return (
@@ -614,7 +673,7 @@ function HostModal({ host, onClose }: { host: SavedHost; onClose: () => void }) 
         <label>{tr("ssh.displayName")}<input autoFocus value={h.name} placeholder="vd. prod-web" onChange={(e) => set({ name: e.target.value })} /></label>
         <div className="form-row">
           <label className="grow">Host / IP<input className="mono" value={h.host} placeholder="10.0.0.5" onChange={(e) => set({ host: e.target.value })} /></label>
-          <label style={{ width: 90 }}>Port<input className="mono" type="number" value={h.port} onChange={(e) => set({ port: Number(e.target.value) || 22 })} /></label>
+          <PortInput label="Port" width={90} text={portText} setText={setPort} bad={port == null} placeholder={isNew ? "22" : undefined} />
         </div>
         <label>User<input value={h.user} placeholder="ubuntu" onChange={(e) => set({ user: e.target.value })} /></label>
         <label>{tr("ssh.privateKeyOptional")}
@@ -662,7 +721,7 @@ function HostModal({ host, onClose }: { host: SavedHost; onClose: () => void }) 
         <div className="toolbar">
           <span className="grow" />
           <button onClick={onClose}><X />{tr("ssh.cancel")}</button>
-          <button className="primary" disabled={!h.host.trim() || !h.user.trim()} onClick={save}><Save />{tr("ssh.save")}</button>
+          <button className="primary" disabled={!h.host.trim() || !h.user.trim() || port == null} onClick={save}><Save />{tr("ssh.save")}</button>
         </div>
       </div>
     </Modal>
@@ -676,14 +735,28 @@ function TunnelModal({ tunnel, onClose }: { tunnel: SavedTunnel; onClose: () => 
   const [t, setT] = useState<SavedTunnel>(tunnel);
   const tFolders = tunnelFolders.use();
   const set = (p: Partial<SavedTunnel>) => setT((x) => ({ ...x, ...p }));
+  // Tunnel mới: ô Port SSH trống → 22. Cổng local/đích luôn bắt buộc 1–65535.
+  const allTunnels = useTunnels();
+  const [isNew] = useState(() => !allTunnels.some((x) => x.id === tunnel.id));
+  const [portText, setPortText] = useState(isNew && tunnel.port === 22 ? "" : String(tunnel.port || ""));
+  const [localText, setLocalText] = useState(tunnel.localPort ? String(tunnel.localPort) : "");
+  const [remoteText, setRemoteText] = useState(tunnel.remotePort ? String(tunnel.remotePort) : "");
+  const port = parsePort(portText, isNew ? 22 : undefined);
+  const localPort = parsePort(localText);
+  const remotePort = parsePort(remoteText);
+  const portsOk = port != null && localPort != null && (t.kind === "D" || remotePort != null);
+  const setPort = (v: string) => { setPortText(v); const n = parsePort(v, isNew ? 22 : undefined); if (n != null) set({ port: n }); };
+  const setLocal = (v: string) => { setLocalText(v); const n = parsePort(v); if (n != null) set({ localPort: n }); };
+  const setRemote = (v: string) => { setRemoteText(v); const n = parsePort(v); if (n != null) set({ remotePort: n }); };
   const KIND_LABEL: Record<SavedTunnel["kind"], string> = {
     L: tr("ssh.localLLocalPortTargetVia"),
     R: tr("ssh.remoteRServerPortTargetVia"),
     D: "Dynamic (-D): SOCKS proxy",
   };
   const save = () => {
-    if (!t.host.trim() || !t.user.trim()) return;
-    saveTunnel({ ...t, name: t.name.trim() || tunnelDesc(t) });
+    if (!t.host.trim() || !t.user.trim() || !portsOk) return;
+    const next: SavedTunnel = { ...t, port: port!, localPort: localPort!, ...(t.kind !== "D" ? { remotePort: remotePort! } : {}) };
+    saveTunnel({ ...next, name: t.name.trim() || tunnelDesc(next) });
     onClose();
   };
   return (
@@ -714,7 +787,7 @@ function TunnelModal({ tunnel, onClose }: { tunnel: SavedTunnel; onClose: () => 
         </div>
         <div className="form-row">
           <label className="grow">Server host<input className="mono" value={t.host} placeholder="10.0.0.5" onChange={(e) => set({ host: e.target.value })} /></label>
-          <label style={{ width: 90 }}>Port<input className="mono" type="number" value={t.port} onChange={(e) => set({ port: Number(e.target.value) || 22 })} /></label>
+          <PortInput label="Port" width={90} text={portText} setText={setPort} bad={port == null} placeholder={isNew ? "22" : undefined} />
           <label className="grow">User<input value={t.user} onChange={(e) => set({ user: e.target.value })} /></label>
         </div>
         <label>{tr("ssh.privateKeyOptionalTunnelsShouldUse")}
@@ -724,11 +797,11 @@ function TunnelModal({ tunnel, onClose }: { tunnel: SavedTunnel; onClose: () => 
           </div>
         </label>
         <div className="form-row">
-          <label style={{ width: 150 }}>{t.kind === "D" ? tr("ssh.socksPort") : tr("ssh.localPort")}<input className="mono" type="number" value={t.localPort} onChange={(e) => set({ localPort: Number(e.target.value) || 0 })} /></label>
+          <PortInput label={t.kind === "D" ? tr("ssh.socksPort") : tr("ssh.localPort")} width={150} text={localText} setText={setLocal} bad={localPort == null} />
           {t.kind !== "D" && (
             <>
               <label className="grow">{tr("ssh.targetHost")}<input className="mono" value={t.remoteHost} placeholder="localhost" onChange={(e) => set({ remoteHost: e.target.value })} /></label>
-              <label style={{ width: 120 }}>{tr("ssh.targetPort")}<input className="mono" type="number" value={t.remotePort} onChange={(e) => set({ remotePort: Number(e.target.value) || 0 })} /></label>
+              <PortInput label={tr("ssh.targetPort")} width={120} text={remoteText} setText={setRemote} bad={remotePort == null} />
             </>
           )}
         </div>
@@ -767,7 +840,7 @@ function TunnelModal({ tunnel, onClose }: { tunnel: SavedTunnel; onClose: () => 
         <div className="toolbar">
           <span className="grow" />
           <button onClick={onClose}><X />{tr("ssh.cancel")}</button>
-          <button className="primary" disabled={!t.host.trim() || !t.user.trim()} onClick={save}><Save />{tr("ssh.save")}</button>
+          <button className="primary" disabled={!t.host.trim() || !t.user.trim() || !portsOk} onClick={save}><Save />{tr("ssh.save")}</button>
         </div>
       </div>
     </Modal>
@@ -804,7 +877,7 @@ function DockerModal({ cfg, base, onClose }: { cfg: ConnectCfg; base: ExecBase; 
   return (
     <Modal title={<><Container /> {tr("ssh.dockerContainers")}</>} width={760} onClose={onClose}>
       {/* minHeight cố định để khi Refresh (list → spinner) modal không bị co lại. */}
-      <div className="form" style={{ minHeight: 480 }}>
+      <div className="form docker-modal-body">
         <div className="toolbar">
           <span className="mono muted small grow ellipsis">{base.name || cfg.host} · {cfg.user}@{cfg.host}:{cfg.port}</span>
           {base.prod ? <span className="prod-tag">PROD</span> : null}

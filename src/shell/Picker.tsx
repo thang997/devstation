@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
-import { Check, ChevronDown } from "lucide-react";
+import { Check, ChevronDown, X } from "lucide-react";
 import { createPortal } from "react-dom";
 import { useT } from "../store/lang";
 
@@ -21,6 +21,8 @@ export interface PickerItem {
 /**
  * Dropdown tự vẽ thay cho <select> — kiểu nút nhánh của GitHub Desktop:
  * bấm mở panel, có ô lọc, chia nhóm, đánh dấu mục đang chọn.
+ * Bàn phím: ↓/Enter/Space trên nút mở panel; trong panel ↑/↓/Home/End chọn mục (bỏ qua disabled), Enter chọn,
+ * Esc/Tab đóng và trả focus về nút.
  */
 export function Picker({
   label,
@@ -65,6 +67,9 @@ export function Picker({
   const [pos, setPos] = useState<{ left: number; top?: number; bottom?: number; width: number; maxHeight: number } | null>(null);
   const box = useRef<HTMLDivElement>(null);
   const menu = useRef<HTMLDivElement>(null);
+  const btn = useRef<HTMLButtonElement>(null);
+  /** Mục đang được chọn bằng phím (id). */
+  const [hi, setHi] = useState<string | null>(null);
 
   const place = () => {
     const r = box.current?.getBoundingClientRect();
@@ -89,7 +94,7 @@ export function Picker({
       const t = e.target as Node;
       if (!box.current?.contains(t) && !menu.current?.contains(t)) setOpen(false);
     };
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { setOpen(false); btn.current?.focus(); } };
     // Cuộn/đổi cỡ cửa sổ → đóng cho khỏi lệch vị trí.
     // NHƯNG bỏ qua cuộn phát ra từ chính menu (danh sách dài) — nếu không, cuộn xem host sẽ tự đóng.
     const onScroll = (e: Event) => {
@@ -126,6 +131,41 @@ export function Picker({
     return out;
   }, [shown]);
 
+  /** Thứ tự hiển thị thực (theo nhóm) — để ↑/↓ đi đúng thứ tự trên màn hình. */
+  const flat = useMemo(() => groups.flatMap((g) => g.items).filter((i) => !i.disabled), [groups]);
+  // Mở panel / đổi bộ lọc → chọn sẵn mục đang chọn (hoặc mục đầu).
+  useEffect(() => {
+    if (!open) return;
+    setHi((cur) => (cur && flat.some((i) => i.id === cur) ? cur : (flat.find((i) => i.selected) ?? flat[0])?.id ?? null));
+  }, [open, flat]);
+  useEffect(() => {
+    if (!open || !hi) return;
+    menu.current?.querySelector(`[data-pid="${CSS.escape(hi)}"]`)?.scrollIntoView({ block: "nearest" });
+  }, [hi, open]);
+  const choose = (it: PickerItem) => {
+    if (it.disabled) return;
+    if (!keepOpen) { setOpen(false); btn.current?.focus(); }
+    onPick(it.id);
+  };
+  const navKey = (e: React.KeyboardEvent) => {
+    if (!flat.length) return;
+    const at = flat.findIndex((i) => i.id === hi);
+    const go = (i: number) => { e.preventDefault(); setHi(flat[(i + flat.length) % flat.length].id); };
+    if (e.key === "ArrowDown") go(at + 1);
+    else if (e.key === "ArrowUp") go(at < 0 ? flat.length - 1 : at - 1);
+    else if (e.key === "Home") go(0);
+    else if (e.key === "End") go(flat.length - 1);
+    else if (e.key === "Enter" || (e.key === " " && (e.target as HTMLElement).tagName !== "INPUT")) {
+      const it = flat[at >= 0 ? at : 0];
+      if (it) { e.preventDefault(); choose(it); }
+    } else if (e.key === "Tab") { setOpen(false); }
+  };
+  // Panel không có ô lọc → focus vào panel để nhận phím.
+  useEffect(() => {
+    if (open && pos && items.length <= 8) menu.current?.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, !!pos]);
+
   // Bề rộng nút cố định theo mục DÀI NHẤT (kẹp 28 ký tự) → chọn mục khác không làm nút co giãn, xô lệch
   // các thứ bên cạnh. Chữ dài hơn thì cắt "…".
   const minCh = useMemo(() => Math.min(28, items.reduce((m, it) => Math.max(m, it.label.length), 0)), [items]);
@@ -135,9 +175,13 @@ export function Picker({
       <button
         className={`picker-btn ${open ? "open" : ""}`}
         style={minCh ? { minWidth: `calc(${minCh}ch + 34px)` } : undefined}
+        ref={btn}
         title={title}
         disabled={disabled}
+        aria-haspopup="listbox"
+        aria-expanded={open}
         onClick={() => { setOpen(!open); setQ(""); }}
+        onKeyDown={(e) => { if (!open && (e.key === "ArrowDown" || e.key === "ArrowUp")) { e.preventDefault(); setOpen(true); setQ(""); } }}
       >
         <span className="ellipsis grow">{label}</span>
         <span className="caret"><ChevronDown /></span>
@@ -146,6 +190,9 @@ export function Picker({
         <div
           ref={menu}
           className="picker-menu"
+          role="listbox"
+          tabIndex={-1}
+          onKeyDown={navKey}
           style={{ position: "fixed", left: pos.left, top: pos.top, bottom: pos.bottom, minWidth: pos.width, maxHeight: pos.maxHeight }}
         >
           {items.length > 8 && (
@@ -155,12 +202,7 @@ export function Picker({
               placeholder={filterPlaceholder ?? tr("shell.filter")}
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && shown[0] && !shown[0].disabled) {
-                  setOpen(false);
-                  onPick(shown[0].id);
-                }
-              }}
+
             />
           )}
           <div className="picker-list">
@@ -170,12 +212,13 @@ export function Picker({
                 {g.items.map((it) => (
                   <div
                     key={it.id}
-                    className={`picker-item ${it.selected ? "on" : ""} ${it.disabled ? "disabled" : ""} ${it.className ?? ""}`}
-                    onClick={() => {
-                      if (it.disabled) return;
-                      if (!keepOpen) setOpen(false);
-                      onPick(it.id);
-                    }}
+                    data-pid={it.id}
+                    role="option"
+                    aria-selected={!!it.selected}
+                    aria-disabled={it.disabled || undefined}
+                    className={`picker-item ${it.selected ? "on" : ""} ${it.disabled ? "disabled" : ""} ${hi === it.id ? "hi" : ""} ${it.className ?? ""}`}
+                    onMouseMove={() => { if (!it.disabled && hi !== it.id) setHi(it.id); }}
+                    onClick={() => choose(it)}
                     onContextMenu={
                       onItemContextMenu
                         ? (e) => { e.preventDefault(); e.stopPropagation(); onItemContextMenu(it.id, e, () => setOpen(false)); }
@@ -190,9 +233,10 @@ export function Picker({
                       <button
                         className="picker-x"
                         title={tr("shell.removeFromList")}
+                        aria-label={tr("shell.removeFromList")}
                         onClick={(e) => { e.stopPropagation(); onRemove(it.id); }}
                       >
-                        ×
+                        <X />
                       </button>
                     )}
                   </div>

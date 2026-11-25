@@ -1,6 +1,6 @@
 import { createElement } from "react";
 import type { AppId, AppManifest, AppModule } from "./types";
-import { Container, GitBranch, Send, SquareTerminal, Wrench, Zap, type LucideIcon } from "lucide-react";
+import { Container, GitBranch, Languages, Send, SquareTerminal, Wrench, Zap, type LucideIcon } from "lucide-react";
 import { DbIcon } from "../shell/icons";
 
 /** Icon app trong launcher / status bar: SVG lucide, mỗi app một màu (`.app-ic` cỡ theo chỗ dùng). */
@@ -55,6 +55,12 @@ export const APPS: AppManifest[] = [
     description: "Browse Harbor, download images (.tar)",
     keywords: "docker harbor image registry container tag pull",
     load: () => import("./registry/index"), // "./registry" sẽ trỏ nhầm vào chính file registry.ts
+  },
+  {
+    id: "translate", title: "Web Translate", icon: "", iconNode: ic(Languages, "#d29922"),
+    description: "Open any web page translated to your language in real time",
+    keywords: "dich trang web translate google deepl tieng viet browser",
+    load: () => import("./translate"),
   },
 ];
 

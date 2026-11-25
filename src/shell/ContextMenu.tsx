@@ -5,7 +5,7 @@ export interface CtxItem {
   id: string;
   /** Bỏ trống + sep: true để vẽ đường kẻ. */
   label?: string;
-  /** Icon nhỏ hiện trước nhãn (emoji/glyph/SVG). */
+  /** Icon lucide hiện trước nhãn (`<Trash2 />`). */
   icon?: ReactNode;
   hint?: string;
   danger?: boolean;
@@ -14,10 +14,30 @@ export interface CtxItem {
   action?: () => void;
 }
 
-/** Menu chuột phải: định vị theo con trỏ, tự né mép màn hình, đóng khi bấm ra ngoài / Escape. */
+/** Menu chuột phải: định vị theo con trỏ, tự né mép màn hình, đóng khi bấm ra ngoài / Escape.
+ *  Bàn phím: ↑/↓ (bỏ qua mục disabled/đường kẻ), Home/End, Enter/Space chọn, Esc/Tab đóng; mở ra focus vào menu,
+ *  đóng thì trả focus về phần tử trước đó. */
 export function ContextMenu({ x, y, items, onClose }: { x: number; y: number; items: CtxItem[]; onClose: () => void }) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ x, y, visible: false });
+  const [hi, setHi] = useState(-1);
+  const usable = items.map((it, i) => (!it.sep && !it.disabled ? i : -1)).filter((i) => i >= 0);
+  const pick = (it: CtxItem) => { if (it.disabled) return; onClose(); it.action?.(); };
+  useEffect(() => {
+    const prev = document.activeElement as HTMLElement | null;
+    ref.current?.focus();
+    return () => { if (prev && prev.isConnected) prev.focus(); };
+  }, []);
+  const onMenuKey = (e: React.KeyboardEvent) => {
+    if (!usable.length) return;
+    const at = usable.indexOf(hi);
+    if (e.key === "ArrowDown") { e.preventDefault(); setHi(usable[at < 0 ? 0 : (at + 1) % usable.length]); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setHi(usable[at < 0 ? usable.length - 1 : (at - 1 + usable.length) % usable.length]); }
+    else if (e.key === "Home") { e.preventDefault(); setHi(usable[0]); }
+    else if (e.key === "End") { e.preventDefault(); setHi(usable[usable.length - 1]); }
+    else if ((e.key === "Enter" || e.key === " ") && hi >= 0) { e.preventDefault(); pick(items[hi]); }
+    else if (e.key === "Tab") { e.preventDefault(); onClose(); }
+  };
 
   useLayoutEffect(() => {
     const r = ref.current?.getBoundingClientRect();
@@ -52,22 +72,24 @@ export function ContextMenu({ x, y, items, onClose }: { x: number; y: number; it
     <div
       ref={ref}
       className="ctx"
+      role="menu"
+      tabIndex={-1}
       style={{ left: pos.x, top: pos.y, visibility: pos.visible ? "visible" : "hidden" }}
+      onKeyDown={onMenuKey}
       onMouseDown={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.preventDefault()}
     >
-      {items.map((it) =>
+      {items.map((it, i) =>
         it.sep ? (
-          <div key={it.id} className="ctx-sep" />
+          <div key={it.id} className="ctx-sep" role="separator" />
         ) : (
           <div
             key={it.id}
-            className={`ctx-item ${it.danger ? "danger" : ""} ${it.disabled ? "disabled" : ""}`}
-            onClick={() => {
-              if (it.disabled) return;
-              onClose();
-              it.action?.();
-            }}
+            role="menuitem"
+            aria-disabled={it.disabled || undefined}
+            className={`ctx-item ${it.danger ? "danger" : ""} ${it.disabled ? "disabled" : ""} ${i === hi ? "hi" : ""}`}
+            onMouseEnter={() => setHi(it.disabled ? -1 : i)}
+            onClick={() => pick(it)}
           >
             {it.icon !== undefined && <span className="ctx-icon">{it.icon}</span>}
             <span className="grow ellipsis">{it.label}</span>

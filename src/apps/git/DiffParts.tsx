@@ -2,6 +2,7 @@ import { renderLog } from "../../shell/renderDebug";
 import { memo, useEffect, useMemo, useState } from "react";
 import { Splitter, useSplitSize } from "../../shell/Resizable";
 import { useT } from "../../store/lang";
+import { listNav } from "../../shell/listNav";
 import { ChevronDown, ChevronRight, Copy } from "lucide-react";
 import type { Commit } from "./api";
 import { parseDiff, type DiffFile } from "./diffParse";
@@ -140,7 +141,7 @@ export const CommitView = memo(function CommitView({ text, commit, onCopy }: { t
       </div>
       {files.length ? (
         <div className="cv-split">
-          <div className="cv-files" style={{ width: listW }}>
+          <div className="cv-files" style={{ width: listW }} role="listbox" onKeyDown={(e) => listNav(e, { row: ".cv-file", select: true })}>
             {files.map((f, i) => <CvFileRow key={`${f.path}${i}`} f={f} i={i} on={i === sel} onSelect={setSel} />)}
           </div>
           <Splitter axis="x" live="prev" min={160} max={600} onResize={(d) => setListW((w) => w + d)} onReset={() => setListW(280)} />
@@ -166,6 +167,9 @@ const CvFileRow = memo(function CvFileRow({ f, i, on, onSelect }: { f: DiffFile;
   return (
     <div
       className={`cv-file ${on ? "on" : ""}`}
+      tabIndex={0}
+      role="option"
+      aria-selected={on}
       onClick={() => onSelect(i)}
       title={f.oldPath ? `${f.oldPath} → ${f.path}` : f.path}
     >

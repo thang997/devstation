@@ -4,6 +4,8 @@
   --bg: #0d1117;        /* canvas */
   --bg-2: #161b22;      /* sidebar / header */
   --bg-3: #21262d;      /* hover / nút */
+  --bg-1: #010409;      /* nền ô nhập nhỏ (sâu hơn canvas) */
+  --k-set: #bc8cff; --k-zset: #ff9bce; --k-stream: #39c5cf; /* màu kiểu key Redis */
   --line: #30363d;      /* viền */
   --line-muted: #21262d;
   --fg: #e6edf3;
@@ -31,6 +33,8 @@
   --bg: #f4f5f7;        /* canvas: xám rất nhạt, đỡ chói */
   --bg-2: #eceef1;      /* sidebar / header: sâu hơn một bậc để tách khối */
   --bg-3: #e2e5ea;      /* hover / nút */
+  --bg-1: #ffffff;
+  --k-set: #8250df; --k-zset: #bf3989; --k-stream: #1b7c83;
   --line: #d7dbe1;
   --line-muted: #e6e9ee;
   --fg: #1b1f24;
@@ -68,8 +72,11 @@ button {
   transition: background .12s, border-color .12s;
 }
 button:hover { background: var(--line); border-color: #8b949e; }
-/* Không vẽ vòng focus (outline/glow) khi hover/bấm — chỉ đổi nền/viền. */
-button:focus, button:focus-visible, [tabindex]:focus, [tabindex]:focus-visible { outline: none; }
+/* Bấm chuột: không vẽ vòng focus (chỉ đổi nền/viền). Bàn phím (Tab): vòng 2px màu accent — :focus-visible chỉ hiện
+   khi điều hướng bằng phím, người dùng chuột không thấy gì khác. Hàng danh sách (.side-item/.tree-row…) có kiểu riêng bên dưới. */
+button:focus, [tabindex]:focus { outline: none; }
+button:focus-visible, [tabindex]:focus-visible, summary:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent); }
+.icon-btn:focus-visible { box-shadow: 0 0 0 2px var(--accent); border-radius: 4px; }
 button.primary { background: var(--primary); border-color: #0000; color: #fff; }
 button.primary:hover { background: var(--primary-hover); border-color: #0000; }
 button.danger { background: var(--danger-bg); border-color: #0000; color: #fff; }
@@ -347,7 +354,7 @@ input::placeholder, textarea::placeholder { color: #6e7681; }
 .terminal { flex: 1; background: #010409; border: 1px solid var(--line); border-radius: 0; padding: 10px; }
 
 /* ── SSH ── */
-.side-item:hover .row-actions { visibility: visible; }
+.side-item:hover .row-actions, .side-item:focus-within .row-actions, .side-item.sel .row-actions { visibility: visible; }
 .ssh-view { gap: 6px; }
 /* Dải thống kê server (CPU/RAM/net/disk) kiểu MobaXterm. */
 .ssh-stats { display: flex; align-items: center; gap: 14px; flex: 0 0 auto; flex-wrap: wrap;
@@ -453,8 +460,11 @@ input::placeholder, textarea::placeholder { color: #6e7681; }
 .side-item.prod { background: color-mix(in srgb, var(--danger) 14%, transparent); }
 .side-item.prod:hover { background: color-mix(in srgb, var(--danger) 22%, transparent); }
 /* Hàng đang chọn: luôn thắng nền PROD (nếu không, hàng PROD được chọn sẽ trông như không chọn). */
-.side-item.sel, .side-item.prod.sel { background: var(--sel); }
-.side-item.sel:hover, .side-item.prod.sel:hover { background: color-mix(in srgb, var(--primary) 26%, transparent); }
+.side-item.sel { background: var(--sel); }
+.side-item.sel:hover { background: color-mix(in srgb, var(--primary) 26%, transparent); }
+/* Hàng PROD đang chọn: vẫn giữ sắc đỏ (an toàn) nhưng phân biệt được với hàng PROD không chọn. */
+.side-item.prod.sel { background: color-mix(in srgb, var(--danger) 22%, var(--sel)); box-shadow: inset 2px 0 0 var(--danger); }
+.side-item.prod.sel:hover { background: color-mix(in srgb, var(--danger) 30%, var(--sel)); }
 .prod-tag, .env-tag {
   flex: 0 0 auto; font-size: 9px; font-weight: 700; letter-spacing: .4px; line-height: 1.5;
   border: 1px solid currentColor; border-radius: 3px; padding: 0 4px;
@@ -588,7 +598,7 @@ kbd {
 .file-row:hover { background: var(--bg-3); }
 .file-row.on { background: var(--sel); }
 .row-actions { visibility: hidden; display: flex; }
-.file-row:hover .row-actions { visibility: visible; }
+.file-row:hover .row-actions, .file-row:focus-within .row-actions, .file-row.on .row-actions { visibility: visible; }
 .st { width: 14px; font-weight: 700; font-size: 11px; text-align: center; font-family: "Cascadia Mono", "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", "Ubuntu Mono", monospace; }
 .st-M { color: var(--warn); }
 .st-A, .st-U, .st-C { color: var(--ok); }
@@ -980,6 +990,7 @@ svg.lucide.spin { animation: spin .8s linear infinite; }
 .rjson-bad { color: var(--danger); display: inline-flex; align-items: center; gap: 4px; }
 
 /* Lưới kết quả DB: bấm tiêu đề cột để sắp xếp */
+.result-pane .grid th { text-transform: none; letter-spacing: 0; font-size: 11px; }
 .grid th.sortable { cursor: pointer; user-select: none; }
 .grid th.sortable:hover { color: var(--fg); background: var(--bg-3); }
 .grid th .th-in { display: inline-flex; align-items: center; gap: 4px; }
@@ -1119,3 +1130,57 @@ body { font-variant-numeric: tabular-nums; }
 .merge-banner { display: flex; align-items: center; gap: 8px; padding: 6px 8px; margin: 6px 0; font-size: 12px; border: 1px solid var(--line); background: color-mix(in srgb, var(--ok) 10%, transparent); }
 .merge-banner.bad { background: color-mix(in srgb, var(--warn) 14%, transparent); }
 .merge-banner button { flex: none; }
+
+/* Web Translate */
+.webtr { height: 100%; overflow: auto; display: flex; justify-content: center; padding: 28px 16px; }
+.webtr-box { width: 100%; max-width: 760px; display: flex; flex-direction: column; gap: 12px; }
+.webtr-box h2 { margin: 0; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.webtr-url { display: flex; gap: 8px; }
+.webtr-url input { font-size: 14px; padding: 7px 10px; }
+.webtr-row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+.webtr-swap { margin-bottom: 4px; }
+.webtr-msg { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; color: var(--muted); line-height: 1.45; }
+.webtr-msg svg.lucide { flex: none; margin-top: 1px; }
+.webtr-warn { color: var(--warn); }
+.webtr-ok { color: var(--ok); }
+.webtr-bad { color: var(--danger); }
+.webtr-row > .field { min-width: 160px; }
+.webtr-key { display: flex; gap: 8px; align-items: center; }
+.webtr-hist { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.webtr-hist-h { display: flex; align-items: center; gap: 10px; }
+.webtr-hist-list { max-height: 240px; overflow: auto; border-top: 1px solid var(--line-muted); }
+.webtr-hist-row { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+
+.redis-offline { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; height: 100%; text-align: center; }
+.redis-offline > svg.lucide { width: 28px; height: 28px; color: var(--muted); }
+.redis-offline .error-box { max-width: 560px; text-align: left; }
+
+/* Khung hỏi/nhập inline (không phải lỗi): nền trung tính. */
+.inline-panel { margin: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg-2); display: flex; flex-direction: column; gap: 8px; }
+
+.ctx-item.hi { background: var(--accent); color: #fff; }
+.ctx-item.hi .ctx-hint { color: #ffffffcc; }
+.ctx:focus, .modal:focus { outline: none; }
+.ctx:focus-visible { box-shadow: 0 8px 24px #010409cc; }
+.modal:focus-visible { box-shadow: 0 12px 48px #000a; }
+.picker-item.hi { background: var(--bg-3); }
+.picker-menu:focus, .picker-menu:focus-visible { outline: none; box-shadow: 0 8px 24px #010409cc; }
+.launcher-app.on .launcher-close { visibility: visible; }
+.update-bar.indeterminate > div { width: 30%; transition: none; animation: update-bar-indet 1.2s ease-in-out infinite; }
+@keyframes update-bar-indet { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+@media (prefers-reduced-motion: reduce) { .update-bar.indeterminate > div { animation: none; width: 100%; opacity: .5; } }
+.tun-autostart { opacity: .7; display: inline-flex; }
+.tun-err-ic { display: inline-flex; flex: none; }
+.docker-modal-body { min-height: 480px; }
+.field-error { display: block; margin-top: 2px; font-weight: normal; }
+input.invalid, input[aria-invalid="true"] { border-color: var(--danger); }
+.sftp-list:focus { outline: none; }
+.rkey-empty { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.reg-jobs-head { display: flex; align-items: center; gap: 8px; }
+.reg-jobs-head .reg-jobs-total { margin: 0; }
+.reg-jobs-clear { padding: 2px 8px; font-size: 12px; }
+.reg-jobs-more { padding: 2px 8px; }
+.unsaved-dot { color: var(--warn); font-weight: 700; margin-left: 2px; }
+.http-msg { display: flex; gap: 6px; align-items: flex-start; white-space: pre-line; }
+.http-msg > span { flex: 1; min-width: 0; }
+.tools-welcome { flex-wrap: wrap; justify-content: center; max-width: 560px; margin-top: 8px; }

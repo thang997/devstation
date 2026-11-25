@@ -29,6 +29,8 @@ export interface FolderNode {
   name: string;
   open: boolean;
   children: TreeNode[];
+  /** Thư mục PROD: request bên trong (kể cả thư mục con) mở ra tab viền đỏ, gửi lệnh ghi phải xác nhận. */
+  prod?: boolean;
 }
 export type TreeNode = ReqNode | FolderNode;
 
@@ -186,6 +188,20 @@ export function flattenFolders(nodes: TreeNode[], depth = 0, out: { id: string; 
 
 export function renameNode(id: string, name: string) {
   commit(updateIn(tree, id, (n) => ({ ...n, name })));
+}
+
+export function setFolderProd(id: string, prod: boolean) {
+  commit(updateIn(tree, id, (n) => (n.kind === "folder" ? { ...n, prod } : n)));
+}
+
+/** Node `id` có nằm trong (hoặc chính là) thư mục PROD không. */
+export function isUnderProd(id: string, nodes: TreeNode[] = tree, inherited = false): boolean | null {
+  for (const n of nodes) {
+    const here = inherited || (n.kind === "folder" && !!n.prod);
+    if (n.id === id) return here;
+    if (n.kind === "folder") { const r = isUnderProd(id, n.children, here); if (r !== null) return r; }
+  }
+  return null;
 }
 
 export function toggleFolder(id: string) {

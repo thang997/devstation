@@ -2,7 +2,7 @@ import { Swap } from "../../shell/Swap";
 import { renderLog } from "../../shell/renderDebug";
 import { copyText } from "../../shell/clipboard";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { Braces, ChevronDown, ChevronRight, ChevronsDown, Copy, Database, Folder, FolderOpen, FolderTree, Info, KeyRound, List, Minimize2, Pencil, Plug, Plus, RefreshCw, Save, Trash2, TriangleAlert, Unplug, WandSparkles, X } from "lucide-react";
+import { Braces, ChevronDown, ChevronRight, ChevronsDown, Copy, Database, Folder, FolderOpen, FolderTree, Info, KeyRound, List, Minimize2, Pencil, Plug, Plus, RefreshCw, Save, Search, Trash2, TriangleAlert, Unplug, WandSparkles, X } from "lucide-react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { AppModule, Tab } from "../types";
@@ -12,6 +12,7 @@ import { Modal } from "../../shell/Modal";
 import { Picker } from "../../shell/Picker";
 import { Loading } from "../../shell/Loading";
 import { confirmDialog } from "../../shell/confirm";
+import { listNav, rowKey } from "../../shell/listNav";
 import { Splitter, useSplitSize } from "../../shell/Resizable";
 import { describe, newConn, sessionPasswords, useConns, type Conn } from "./connections";
 import { t, useT } from "../../store/lang";
@@ -144,15 +145,27 @@ function treeRows(root: TNode, open: Set<string>): TreeRow[] {
 
 /** Hành động của hàng key — ref ổn định để hàng (memo) không vẽ lại khi Session đổi state
  *  (gõ pattern, sửa giá trị, chọn key…). Chỉ hàng đổi `on`/`isOpen` mới vẽ lại. */
-interface KeyRowApi { toggle: (path: string) => void; open: (key: string) => void }
+interface KeyRowApi { toggle: (path: string) => void; open: (key: string) => void; remove: (key: string) => void }
 
 const TreeKeyRow = memo(function TreeKeyRow({ row, isOpen, on, api }: { row: TreeRow; isOpen: boolean; on: boolean; api: { current: KeyRowApi } }) {
   renderLog("TreeKeyRow");
+  const folder = row.kind === "folder";
   return (
     <div
-      className={`rkey ${row.kind === "folder" ? "rkey-folder" : ""} ${on ? "on" : ""}`}
+      className={`rkey ${folder ? "rkey-folder" : ""} ${on ? "on" : ""}`}
       style={{ paddingLeft: 8 + row.depth * 14 }}
-      onClick={() => (row.kind === "folder" ? api.current.toggle(row.path) : api.current.open(row.full!))}
+      tabIndex={0}
+      data-key={folder ? undefined : row.full}
+      onClick={() => (folder ? api.current.toggle(row.path) : api.current.open(row.full!))}
+      onKeyDown={(e) => rowKey(e, folder ? {
+        Enter: () => api.current.toggle(row.path),
+        " ": () => api.current.toggle(row.path),
+        ArrowLeft: () => { if (isOpen) api.current.toggle(row.path); },
+        ArrowRight: () => { if (!isOpen) api.current.toggle(row.path); },
+      } : {
+        Enter: () => api.current.open(row.full!),
+        Delete: () => api.current.remove(row.full!),
+      })}
       title={row.kind === "leaf" ? row.full : `${row.path} (${row.count})`}
     >
       {row.kind === "folder" ? (
@@ -176,7 +189,14 @@ const TreeKeyRow = memo(function TreeKeyRow({ row, isOpen, on, api }: { row: Tre
 const FlatKeyRow = memo(function FlatKeyRow({ k, on, api }: { k: string; on: boolean; api: { current: KeyRowApi } }) {
   renderLog("FlatKeyRow");
   return (
-    <div className={`rkey ${on ? "on" : ""}`} onClick={() => api.current.open(k)} title={k}>
+    <div
+      className={`rkey ${on ? "on" : ""}`}
+      tabIndex={0}
+      data-key={k}
+      onClick={() => api.current.open(k)}
+      onKeyDown={(e) => rowKey(e, { Enter: () => api.current.open(k), Delete: () => api.current.remove(k) })}
+      title={k}
+    >
       <span className="mono ellipsis grow">{k}</span>
     </div>
   );
@@ -225,13 +245,21 @@ function Sidebar() {
   const conns = useConns((s) => s.conns);
   const [sel, setSel] = useState<string | null>(null);
   return (
-    <div className="side-list">
+    <div className="side-list" onKeyDown={(e) => { listNav(e, { row: ".side-item", select: true }); }}>
       <div className="side-head">
         <span>{tr("redis.redisConnections")}</span>
         <button className="icon-btn" title={tr("redis.newConnection")} onClick={() => openForm()}><Plus /></button>
       </div>
       {conns.map((c) => (
-        <div key={c.id} className={`side-item ${c.env === "prod" ? "prod" : ""} ${sel === c.id ? "sel" : ""}`} onClick={() => setSel(c.id)} onDoubleClick={() => openSession(c)} title={`${tr("redis.doubleClickToOpen")} · ${describe(c)}`}>
+        <div
+          key={c.id}
+          className={`side-item ${c.env === "prod" ? "prod" : ""} ${sel === c.id ? "sel" : ""}`}
+          tabIndex={0}
+          onClick={() => setSel(c.id)}
+          onDoubleClick={() => openSession(c)}
+          onKeyDown={(e) => rowKey(e, { Enter: () => openSession(c) })}
+          title={`${tr("redis.doubleClickToOpen")} · ${describe(c)}`}
+        >
           <span className="grow ellipsis">{c.name}</span>
           <span className={`env-tag ${c.env}`}>{c.env.toUpperCase()}</span>
           <span className="muted small">{c.port}</span>
@@ -372,7 +400,7 @@ function fmtTtl(ttl: number) {
 
 const KIND_COLOR: Record<string, string> = {
   string: "var(--ok)", hash: "var(--accent)", list: "var(--warn)",
-  set: "#bc8cff", zset: "#ff9bce", stream: "#39c5cf", none: "var(--muted)",
+  set: "var(--k-set)", zset: "var(--k-zset)", stream: "var(--k-stream)", none: "var(--muted)",
 };
 
 /** Vỏ ngoài: kết nối bị xoá khi tab đang mở → gỡ hẳn phần thân (cleanup ngắt kết nối vẫn chạy) thay vì
@@ -396,6 +424,8 @@ function SessionBody({ tab }: { tab: Tab }) {
   const [remember, setRemember] = useState(true);
   const [connecting, setConnecting] = useState(false);
   const [needPw, setNeedPw] = useState(false);
+  /** Không có phiên: vừa bấm Ngắt hoặc nối lỗi (không phải lỗi mật khẩu). Khác với lúc đang tự nối khi mở tab. */
+  const [offline, setOffline] = useState(false);
   const autoTried = useRef(false);
   const [error, setError] = useState("");
 
@@ -412,7 +442,6 @@ function SessionBody({ tab }: { tab: Tab }) {
   const [detail, setDetail] = useState<KeyDetail | null>(null);
   const [loadingKey, setLoadingKey] = useState(false);
   const [editValue, setEditValue] = useState<string | null>(null);
-  const [confirmDel, setConfirmDel] = useState(false);
   const [info, setInfo] = useState<string | null>(null);
   /** Bề rộng cột key — kéo được, nhớ lại. */
   const [keysW, setKeysW] = useSplitSize("redis.keys", 300, 180, 600);
@@ -424,6 +453,8 @@ function SessionBody({ tab }: { tab: Tab }) {
   const keyTree = useMemo(() => (treeView ? buildTree(keys) : null), [keys, treeView]);
   const rows = useMemo(() => (keyTree ? treeRows(keyTree, openFolders) : []), [keyTree, openFolders]);
   const keyRowApi = useRef<KeyRowApi>(null as unknown as KeyRowApi);
+  /** Lượt mở key mới nhất — ↑/↓ mở key liên tục, bỏ kết quả về muộn của key cũ. */
+  const openSeq = useRef(0);
 
   useEffect(() => () => {
     if (dbIdRef.current) void call("redis_disconnect", { id: dbIdRef.current }).catch(() => {});
@@ -447,6 +478,7 @@ function SessionBody({ tab }: { tab: Tab }) {
 
   const connect = async (pw: string = password) => {
     setConnecting(true);
+    setOffline(false);
     setError("");
     try {
       const { id, tunnelId } = await redisConnectMaybeTunnel(conn, pw);
@@ -466,8 +498,12 @@ function SessionBody({ tab }: { tab: Tab }) {
       log(t("redis.logConnected", { name: conn.name, desc: describe(conn) }));
       await loadKeys(id, "*");
     } catch (e) {
-      setError(errText(e));
-      setNeedPw(true); // lỗi (vd. sai mật khẩu) → mở lại modal nhập
+      const msg = errText(e);
+      setError(msg);
+      // Chỉ lỗi xác thực mới hỏi mật khẩu; lỗi mạng / tunnel / sai host → màn "chưa kết nối" có Thử lại + Sửa cấu hình
+      // (trước đây mọi lỗi đều bật modal mật khẩu → tưởng nhầm là sai mật khẩu).
+      if (/NOAUTH|WRONGPASS|invalid (username-)?password|auth(entication)? (required|failed)|requires? (a )?password/i.test(msg)) setNeedPw(true);
+      else setOffline(true);
     } finally {
       setConnecting(false);
     }
@@ -503,36 +539,45 @@ function SessionBody({ tab }: { tab: Tab }) {
 
   const openKey = async (k: string) => {
     if (!dbId) return;
+    const my = ++openSeq.current;
     setSelected(k);
     setEditValue(null);
     setInfo(null);
     setLoadingKey(true);
     setError("");
     try {
-      setDetail(await call<KeyDetail>("redis_key", { id: dbId, key: k }));
+      const d = await call<KeyDetail>("redis_key", { id: dbId, key: k });
+      if (my === openSeq.current) setDetail(d);
     } catch (e) {
+      if (my !== openSeq.current) return;
       setDetail(null);
       setError(errText(e));
     } finally {
-      setLoadingKey(false);
+      if (my === openSeq.current) setLoadingKey(false);
     }
   };
 
-  keyRowApi.current = { toggle: toggleFolder, open: (k) => void openKey(k) };
-
-  const del = async () => {
-    if (!dbId || !selected) return;
-    setConfirmDel(false);
+  const del = async (key: string | null = selected) => {
+    if (!dbId || !key) return;
     try {
-      const n = await call<number>("redis_del", { id: dbId, keys: [selected] });
-      log(t("redis.logDeleted", { selected, n }));
-      setKeys((ks) => ks.filter((k) => k !== selected));
-      setSelected(null); setDetail(null);
+      const n = await call<number>("redis_del", { id: dbId, keys: [key] });
+      log(t("redis.logDeleted", { selected: key, n }));
+      setKeys((ks) => ks.filter((k) => k !== key));
+      if (key === selected) { setSelected(null); setDetail(null); }
       setDbsize((s) => (s === null ? s : Math.max(0, s - n)));
     } catch (e) {
       setError(errText(e));
     }
   };
+
+  const isProdConn = conn.env === "prod";
+  /** Hỏi rồi xoá key (cùng câu hỏi với nút xoá ở khung giá trị) — dùng cho phím Delete trên danh sách key. */
+  const confirmDel = (key: string) => void confirmDialog({
+    message: (isProdConn ? tr("redis.thisIsAProdConnection") : "") + tr("redis.permanentlyDeleteKey") + " " + key + "?",
+    confirmLabel: tr("redis.deleteKey"),
+  }).then((ok) => ok && void del(key));
+
+  keyRowApi.current = { toggle: toggleFolder, open: (k) => void openKey(k), remove: confirmDel };
 
   /** Giá trị string là JSON → hiện đẹp (nhớ lựa chọn Pretty/Raw). */
   const [pretty, setPretty] = useState(() => localStorage.getItem("redis.prettyJson") !== "0");
@@ -575,6 +620,20 @@ function SessionBody({ tab }: { tab: Tab }) {
         <Loading label={<><div>{tr("redis.connectingTo")} <b>{conn.name}</b>…</div><div className="muted small">Redis · {describe(conn)}</div></>} />
       </div>
     );
+    if (!connecting && !needPw && offline) return (
+      <div className="view">
+        <div className="empty redis-offline">
+          <Unplug />
+          <div><b>{conn.name}</b> — {tr("redis.notConnected")}</div>
+          <div className="muted small">Redis · {describe(conn)}</div>
+          {error && <div className="error-box pre"><TriangleAlert /> {error}</div>}
+          <div className="toolbar">
+            <button onClick={() => openForm(conn.id)}><Pencil />{tr("redis.editConfig")}</button>
+            <button className="primary" autoFocus onClick={() => void connect()}><Plug />{tr("redis.connect")}</button>
+          </div>
+        </div>
+      </div>
+    );
     if (connecting || !needPw) return connectingScreen;
     return (
       <>
@@ -584,7 +643,7 @@ function SessionBody({ tab }: { tab: Tab }) {
             <div className="muted small">{conn.name} — Redis · {describe(conn)}</div>
             <label>{tr("redis.password")}
               <input type="password" autoFocus value={password} onChange={(e) => setPassword(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && connect()} placeholder={tr("redis.leaveEmptyIfNotNeeded")} />
+                onKeyDown={(e) => { if (e.key === "Enter" && !connecting) void connect(); }} placeholder={tr("redis.leaveEmptyIfNotNeeded")} />
             </label>
             <label className="check">
               <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
@@ -609,7 +668,6 @@ function SessionBody({ tab }: { tab: Tab }) {
   return (
     <div className="view">
       <div className="toolbar">
-        <span className="dot green" />
         <Picker
           title={tr("redis.pickDatabase")}
           label={<span className="ellipsis">db{db}</span>}
@@ -630,6 +688,7 @@ function SessionBody({ tab }: { tab: Tab }) {
           if (dbIdRef.current) void call("redis_disconnect", { id: dbIdRef.current }).catch(() => {});
           if (tunnelIdRef.current) void invoke("ssh_tunnel_close", { id: tunnelIdRef.current }).catch(() => {});
           dbIdRef.current = null; tunnelIdRef.current = null; setDbId(null); setDetail(null); setKeys([]);
+          setError(""); setOffline(true);
         }}><Unplug />{tr("redis.disconnect")}</button>
       </div>
 
@@ -645,7 +704,16 @@ function SessionBody({ tab }: { tab: Tab }) {
               onClick={() => { const v = !treeView; setTreeView(v); localStorage.setItem("redis.treeView", v ? "1" : "0"); }}
             >{treeView ? <FolderTree /> : <List />}</button>
           </div>
-          <div className="rkey-list">
+          <div
+            className="rkey-list"
+            onKeyDown={(e) => {
+              // ↑/↓ chỉ chuyển focus; tới key (không phải folder) thì mở key đó — không bật/tắt folder khi đi qua.
+              const before = document.activeElement;
+              if (!listNav(e, { row: ".rkey" }) || document.activeElement === before) return;
+              const k = (document.activeElement as HTMLElement | null)?.dataset.key;
+              if (k) keyRowApi.current.open(k);
+            }}
+          >
             {treeView
               ? rows.map((row) => (
                   <TreeKeyRow
@@ -658,7 +726,17 @@ function SessionBody({ tab }: { tab: Tab }) {
                 ))
               : keys.map((k) => <FlatKeyRow key={k} k={k} on={k === selected} api={keyRowApi} />)}
             {loadingKeys && <Loading variant={keys.length ? "row" : "center"} />}
-            {!keys.length && !loadingKeys && <div className="muted small pad">{tr("redis.noKeysMatchPattern", { pattern })}</div>}
+            {!keys.length && !loadingKeys && (
+              <div className="muted small pad rkey-empty">
+                <div>{tr("redis.noKeysMatchPattern", { pattern })}</div>
+                <div className="rkey-empty-hint">{tr("redis.noKeysHint")} <span className="muted">(db{db} · {dbsize ?? "…"} {tr("redis.keys")})</span></div>
+                {pattern.trim() !== "*" && (
+                  <button className="rkey-empty-btn" onClick={() => { setPattern("*"); setKeys([]); setCursor(0); void loadKeys(dbId, "*"); }}>
+                    <Search />{tr("redis.showAllKeys")}
+                  </button>
+                )}
+              </div>
+            )}
             {!loadingKeys && cursor !== 0 && (
               <button className="rkey-more" onClick={() => void loadKeys(dbId, pattern, cursor)}><ChevronsDown />{tr("redis.loadMore")}</button>
             )}
@@ -676,21 +754,10 @@ function SessionBody({ tab }: { tab: Tab }) {
                 <span className="grow" />
                 <button className="icon-btn" title={tr("redis.reload")} onClick={() => void openKey(detail.key)}><RefreshCw /></button>
                 <button className="icon-btn" title={tr("redis.copyKeyName")} onClick={() => void copyText(detail.key)}><Copy /></button>
-                <button className="icon-btn danger" title={tr("redis.deleteKey")} onClick={() => setConfirmDel(true)}><Trash2 /></button>
+                <button className="icon-btn danger" title={tr("redis.deleteKey")} onClick={() => void confirmDialog({ message: (isProd ? tr("redis.thisIsAProdConnection") : "") + tr("redis.permanentlyDeleteKey") + " " + detail.key + "?", confirmLabel: tr("redis.deleteKey") }).then((ok) => ok && void del())}><Trash2 /></button>
               </>
             ) : tr("redis.value")}
           </div>
-
-          {confirmDel && detail && (
-            <div className="error-box">
-              {isProd ? tr("redis.thisIsAProdConnection") : ""}{tr("redis.permanentlyDeleteKey")} <b className="mono">{detail.key}</b>?
-              <div className="toolbar">
-                <span className="grow" />
-                <button onClick={() => setConfirmDel(false)}><X />{tr("redis.cancel")}</button>
-                <button className="primary danger" onClick={() => void del()}><Trash2 />{tr("redis.deleteKey")}</button>
-              </div>
-            </div>
-          )}
 
           {info !== null ? (
             <pre className="io mono rinfo">{info}</pre>

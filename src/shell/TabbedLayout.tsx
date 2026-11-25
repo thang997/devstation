@@ -75,7 +75,19 @@ export function TabbedLayout({
         </>
       )}
       <main className="main">
-        <div className="tabbar">
+        <div className="tabbar" role="tablist"
+          onKeyDown={(e) => {
+            // ←/→ chuyển giữa các tab khi một tab đang có focus (Home/End: tab đầu/cuối).
+            const t = e.target as HTMLElement;
+            if (!t.classList.contains("tab")) return;
+            const list = Array.from(e.currentTarget.querySelectorAll<HTMLElement>(".tab"));
+            const i = list.indexOf(t);
+            const j = e.key === "ArrowRight" ? i + 1 : e.key === "ArrowLeft" ? i - 1 : e.key === "Home" ? 0 : e.key === "End" ? list.length - 1 : -2;
+            if (j === -2) return;
+            e.preventDefault();
+            const n = list[(j + list.length) % list.length];
+            n?.focus(); n?.click();
+          }}>
           {Sidebar && (
             <button
               className={`side-toggle ${app.sidebarOpen ? "on" : ""}`}
@@ -89,12 +101,16 @@ export function TabbedLayout({
             <div
               key={t.id}
               className={`tab ${t.id === app.activeTabId ? "on" : ""} ${t.danger ? "danger" : ""}`}
+              role="tab"
+              aria-selected={t.id === app.activeTabId}
+              tabIndex={t.id === app.activeTabId ? 0 : -1}
+              onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === "Delete")) { e.preventDefault(); closeTab(t.id); } }}
               onClick={() => focusTab(t.id)}
               onAuxClick={(e) => e.button === 1 && closeTab(t.id)}
               onContextMenu={(e) => { e.preventDefault(); setTabMenu({ x: e.clientX, y: e.clientY, tab: t }); }}
             >
               <span className="ellipsis">{t.title}</span>
-              <button className="x" onClick={(e) => { e.stopPropagation(); closeTab(t.id); }}><X /></button>
+              <button className="x" tabIndex={-1} title={tr("shell.closeTab")} aria-label={tr("shell.closeTab")} onClick={(e) => { e.stopPropagation(); closeTab(t.id); }}><X /></button>
             </div>
           ))}
         </div>

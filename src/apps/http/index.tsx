@@ -1,8 +1,8 @@
 import { Swap } from "../../shell/Swap";
 import { renderLog } from "../../shell/renderDebug";
 import { copyText } from "../../shell/clipboard";
-import { memo, useEffect, useMemo, useRef, useState } from "react";
-import { Braces, Check, ChevronDown, ChevronRight, Copy, CornerRightDown, Download, FileInput, Folder, FolderInput, FolderOpen, FolderPlus, KeyRound, Minimize2, PackageOpen, Pencil, Plus, Save, Send, Sparkles, Trash2, TriangleAlert, X, Zap } from "lucide-react";
+import { memo, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { Braces, Check, ChevronDown, ChevronRight, Copy, CornerRightDown, Download, FileInput, Folder, FolderInput, FolderOpen, FolderPlus, KeyRound, Minimize2, PackageOpen, Pencil, Plus, Save, Send, ShieldAlert, Sparkles, Trash2, TriangleAlert, X, Zap } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { AppModule, Tab } from "../types";
 import { useWorkbench } from "../../store/workbench";
@@ -11,6 +11,7 @@ import { TabbedLayout } from "../../shell/TabbedLayout";
 import { ContextMenu, type CtxItem } from "../../shell/ContextMenu";
 import { Modal } from "../../shell/Modal";
 import { confirmDialog } from "../../shell/confirm";
+import { listNav, rowKey } from "../../shell/listNav";
 import { Picker } from "../../shell/Picker";
 import { Loading, Spinner } from "../../shell/Loading";
 import { sendHttp, readFile, readDir, errText, NO_AUTH, type Auth, type Header, type HttpResp } from "./api";
@@ -18,7 +19,7 @@ import { looksLikeCurl, parseCurl, parseCurlFile, type ParsedCurl } from "./curl
 import { looksLikePostman, parsePostman, type PmNode } from "./postman";
 import { getVars, removeVar, runPreScript, runScript, setVar, substitute, useVars } from "./vars";
 import {
-  addFolder, addRequest, ensureFolder, flattenFolders, moveNode, removeNode, renameNode, toggleFolder, updateRequest, useTree,
+  addFolder, addRequest, ensureFolder, flattenFolders, isUnderProd, moveNode, removeNode, renameNode, setFolderProd, toggleFolder, updateRequest, useTree,
   type ReqNode, type SavedReq, type TreeNode,
 } from "./collections";
 
@@ -41,6 +42,7 @@ function openSavedRequest(id: string, name: string, r: SavedReq) {
     id: `http:saved-${++untitled}`,
     appId: "http",
     title: name,
+    danger: isUnderProd(id) === true,
     payload: { method: r.method, url: r.url, headers: r.headers, body: r.body, insecure: r.insecure, savedId: id, auth: r.auth, preScript: r.preScript, script: r.script },
   });
 }
@@ -92,6 +94,30 @@ function withDefaults(r: Partial<ReqState>): ReqState {
     preScript: r.preScript ?? "",
     script: r.script ?? "",
   };
+}
+
+/** Chuỗi so sánh của một request (đã bù mặc định, cố định thứ tự trường) — dùng cho dấu "chưa lưu". */
+function reqSnapshot(r: Partial<ReqState>): string {
+  const d = withDefaults(r);
+  return JSON.stringify([d.method, d.url, d.headers, d.body, d.insecure, d.auth, d.preScript, d.script]);
+}
+
+/** Bản đã lưu trong collection (đọc thẳng cây hiện tại, không theo dõi); không còn node → null. */
+function savedReqSnapshot(id: string): string | null {
+  const find = (nodes: TreeNode[]): TreeNode | undefined => {
+    for (const n of nodes) {
+      if (n.id === id) return n;
+      if (n.kind === "folder") { const f = find(n.children); if (f) return f; }
+    }
+    return undefined;
+  };
+  try {
+    const raw = JSON.parse(localStorage.getItem("devstation.http.collections") || "[]");
+    const n = Array.isArray(raw) ? find(raw as TreeNode[]) : undefined;
+    return n && n.kind === "req" ? reqSnapshot(n.req as Partial<ReqState>) : null;
+  } catch {
+    return null;
+  }
 }
 
 /* ── Chuyển lệnh curl đã tách thành request lưu được + tên gợi ý ── */
@@ -294,10 +320,16 @@ function Sidebar() {
           <VarsButton />
         </span>
       </div>
-      {msg && <div className="muted small pad" style={{ whiteSpace: "pre-line" }}>{msg}</div>}
+      {msg && (
+        <div className="muted small pad http-msg" style={{ whiteSpace: "pre-line", display: "flex", gap: 6, alignItems: "flex-start" }}>
+          <span className="grow" style={{ flex: 1, minWidth: 0 }}>{msg}</span>
+          <button className="icon-btn" title={tr("http.dismiss")} onClick={() => setMsg("")}><X /></button>
+        </div>
+      )}
       {tree.length === 0 && <div className="muted small pad">{tr("http.nothingYetCreateAFolderOr")}</div>}
       <div
         className="tree"
+        onKeyDown={(e) => { listNav(e, { row: ".tree-row" }); }}
         onDragOver={(e) => { if (dragId) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; } }}
         onDrop={(e) => { if (dragId) { e.preventDefault(); moveNode(dragId, null, false); setDragId(null); } }}
       >
@@ -321,15 +353,21 @@ function nodeMenu(node: TreeNode, setEditing: (id: string) => void): CtxItem[] {
     items.push(
       { id: "newReqHere", icon: <Plus />, label: t("http.newRequestHere"), action: () => setEditing(addRequestHere(node.id)) },
       { id: "newFolderHere", icon: <FolderPlus />, label: t("http.subfolder"), action: () => setEditing(addFolder(node.id)) },
+      { id: "prod", icon: <ShieldAlert />, label: t(node.prod ? "http.unmarkProd" : "http.markProd"), action: () => setFolderProd(node.id, !node.prod) },
     );
   } else {
     items.push({ id: "open", icon: <Send />, label: t("http.openRequest"), action: () => openSavedRequest(node.id, node.name, node.req) });
   }
   items.push({ id: "s", sep: true }, {
     id: "del", icon: <Trash2 />, label: t("http.delete"), danger: true,
-    action: () => void confirmDialog({ message: t(node.kind === "folder" ? "http.deleteFolderNamed" : "http.deleteNodeNamed", { name: node.name }) }).then((ok) => ok && removeNode(node.id)),
+    action: () => confirmRemove(node),
   });
   return items;
+}
+
+/** Xoá folder/request (hỏi trước) — dùng chung cho menu chuột phải và phím Delete. */
+function confirmRemove(node: TreeNode) {
+  void confirmDialog({ message: t(node.kind === "folder" ? "http.deleteFolderNamed" : "http.deleteNodeNamed", { name: node.name }) }).then((ok) => ok && removeNode(node.id));
 }
 
 /** Tạo một request rỗng trong folder và trả id để đổi tên ngay. */
@@ -421,12 +459,23 @@ const TreeRow = memo(function TreeRow({
         tabIndex={0}
         {...dndProps(node, true, isEditing, api)}
         onClick={() => toggleFolder(node.id)}
-        onKeyDown={(e) => { if (e.key === "F2") { e.preventDefault(); api.current.setEditing(node.id); } }}
+        onKeyDown={(e) => {
+          if (isEditing) return;
+          rowKey(e, {
+            F2: () => api.current.setEditing(node.id),
+            Enter: () => toggleFolder(node.id),
+            " ": () => toggleFolder(node.id),
+            ArrowLeft: () => { if (node.open) toggleFolder(node.id); },
+            ArrowRight: () => { if (!node.open) toggleFolder(node.id); },
+            Delete: () => confirmRemove(node),
+          });
+        }}
         onContextMenu={(e) => api.current.onMenu(node, parent, e)}
       >
         <span className="tree-caret">{node.open ? <ChevronDown /> : <ChevronRight />}</span>
         <span className="tree-icon">{node.open ? <FolderOpen /> : <Folder />}</span>
         <TreeName node={node} isEditing={isEditing} api={api} />
+        {node.prod && <span className="prod-tag">PROD</span>}
       </div>
       {node.open &&
         node.children.map((c) => (
@@ -456,8 +505,12 @@ const ReqRow = memo(function ReqRow({ node, depth, parent, isEditing, isSel, isD
       onClick={() => !isEditing && api.current.setSel(node.id)}
       onDoubleClick={() => !isEditing && openSavedRequest(node.id, node.name, node.req)}
       onKeyDown={(e) => {
-        if (e.key === "F2") { e.preventDefault(); api.current.setEditing(node.id); }
-        if (e.key === "Enter") { e.preventDefault(); openSavedRequest(node.id, node.name, node.req); }
+        if (isEditing) return;
+        rowKey(e, {
+          F2: () => api.current.setEditing(node.id),
+          Enter: () => { api.current.setSel(node.id); openSavedRequest(node.id, node.name, node.req); },
+          Delete: () => confirmRemove(node),
+        });
       }}
       onContextMenu={(e) => { api.current.setSel(node.id); api.current.onMenu(node, parent, e); }}
       title={node.req.url}
@@ -536,8 +589,8 @@ function AuthEditor({ auth, onChange }: { auth: Auth; onChange: (a: Auth) => voi
       )}
       {auth.type === "basic" && (
         <div className="form-row">
-          <label className="grow">Username<input value={auth.username} onChange={(e) => set({ username: e.target.value })} /></label>
-          <label className="grow">Password<input value={auth.password} onChange={(e) => set({ password: e.target.value })} /></label>
+          <label className="grow">{tr("http.username")}<input value={auth.username} onChange={(e) => set({ username: e.target.value })} /></label>
+          <label className="grow">{tr("http.password")}<input type="password" value={auth.password} onChange={(e) => set({ password: e.target.value })} /></label>
         </div>
       )}
       {auth.type === "apikey" && (
@@ -571,7 +624,7 @@ function VarsModal({ onClose }: { onClose: () => void }) {
           <div className="var-row" key={name}>
             <span className="mono var-k ellipsis" title={name}>{name}</span>
             <input value={val} onChange={(e) => setVar(name, e.target.value)} />
-            <button className="icon-btn danger" title={tr("http.delete")} onClick={() => removeVar(name)}><X /></button>
+            <button className="icon-btn danger" title={tr("http.delete")} onClick={() => void confirmDialog({ message: tr("http.deleteVarConfirm", { name }) }).then((ok) => ok && removeVar(name))}><Trash2 /></button>
           </div>
         ))}
         <div className="var-row">
@@ -689,6 +742,10 @@ function TabView({ tab }: { tab: Tab }) {
     if (!url) return setError(tr("http.enterAUrl"));
     // Dán nguyên lệnh curl vào ô URL rồi bấm Send → tách trước.
     if (looksLikeCurl(url)) return applyCurl(url);
+    if (savedId && isUnderProd(savedId) && !["GET", "HEAD", "OPTIONS"].includes(req.method)) {
+      const ok = await confirmDialog({ message: tr("http.confirmSendProd", { method: req.method, url }), confirmLabel: tr("http.sendToProd") });
+      if (!ok) return;
+    }
     setSending(true);
     setError("");
     setScriptMsg(null);
@@ -765,10 +822,17 @@ function TabView({ tab }: { tab: Tab }) {
   const flashSaved = () => { setSavedFlash(true); setTimeout(() => setSavedFlash(false), 1200); };
   const asSaved = (): SavedReq => ({ method: req.method, url: req.url, headers: req.headers, body: req.body, insecure: req.insecure, auth: req.auth, preScript: req.preScript, script: req.script });
 
+  // Dấu "chưa lưu": so request hiện tại với bản đã lưu trong collection. Bản gốc (chuỗi JSON) chỉ đọc một lần
+  // khi mở/sau khi lưu (không theo dõi cây → đổi cây không vẽ lại tab); so sánh chạy ở lượt render hoãn.
+  const [baseline, setBaseline] = useState<string | null>(() => (savedId ? savedReqSnapshot(savedId) : null));
+  const dReq = useDeferredValue(req);
+  const dirty = useMemo(() => (baseline === null ? true : reqSnapshot(dReq) !== baseline), [dReq, baseline]);
+
   // Bấm Lưu: đã lưu rồi thì ghi đè tại chỗ; chưa thì mở hộp chọn folder + tên.
   const onSave = () => {
     if (savedId) {
       updateRequest(savedId, asSaved());
+      setBaseline(reqSnapshot(req));
       flashSaved();
       log(t("http.logUpdatedSavedRequest"));
     } else {
@@ -781,10 +845,27 @@ function TabView({ tab }: { tab: Tab }) {
     const name = saveName.trim() || `${req.method} ${req.url}`;
     const id = addRequest(saveFolder || null, name, asSaved());
     setSavedId(id);
+    setBaseline(reqSnapshot(req));
     setSaveInit(null);
     flashSaved();
     log(t("http.logSavedRequest", { name }));
   };
+
+  // Ctrl+S = Lưu (chỉ tab đang hiện của app HTTP; hộp lưu đang mở thì bỏ qua).
+  const saveRef = useRef(onSave);
+  saveRef.current = onSave;
+  const saveOpen = saveInit !== null;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey || e.code !== "KeyS") return;
+      const wb = useWorkbench.getState();
+      if (wb.activeApp !== "http" || wb.apps.http?.activeTabId !== tab.id || saveOpen) return;
+      e.preventDefault();
+      saveRef.current();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [tab.id, saveOpen]);
 
   const urlIsCurl = looksLikeCurl(req.url);
 
@@ -816,9 +897,10 @@ function TabView({ tab }: { tab: Tab }) {
         <button className="primary" disabled={sending} onClick={() => void send()}><Swap on={sending} a={<><Spinner /> {tr("http.sending")}</>} b={<><Send /> Send</>} /></button>
         <button
           onClick={onSave}
-          title={savedId ? tr("http.overwriteTheSavedRequest") : tr("http.saveThisRequestIntoAFolder")}
+          title={`${savedId ? tr("http.overwriteTheSavedRequest") : tr("http.saveThisRequestIntoAFolder")}${dirty ? ` • ${tr("http.unsavedChanges")}` : ""} (Ctrl+S)`}
         >
           {savedFlash ? <Check /> : <Save />} {savedFlash ? tr("http.saved") : savedId ? tr("http.save") : tr("http.save2")}
+          {savedId && <span className="unsaved-dot" style={{ visibility: !savedFlash && dirty ? "visible" : "hidden" }}>•</span>}
         </button>
         <button onClick={copyCurl} title={tr("http.copyThisRequestAsACurl")}><Swap on={copied} a={<><Check /> {tr("http.copied")}</>} b={<><Copy /> Copy curl</>} /></button>
       </div>
@@ -974,6 +1056,9 @@ const ResponsePane = memo(function ResponsePane({ resp, sending, resTab, setResT
             <button className={pretty ? "on" : ""} onClick={() => setPretty((v) => !v)} title={tr("http.toggleJsonFormatting")}><Braces />{pretty ? "Pretty" : "Raw"}</button>
           )}
           <span className="grow" />
+          {resp && resTab === "Body" && shownBody && (
+            <button className="icon-btn" title={tr("http.copyResponse")} aria-label={tr("http.copyResponse")} onClick={() => void copyText(shownBody)}><Copy /></button>
+          )}
           {resp ? (
             <span className="res-meta">
               <span className={`res-status st-${Math.floor(resp.status / 100)}`}>{resp.status} {resp.statusText}</span>

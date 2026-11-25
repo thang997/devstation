@@ -21,6 +21,8 @@ export interface Status {
   conflicted: boolean;
   /** Đang merge dở (có MERGE_HEAD). */
   merging: boolean;
+  /** Số stash đang có (0 → không có gì để pop). */
+  stashCount: number;
 }
 
 export interface Commit {

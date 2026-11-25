@@ -1,5 +1,5 @@
 import { X } from "lucide-react";
-import { createContext, useContext, useEffect, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useId, useRef, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useT } from "../store/lang";
 
@@ -27,6 +27,29 @@ export function Modal({
 }) {
   const tr = useT();
   const layer = useContext(ModalLayerContext);
+  const boxRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  // Mở: nhớ phần tử đang focus, đưa focus vào modal (nếu bên trong chưa có ô autoFocus). Đóng: trả focus lại.
+  useEffect(() => {
+    const prev = document.activeElement as HTMLElement | null;
+    const t = setTimeout(() => {
+      const el = boxRef.current;
+      if (el && !el.contains(document.activeElement)) el.focus();
+    }, 0);
+    return () => { clearTimeout(t); if (prev && prev.isConnected) prev.focus(); };
+  }, []);
+  /** Tab / Shift+Tab xoay vòng trong modal, không lọt ra phía sau nền mờ. */
+  const trapTab = (e: React.KeyboardEvent) => {
+    if (e.key !== "Tab") return;
+    const el = boxRef.current;
+    if (!el) return;
+    const f = Array.from(el.querySelectorAll<HTMLElement>('button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'))
+      .filter((x) => x.offsetParent !== null);
+    if (!f.length) { e.preventDefault(); return; }
+    const first = f[0], last = f[f.length - 1];
+    if (e.shiftKey && (document.activeElement === first || document.activeElement === el)) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
@@ -40,10 +63,11 @@ export function Modal({
 
   const box = (
     <div className="modal-backdrop" onMouseDown={onClose}>
-      <div className="modal" style={{ width }} onMouseDown={(e) => e.stopPropagation()}>
+      <div className="modal" ref={boxRef} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}
+        style={{ width }} onMouseDown={(e) => e.stopPropagation()} onKeyDown={trapTab}>
         <div className="modal-head">
-          <span className="grow">{title}</span>
-          <button className="icon-btn" title={tr("shell.closeEsc")} onClick={onClose}><X /></button>
+          <span className="grow" id={titleId}>{title}</span>
+          <button className="icon-btn" title={tr("shell.closeEsc")} aria-label={tr("shell.closeEsc")} onClick={onClose}><X /></button>
         </div>
         <div className="modal-body">{children}</div>
       </div>

@@ -130,6 +130,8 @@ pub struct Status {
     conflicted: bool,
     /// Có MERGE_HEAD (đang merge dở — commit tiếp theo sẽ hoàn tất merge, hoặc Abort merge để huỷ).
     merging: bool,
+    /// Số mục trong `git stash list` (0 → tắt nút Pop).
+    stash_count: usize,
 }
 
 fn xy(s: &str) -> (char, char) {
@@ -199,6 +201,7 @@ pub async fn git_status(path: String) -> Result<Status, String> {
     let text = git(&path, &["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"]).await?;
     let mut st = parse_status(&text);
     st.merging = raw(&path, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).await.map(|o| o.status.success()).unwrap_or(false);
+    st.stash_count = git(&path, &["stash", "list", "--format=%gd"]).await.map(|o| o.lines().filter(|l| !l.trim().is_empty()).count()).unwrap_or(0);
     Ok(st)
 }
 

@@ -1,4 +1,5 @@
 import { useMemo, useState, useSyncExternalStore } from "react";
+import { X } from "lucide-react";
 import { APPS, appShortcut, loadApp, loadedApp, moveApp, orderedApps, resetAppOrder, subscribeAppOrder } from "../apps/registry";
 import type { AppManifest, Command } from "../apps/types";
 import { useWorkbench } from "../store/workbench";
@@ -155,9 +156,10 @@ export function Launcher({ inline = false }: { inline?: boolean }) {
                 <button
                   className="launcher-close"
                   title={tr("shell.closeThisAppFreeMemoryClose")}
+                  aria-label={tr("shell.closeThisAppFreeMemoryClose")}
                   onClick={(e) => { e.stopPropagation(); useWorkbench.getState().unloadApp(it.app.id); }}
                 >
-                  ×
+                  <X />
                 </button>
               )}
               {appShortcut(it.app.id) && <kbd>{appShortcut(it.app.id)}</kbd>}

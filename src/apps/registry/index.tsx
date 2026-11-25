@@ -1,7 +1,7 @@
 import { renderLog } from "../../shell/renderDebug";
 import { copyText } from "../../shell/clipboard";
-import { memo, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { ChevronsDown, CircleCheck, Copy, Download, Globe, KeyRound, Lock, LogIn, Package, Pencil, Play, Plug, Plus, RefreshCw, Save, Square, Tag, Trash2, TriangleAlert, X } from "lucide-react";
+import { memo, useCallback, useEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
+import { ChevronsDown, CircleCheck, CircleSlash, Copy, Download, Globe, Hash, KeyRound, Lock, LogIn, Package, Pencil, Play, Plug, Plus, RefreshCw, Save, Square, Tag, Trash2, TriangleAlert, X } from "lucide-react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
@@ -10,9 +10,11 @@ import { useWorkbench } from "../../store/workbench";
 import { TabbedLayout } from "../../shell/TabbedLayout";
 import { Modal } from "../../shell/Modal";
 import { Picker } from "../../shell/Picker";
-import { Loading as SharedLoading } from "../../shell/Loading";
+import { Loading as SharedLoading, Spinner } from "../../shell/Loading";
+import { Swap } from "../../shell/Swap";
 import { ContextMenu, type CtxItem } from "../../shell/ContextMenu";
 import { confirmDialog } from "../../shell/confirm";
+import { listNav, rowKey } from "../../shell/listNav";
 import { Splitter, useSplitSize } from "../../shell/Resizable";
 import { hostOf, newConn, sessionPasswords, useConns, type RegConn } from "./connections";
 import { t, useT } from "../../store/lang";
@@ -69,6 +71,8 @@ interface Job {
   /** Byte/giây tức thời (phase download/zip). */
   speed?: number;
   /** Đã tải xong vào thư mục tạm, chờ người dùng chọn nơi lưu. */
+  /** Người dùng bấm huỷ (hiện xám "Đã huỷ", không đỏ như lỗi). */
+  cancelled?: boolean;
   pending?: { kind: "tar" | "zip"; files: string[]; name: string; batch?: string; skipped?: number };
 }
 let jobs: Job[] = [];
@@ -160,6 +164,10 @@ async function saveJob(jobId: string) {
     patchJob(jobId, { phase: "unsaved", error: errText(e) });
   }
 }
+
+/** Job đã kết thúc (xong / huỷ / lỗi) và KHÔNG còn file tạm chờ lưu → "Clear finished" bỏ được. */
+const isFinished = (j: Job) => !j.pending && (j.phase === "done" || !!j.error || !!j.cancelled);
+const clearFinished = () => setJobs((js) => js.filter((j) => !isFinished(j)));
 
 /** Bỏ job: còn file tạm chưa lưu thì xoá luôn. */
 function dismissJob(j: Job) {
@@ -256,6 +264,7 @@ function ConnForm({ connId, onClose }: { connId?: string; onClose: () => void })
   const [c, setC] = useState<RegConn>(editing ?? newConn());
   const [password, setPassword] = useState("");
   const [status, setStatus] = useState<{ ok: boolean; text: string } | null>(null);
+  const [testing, setTesting] = useState(false);
   const set = (p: Partial<RegConn>) => setC((x) => ({ ...x, ...p }));
 
   useEffect(() => {
@@ -265,12 +274,15 @@ function ConnForm({ connId, onClose }: { connId?: string; onClose: () => void })
   }, []);
 
   const test = async () => {
-    setStatus({ ok: true, text: tr("registry.testing") });
+    setTesting(true);
+    setStatus(null);
     try {
       const info = await call<RegInfo>("registry_login", { cfg: { url: c.url, user: c.user, password, insecure: c.insecure } });
       setStatus({ ok: true, text: tr("registry.connectedOk", { version: info.version || "?", user: info.user || tr("registry.anonymous") }) });
     } catch (e) {
       setStatus({ ok: false, text: errText(e) });
+    } finally {
+      setTesting(false);
     }
   };
   const submit = () => {
@@ -308,7 +320,9 @@ function ConnForm({ connId, onClose }: { connId?: string; onClose: () => void })
           </div>
         </div>
         <div className="toolbar">
-          <button onClick={() => void test()}><Plug />{tr("registry.testConnection")}</button>
+          <button disabled={testing} onClick={() => void test()}>
+            <Swap on={testing} a={<><Spinner />{tr("registry.testing")}</>} b={<><Plug />{tr("registry.testConnection")}</>} />
+          </button>
           <span className="grow" />
           {editing && (
             <button className="danger" onClick={() => void confirmDialog({ message: tr("registry.deleteConnectionNamed", { name: c.name }) }).then((ok) => {
@@ -352,6 +366,7 @@ function Sidebar() {
   return (
     <div
       className="side-list fill"
+      onKeyDown={(e) => { listNav(e, { row: ".side-item", select: true }); }}
       onContextMenu={(e) => { if (e.target === e.currentTarget) { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, items: [{ id: "new", icon: <Plus />, label: tr("registry.newConnection"), action: () => openForm() }] }); } }}
     >
       <div className="side-head">
@@ -362,8 +377,10 @@ function Sidebar() {
         <div
           key={c.id}
           className={`side-item ${c.env === "prod" ? "prod" : ""} ${sel === c.id ? "sel" : ""}`}
+          tabIndex={0}
           onClick={() => setSel(c.id)}
           onDoubleClick={() => openSession(c)}
+          onKeyDown={(e) => rowKey(e, { Enter: () => openSession(c) })}
           onContextMenu={(e) => { e.preventDefault(); setSel(c.id); setMenu({ x: e.clientX, y: e.clientY, items: rowMenu(c) }); }}
           title={`${tr("registry.doubleClickToOpen")} · ${c.url}`}
         >
@@ -418,11 +435,34 @@ function Loading({ full }: { full: boolean }) {
   return <SharedLoading variant={full ? "center" : "row"} className={full ? "reg-loading-full" : "reg-loading-more"} />;
 }
 
+/** Hàng điều hướng được trong 3 cột Projects / Repositories / Artifacts. */
+const NAV_ROW = ".reg-row, tr.reg-art";
+/** Bàn phím cho một cột: ↑/↓/Home/End chuyển hàng (chọn luôn), → sang hàng đầu cột kế, ← về hàng đang chọn cột trước. */
+function colKeyDown(e: KeyboardEvent<HTMLElement>) {
+  if (listNav(e, { row: NAV_ROW, select: true })) return;
+  if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+  const t = e.target as HTMLElement;
+  if (!t.matches(NAV_ROW)) return;
+  const pane = e.currentTarget.closest(".reg-pane");
+  const panes = pane?.parentElement ? Array.from(pane.parentElement.querySelectorAll<HTMLElement>(":scope > .reg-pane")) : [];
+  const i = pane ? panes.indexOf(pane as HTMLElement) : -1;
+  const target = panes[i + (e.key === "ArrowRight" ? 1 : -1)];
+  if (!target) return;
+  const rows = Array.from(target.querySelectorAll<HTMLElement>(NAV_ROW));
+  if (!rows.length) return;
+  // Cột kia đã có hàng đang chọn thì về đúng hàng đó (không đổi lựa chọn), chưa có thì hàng đầu (và chọn nó).
+  const row = rows.find((r) => r.classList.contains("on")) ?? rows[0];
+  e.preventDefault();
+  row.focus();
+  row.scrollIntoView({ block: "nearest" });
+  if (!row.classList.contains("on") && row.classList.contains("reg-row")) row.click();
+}
+
 /* ── Hàng danh sách (memo): gõ ô lọc / tick / chọn dòng chỉ vẽ lại hàng đổi, không vẽ lại cả trăm hàng ── */
 const ProjectRow = memo(function ProjectRow({ p, on, onPick }: { p: RegProject; on: boolean; onPick: (name: string) => void }) {
   renderLog("ProjectRow");
   return (
-    <div className={`reg-row ${on ? "on" : ""}`} onClick={() => onPick(p.name)}>
+    <div className={`reg-row ${on ? "on" : ""}`} tabIndex={0} onClick={() => onPick(p.name)}>
       <span title={p.public ? "public" : "private"}>{p.public ? <Globe /> : <Lock />}</span>
       <span className="grow ellipsis">{p.name}</span>
       <span className="muted small">{p.repoCount}</span>
@@ -437,8 +477,14 @@ const RepoRow = memo(function RepoRow({ r, project, on, checked, onPick, onCheck
   renderLog("RepoRow");
   const tr = useT();
   return (
-    <div className={`reg-row ${on ? "on" : ""}`} onClick={() => onPick(r.name)} title={r.name}>
-      <input type="checkbox" checked={checked} onClick={(e) => e.stopPropagation()} onChange={(e) => onCheck(r.name, e.target.checked)} />
+    <div
+      className={`reg-row ${on ? "on" : ""}`}
+      tabIndex={0}
+      onClick={() => onPick(r.name)}
+      onKeyDown={(e) => rowKey(e, { " ": () => onCheck(r.name, !checked) })}
+      title={r.name}
+    >
+      <input type="checkbox" aria-label={tr("registry.selectRepo", { name: r.name })} tabIndex={-1} checked={checked} onClick={(e) => e.stopPropagation()} onChange={(e) => onCheck(r.name, e.target.checked)} />
       <span className="grow ellipsis mono">{r.name.startsWith(`${project}/`) ? r.name.slice(project.length + 1) : r.name}</span>
       <span className="muted small" title={tr("registry.artifactsPulls")}>{r.artifactCount} · <Download />{r.pullCount}</span>
     </div>
@@ -454,7 +500,13 @@ const ArtRow = memo(function ArtRow({ a, api }: { a: RegArtifact; api: { get: ()
   renderLog("ArtRow");
   const tr = useT();
   return (
-    <tr onContextMenu={(e) => { e.preventDefault(); api.get().menu(a, e.clientX, e.clientY); }} onDoubleClick={() => api.get().download(a)}>
+    <tr
+      className="reg-art"
+      tabIndex={0}
+      onContextMenu={(e) => { e.preventDefault(); api.get().menu(a, e.clientX, e.clientY); }}
+      onDoubleClick={() => api.get().download(a)}
+      onKeyDown={(e) => rowKey(e, { Enter: () => api.get().download(a) })}
+    >
       <td>{a.tags.length ? a.tags.map((x) => <span key={x} className="reg-tag">{x}</span>) : <span className="muted small">{tr("registry.untagged")}</span>}</td>
       <td className="mono small" title={a.digest}>{a.digest.replace("sha256:", "").slice(0, 12)}</td>
       <td className="small">{a.platform || (a.platforms.length ? a.platforms.join(", ") : "")}</td>
@@ -462,7 +514,7 @@ const ArtRow = memo(function ArtRow({ a, api }: { a: RegArtifact; api: { get: ()
       <td className="small muted">{fmtTime(a.pushTime)}</td>
       <td className="reg-actions">
         <button className="icon-btn" title={tr("registry.copyPullCmd")} onClick={() => api.get().copyPull(a)}><Copy /></button>
-        <button className="primary" title={tr("registry.downloadTarHint")} onClick={() => api.get().download(a)}><Download /></button>
+        <button className="icon-btn" title={tr("registry.downloadTarHint")} aria-label={tr("registry.downloadTarHint")} onClick={() => api.get().download(a)}><Download /></button>
       </td>
     </tr>
   );
@@ -470,19 +522,29 @@ const ArtRow = memo(function ArtRow({ a, api }: { a: RegArtifact; api: { get: ()
 
 /** Danh sách lượt tải: component riêng subscribe store jobs → sự kiện tiến trình (dày) chỉ vẽ lại phần này,
  *  không vẽ lại 3 cột Projects/Repositories/Artifacts. Mỗi hàng memo: chỉ job đổi mới vẽ lại. */
+const JOBS_SHOWN = 50;
 function JobsPanel() {
   renderLog("JobsPanel");
   const tr = useT();
   const all = useJobs();
-  const shown = all.slice(0, 50);
+  const shown = all.slice(0, JOBS_SHOWN);
   if (!shown.length) return null;
+  const hidden = all.length - shown.length;
+  const finished = all.some(isFinished);
   // Tổng tốc độ mọi lượt đang tải: băng thông chia cho các lượt song song, con số này mới là tốc độ thật của đường mạng.
   const active = all.filter((j) => !j.error && j.phase === "download");
   const total = active.reduce((n, j) => n + (j.speed ?? 0), 0);
   return (
     <div className="reg-jobs">
-      {active.length > 1 && <div className="muted small reg-jobs-total">{tr("registry.totalSpeed", { n: active.length, speed: `${human(total)}/s` })}</div>}
+      {(active.length > 1 || finished) && (
+        <div className="reg-jobs-head">
+          {active.length > 1 && <span className="muted small reg-jobs-total">{tr("registry.totalSpeed", { n: active.length, speed: `${human(total)}/s` })}</span>}
+          <span className="grow" />
+          {finished && <button className="reg-jobs-clear" onClick={clearFinished}><Trash2 />{tr("registry.clearFinished")}</button>}
+        </div>
+      )}
       {shown.map((j) => <JobRow key={j.job} j={j} />)}
+      {hidden > 0 && <div className="muted small reg-jobs-more">{tr("registry.moreJobs", { n: hidden })}</div>}
     </div>
   );
 }
@@ -497,10 +559,11 @@ const JobRow = memo(function JobRow({ j }: { j: Job }) {
   const queued = j.phase === "queued";
   return (
     <div className="reg-job">
-      <span className="ellipsis reg-job-name" title={j.dest}>{j.error ? <TriangleAlert /> : j.phase === "done" ? <CircleCheck /> : <Download />} {j.label}</span>
+      <span className="ellipsis reg-job-name" title={j.dest}>{j.cancelled ? <CircleSlash /> : j.error ? <TriangleAlert /> : j.phase === "done" ? <CircleCheck /> : <Download />} {j.label}</span>
       <div className="update-bar grow"><div style={{ width: j.phase === "done" ? "100%" : `${pct}%` }} /></div>
       <span className="muted small reg-job-stat">
-        {j.error ? <span style={{ color: "var(--danger)" }} title={j.error}>{j.error}</span>
+        {j.cancelled ? tr("registry.cancelled")
+          : j.error ? <span style={{ color: "var(--danger)" }} title={j.error}>{j.error}</span>
           : j.phase === "done" ? human(j.size ?? j.total)
           : unsaved ? `${human(j.size ?? j.total)} · ${tr("registry.notSaved")}`
           : j.phase === "saving" ? tr("registry.phaseSaving")
@@ -508,13 +571,13 @@ const JobRow = memo(function JobRow({ j }: { j: Job }) {
           : j.phase === "manifest" ? tr("registry.phaseManifest")
           : j.phase === "pack" ? tr("registry.phasePack")
           : j.phase === "zip" ? `${tr("registry.phaseZip")} ${human(j.done)} / ${human(j.total)}${speed && ` · ${speed}`}`
-          : `${human(j.done)} / ${human(j.total)} · ${j.layersDone}/${j.layersTotal} layers ${speed && `· ${speed}`}`}
+          : `${human(j.done)} / ${human(j.total)} · ${tr("registry.layersN", { done: j.layersDone, total: j.layersTotal })} ${speed && `· ${speed}`}`}
       </span>
       {running
         ? <button className="icon-btn danger" title={tr("registry.cancel")} onClick={() => {
             if (queued) cancelledQueued.add(j.job);
             else void call("registry_cancel", { job: j.job });
-            patchJob(j.job, { error: tr("registry.cancel") });
+            patchJob(j.job, { error: tr("registry.cancelled"), cancelled: true });
           }}><Square /></button>
         : <>
             {j.pending && <button className="icon-btn" title={tr("registry.saveAs")} onClick={() => void saveJob(j.job)}><Save /></button>}
@@ -570,16 +633,22 @@ function Session({ tab }: { tab: Tab }) {
     }
   }, [conn]);
 
-  useEffect(() => {
+  /** Nối với mật khẩu RAM → keyring; có user mà không có mật khẩu (và không lưu) → hỏi bằng modal thay vì thử rỗng.
+   *  Dùng cho lần mở tab và nút Retry (trước đây Retry gửi mật khẩu rỗng lặp lại 401). */
+  const connectAuto = useCallback(async (fromRetry = false) => {
     if (!conn) return;
-    (async () => {
-      let pw = sessionPasswords.get(conn.id) ?? "";
-      if (!pw && conn.user) pw = (await call<string | null>("registry_get_password", { id: conn.id }).catch(() => null)) ?? "";
-      if (!pw && conn.user && conn.savePw === false) { setConnecting(false); setNeedPw(true); return; }
-      await login(pw);
-    })();
+    let pw = sessionPasswords.get(conn.id) ?? "";
+    if (!pw && conn.user) pw = (await call<string | null>("registry_get_password", { id: conn.id }).catch(() => null)) ?? "";
+    if (!pw && conn.user && (conn.savePw === false || fromRetry)) { setConnecting(false); setNeedPw(true); return; }
+    await login(pw);
+  }, [conn, login]);
+
+  useEffect(() => {
+    void connectAuto();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conn?.id]);
+  /** Huỷ modal mật khẩu = đóng tab (giống DB/Redis). */
+  const cancelPw = () => useWorkbench.getState().closeTab(tab.id);
 
   const projects = usePaged<RegProject>(
     cfg ? (q, p) => call<Page<RegProject>>("registry_projects", { cfg, q, page: p }) : null,
@@ -606,7 +675,7 @@ function Session({ tab }: { tab: Tab }) {
     { id: "dl", icon: <Download />, label: tr("registry.downloadTar"), action: () => download(a) },
     { id: "s", sep: true },
     { id: "pull", icon: <Copy />, label: tr("registry.copyPullCmd"), action: () => void copyText(pullCmd(a)) },
-    { id: "digest", icon: "#", label: tr("registry.copyDigest"), action: () => void copyText(a.digest) },
+    { id: "digest", icon: <Hash />, label: tr("registry.copyDigest"), action: () => void copyText(a.digest) },
     ...(a.tags.length ? [{ id: "tag", icon: <Tag />, label: tr("registry.copyImageRef"), action: () => void copyText(`${host}/${repo}:${a.tags[0]}`) }] : []),
   ];
   // Hàng artifact memo: hàm mới mỗi render đi qua ref (object `artApi` giữ nguyên) để không phá memo.
@@ -617,12 +686,18 @@ function Session({ tab }: { tab: Tab }) {
     return (
       <div className="pad">
         {error && <div className="error-box pre">{error}</div>}
-        <div className="toolbar"><button onClick={() => void login(sessionPasswords.get(conn.id) ?? "")}><RefreshCw />{tr("registry.retry")}</button><button onClick={() => openForm(conn.id)}><Pencil />{tr("registry.edit")}</button></div>
+        <div className="toolbar"><button onClick={() => void connectAuto(true)}><RefreshCw />{tr("registry.retry")}</button><button onClick={() => openForm(conn.id)}><Pencil />{tr("registry.edit")}</button></div>
         {needPw && (
-          <Modal title={tr("registry.enterPasswordFor", { user: conn.user, host })} width={420} onClose={() => setNeedPw(false)}>
+          <Modal title={tr("registry.enterPasswordFor", { user: conn.user, host })} width={420} onClose={cancelPw}>
             <div className="form">
               <input type="password" autoFocus value={pwInput} onChange={(e) => setPwInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void login(pwInput); }} />
-              <div className="toolbar"><span className="grow" /><button className="primary" onClick={() => void login(pwInput)}><LogIn />{tr("registry.login")}</button></div>
+              {error && <div className="error-box pre">{error}</div>}
+              <div className="toolbar">
+                <button onClick={() => openForm(conn.id)}><Pencil />{tr("registry.edit")}</button>
+                <span className="grow" />
+                <button onClick={cancelPw}><X />{tr("registry.cancel")}</button>
+                <button className="primary" onClick={() => void login(pwInput)}><LogIn />{tr("registry.login")}</button>
+              </div>
             </div>
           </Modal>
         )}
@@ -643,7 +718,7 @@ function Session({ tab }: { tab: Tab }) {
         <div className="reg-pane" style={{ width: projW }}>
           <div className="pane-title">Projects <span className="muted small">{projects.total || ""}</span></div>
           <div className="side-search-row"><input className="side-search" placeholder={tr("registry.filter")} value={projects.q} onChange={(e) => projects.setQ(e.target.value)} /></div>
-          <div className="reg-list">
+          <div className="reg-list" onKeyDown={colKeyDown}>
             {projects.items.map((p) => (
               <ProjectRow key={p.name} p={p} on={project === p.name} onPick={pickProject} />
             ))}
@@ -689,7 +764,7 @@ function Session({ tab }: { tab: Tab }) {
           {project ? (
             <>
               <div className="side-search-row"><input className="side-search" placeholder={tr("registry.filter")} value={repos.q} onChange={(e) => repos.setQ(e.target.value)} /></div>
-              <div className="reg-list">
+              <div className="reg-list" onKeyDown={colKeyDown}>
                 {repos.items.map((r) => (
                   <RepoRow key={r.name} r={r} project={project} on={repo === r.name} checked={checked.has(r.name)} onPick={setRepo} onCheck={toggleCheck} />
                 ))}
@@ -706,7 +781,7 @@ function Session({ tab }: { tab: Tab }) {
         <div className="reg-pane grow">
           <div className="pane-title ellipsis">{repo ? <span className="mono">{repo}</span> : "Artifacts"} {repo && <span className="muted small">{arts.total || ""}</span>}</div>
           {repo ? (
-            <div className="reg-list">
+            <div className="reg-list" onKeyDown={colKeyDown}>
               {!(arts.loading && !arts.items.length) && <table className="grid reg-grid">
                 <thead><tr><th>Tags</th><th>Digest</th><th>{tr("registry.platform")}</th><th>{tr("registry.size")}</th><th>{tr("registry.pushed")}</th><th /></tr></thead>
                 <tbody>

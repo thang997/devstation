@@ -12,6 +12,7 @@ import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialo
 import { Modal } from "../../shell/Modal";
 import { ContextMenu, type CtxItem } from "../../shell/ContextMenu";
 import { confirmDialog } from "../../shell/confirm";
+import { listNav, rowKey } from "../../shell/listNav";
 import { useT } from "../../store/lang";
 import { Loading, Spinner } from "../../shell/Loading";
 import { sftp, errText, type FsDriver, type SftpCfg, type SftpEntry, type SftpPreview } from "./api";
@@ -128,9 +129,14 @@ function normalize(p: string): string {
  *  (chọn, gõ đường dẫn, busy, preview…). Thư mục hàng nghìn mục chỉ vẽ lại hàng đổi `sel`. */
 interface SftpRowApi {
   select: (name: string) => void;
-  open: (e: SftpEntry) => void;
+  /** `kbd`: mở bằng bàn phím (Enter) → sau khi tải xong focus hàng đầu. */
+  open: (e: SftpEntry, kbd?: boolean) => void;
   rename: (name: string) => void;
   menu: (ev: React.MouseEvent, e: SftpEntry) => void;
+  /** Backspace: lên thư mục cha (`kbd` → focus lại hàng thư mục vừa rời). */
+  up: (kbd?: boolean) => void;
+  /** Delete: xoá (có hỏi xác nhận). */
+  del: (e: SftpEntry) => void;
 }
 
 const SftpRow = memo(function SftpRow({ e, sel, api }: { e: SftpEntry; sel: boolean; api: { current: SftpRowApi } }) {
@@ -139,10 +145,16 @@ const SftpRow = memo(function SftpRow({ e, sel, api }: { e: SftpEntry; sel: bool
     <div
       className={`sftp-row ${sel ? "sel" : ""}`}
       tabIndex={0}
+      data-name={e.name}
       title={`${e.perms}${e.linkTarget ? ` → ${e.linkTarget}` : ""}`}
       onClick={() => api.current.select(e.name)}
       onDoubleClick={() => api.current.open(e)}
-      onKeyDown={(ev) => { if (ev.key === "F2") { ev.preventDefault(); api.current.rename(e.name); } }}
+      onKeyDown={(ev) => rowKey(ev, {
+        Enter: () => api.current.open(e, true),
+        F2: () => api.current.rename(e.name),
+        Delete: () => api.current.del(e),
+        Backspace: () => api.current.up(true),
+      })}
       onContextMenu={(ev) => api.current.menu(ev, e)}
     >
       <FileIcon entry={e} />
@@ -196,6 +208,10 @@ export const SftpPanel = memo(function SftpPanel({
   const homeRef = useRef("/");
   const cwdRef = useRef("/");
   cwdRef.current = cwd;
+  const listRef = useRef<HTMLDivElement>(null);
+  /** Điều hướng bằng bàn phím đang chờ tải xong: `path` đích + tên hàng cần focus (null = hàng đầu).
+   *  Chỉ áp dụng khi load xong đúng `path` → chuột / cd ở terminal không bị cướp focus. */
+  const kbdNav = useRef<{ path: string; focus: string | null } | null>(null);
 
   /** Mở phiên sftp một lần cho tab (cfg cố định theo tab). */
   const openSession = useCallback(() => {
@@ -253,6 +269,22 @@ export const SftpPanel = memo(function SftpPanel({
 
   const go = (path: string) => setCwd(path || "/");
 
+  // Tải xong sau khi điều hướng bằng bàn phím → focus hàng đầu / hàng thư mục vừa rời (thư mục rỗng → focus khung).
+  useEffect(() => {
+    const nav = kbdNav.current;
+    if (loading || !nav || nav.path !== cwd) return;
+    kbdNav.current = null;
+    const list = listRef.current;
+    if (!list) return;
+    const rows = Array.from(list.querySelectorAll<HTMLElement>(".sftp-row[data-name]"));
+    const row = (nav.focus != null && rows.find((r) => r.dataset.name === nav.focus)) || rows[0];
+    if (row) {
+      row.focus();
+      row.scrollIntoView({ block: "nearest" });
+      setSel(row.dataset.name ?? null);
+    } else list.focus();
+  }, [loading, cwd]);
+
   // Đi theo lệnh `cd` gõ ở terminal. Để phiên sftp tự resolve + kiểm tra (đúng cả path tương đối/symlink);
   // chỉ điều hướng khi thư mục hợp lệ, cd sai thì bỏ qua (không nhảy, không báo lỗi).
   const lastCd = useRef(0);
@@ -304,7 +336,8 @@ export const SftpPanel = memo(function SftpPanel({
     }
   };
 
-  const openEntry = (e: SftpEntry) => {
+  const openEntry = (e: SftpEntry, kbd = false) => {
+    if (kbd && e.kind !== "file") kbdNav.current = { path: joinPath(cwd, e.name), focus: null };
     if (e.kind === "dir") go(joinPath(cwd, e.name));
     else if (e.kind === "link") void openLink(e);
     else void doPreview(e);
@@ -446,6 +479,13 @@ export const SftpPanel = memo(function SftpPanel({
     open: openEntry,
     rename: setRenaming,
     menu: (ev, e) => { ev.preventDefault(); ev.stopPropagation(); setSel(e.name); setMenu({ x: ev.clientX, y: ev.clientY, items: entryMenu(e) }); },
+    up: (kbd) => {
+      if (cwd === "/") return;
+      const parent = parentPath(cwd);
+      if (kbd) kbdNav.current = { path: parent, focus: baseName(cwd) };
+      go(parent);
+    },
+    del: (e) => void del(e),
   };
 
   /** Mục đang chọn (để nút tải xuống trên toolbar tác động đúng). */
@@ -495,7 +535,7 @@ export const SftpPanel = memo(function SftpPanel({
         className="sftp-path"
         onSubmit={(e) => { e.preventDefault(); go(pathEdit.trim() || "/"); }}
       >
-        <input className="mono grow" value={pathEdit} onChange={(e) => setPathEdit(e.target.value)} spellCheck={false} />
+        <input className="mono grow" aria-label={tr("ssh.currentPath")} value={pathEdit} onChange={(e) => setPathEdit(e.target.value)} spellCheck={false} />
       </form>
 
       {err && <div className="error-box pre sftp-err"><TriangleAlert /> {err}</div>}
@@ -504,7 +544,14 @@ export const SftpPanel = memo(function SftpPanel({
         <Loading />
       ) : (
       <div
+        ref={listRef}
         className="sftp-list"
+        tabIndex={-1}
+        onKeyDown={(ev) => {
+          // Thư mục rỗng: khung được focus → Backspace vẫn lên được thư mục cha.
+          if (ev.key === "Backspace" && ev.target === ev.currentTarget) { ev.preventDefault(); rowApi.current.up(true); return; }
+          listNav(ev, { row: ".sftp-row[tabindex]", select: true });
+        }}
         onContextMenu={(ev) => { ev.preventDefault(); setMenu({ x: ev.clientX, y: ev.clientY, items: emptyMenu() }); }}
       >
         {/* Header cột + hàng ".." gộp trong một khối STICKY để luôn dính trên đỉnh khi cuộn. */}

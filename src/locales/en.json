@@ -27,6 +27,10 @@
     "registry": {
       "title": "Registry",
       "description": "Browse Harbor, download images (.tar)"
+    },
+    "translate": {
+      "title": "Web Translate",
+      "description": "Open any web page translated to your language in real time"
     }
   },
   "db": {
@@ -385,7 +389,10 @@
     "erExternal": "{n} FK to other databases (not drawn)",
     "erExportHtml": "Export HTML",
     "erExportHtmlHint": "Standalone HTML file: open in a browser to zoom (wheel), pan (drag), search tables, hover to highlight relations",
-    "erHtmlHelp": "wheel = zoom · drag = pan · double-click empty = fit · hover/click a table = highlight relations"
+    "erHtmlHelp": "wheel = zoom · drag = pan · double-click empty = fit · hover/click a table = highlight relations",
+    "discardGridEditsConfirm": "{n} edited cell(s) in the result grid are not saved yet. Discard them and run?",
+    "discardAndRun": "Discard & run",
+    "copyTsv": "Copy (TSV)"
   },
   "git": {
     "actions": "Actions",
@@ -590,7 +597,10 @@
     "statusRenamed": "Renamed",
     "statusCopied": "Copied",
     "collapseCommitInfo": "Collapse commit info",
-    "expandCommitInfo": "Expand commit info (message, author, SHA…)"
+    "expandCommitInfo": "Expand commit info (message, author, SHA…)",
+    "commitMessagePlaceholder": "Commit message (Ctrl+Enter)",
+    "loadMore": "Load more…",
+    "noStashToPop": "No stash to pop"
   },
   "http": {
     "add": "Add",
@@ -695,7 +705,17 @@
     "value2": "value",
     "variableName": "variable name",
     "variablesVarsButtonInSidebar": "variables (Vars button in sidebar).",
-    "waitingForResponse": "Waiting for response…"
+    "waitingForResponse": "Waiting for response…",
+    "markProd": "Mark folder as PROD",
+    "unmarkProd": "Unmark PROD",
+    "confirmSendProd": "This request is in a PROD folder. Send {method} {url}?",
+    "sendToProd": "Send to PROD",
+    "copyResponse": "Copy response body",
+    "deleteVarConfirm": "Delete variable {name}?",
+    "username": "Username",
+    "password": "Password",
+    "unsavedChanges": "unsaved changes",
+    "dismiss": "Dismiss"
   },
   "redis": {
     "browse": "Browse…",
@@ -774,7 +794,10 @@
     "treeViewFoldByClickFor": "Tree view (fold by “:”) — click for flat list",
     "useTlsRediss": "Use TLS (rediss://)",
     "value": "Value",
-    "viaTheSshServerAbove": "via the SSH server above."
+    "viaTheSshServerAbove": "via the SSH server above.",
+    "notConnected": "not connected",
+    "noKeysHint": "Try the pattern * or pick another database.",
+    "showAllKeys": "Show all (*)"
   },
   "shell": {
     "copied": "Copied to clipboard",
@@ -858,7 +881,10 @@
     "updateReady": "Version {version} is downloaded — restart to update",
     "viewing": "viewing",
     "viewing2": " (viewing)",
-    "youReOnTheLatestVersion": "You're on the latest version."
+    "youReOnTheLatestVersion": "You're on the latest version.",
+    "tabCount": "{n} tab(s)",
+    "output": "OUTPUT",
+    "closePanel": "Close panel"
   },
   "ssh": {
     "addAHostToOpenA": "Add a host to open a real terminal (via the machine's ssh.exe), create MobaXterm-style tunnels (-L/-R/-D).",
@@ -1020,7 +1046,9 @@
     "uploadToCurrentFolder": "Upload to current folder…",
     "viaJump": "via jump host {name}",
     "working": "Working…",
-    "yourMachine": "your machine"
+    "yourMachine": "your machine",
+    "currentPath": "Current path",
+    "portInvalid": "Port must be between 1 and 65535"
   },
   "tools": {
     "showRaw": "Raw",
@@ -1078,7 +1106,9 @@
     "jwtNotYetValid": "Not valid yet — from {p}",
     "jwtActiveSince": "Active since {p}",
     "jwtIssuedAt": "Issued at {p}",
-    "jwtIssuedFuture": "Issued in the future: {p}"
+    "jwtIssuedFuture": "Issued in the future: {p}",
+    "b64Invalid": "Invalid Base64 (not base64url either)",
+    "savedTo": "✓ Saved"
   },
   "registry": {
     "anonymous": "anonymous",
@@ -1151,6 +1181,45 @@
     "untagged": "untagged",
     "user": "User",
     "userHint": "Harbor user, or a robot account (robot$name + secret). Leave empty for public projects only.",
-    "welcome": "Browse Harbor projects / repositories / tags and download images as .tar — no Docker needed on this machine."
+    "welcome": "Browse Harbor projects / repositories / tags and download images as .tar — no Docker needed on this machine.",
+    "layersN": "{done}/{total} layers",
+    "cancelled": "Cancelled",
+    "selectRepo": "Select {name} for bulk download",
+    "clearFinished": "Clear finished",
+    "moreJobs": "+{n} more"
+  },
+  "webtr": {
+    "intro": "Opens the real page in its own window and translates its text live — including content loaded later. Login and forms keep working.",
+    "open": "Open translated",
+    "from": "From",
+    "to": "To",
+    "provider": "Translation service",
+    "providerGoogle": "Google (free, unofficial)",
+    "providerGoogleCloud": "Google Cloud Translation (API key)",
+    "providerDeepl": "DeepL (API key)",
+    "googleFreeHint": "Unofficial endpoint — Google may rate-limit or block it. For reliable use pick Google Cloud or DeepL.",
+    "keySaved": "API key saved in the system keyring",
+    "keyPlaceholder": "Paste API key…",
+    "saveKey": "Save key",
+    "forgetKey": "Forget key",
+    "test": "Test",
+    "privacyHint": "Page text is sent to the selected service — don't use it on internal or sensitive pages.",
+    "recent": "Recent",
+    "recentHint": "Click to fill · double-click or Enter to open",
+    "remove": "Remove",
+    "mustRunInsideTheApp": "Must run inside the DevStation app",
+    "barShowOriginal": "Original",
+    "barShowTranslated": "Translate",
+    "barOriginal": "Showing original",
+    "barTranslating": "Translating…",
+    "barTranslated": "Translated",
+    "barNoBridge": "Cannot reach DevStation",
+    "auto": "Auto-detect",
+    "swap": "Swap languages",
+    "needKey": "Save an API key for this service first.",
+    "sameLang": "Source and target language are the same.",
+    "opened": "Opened in a new window",
+    "clearRecent": "Clear recent",
+    "saveKeyFailed": "Could not save the key: {err}"
   }
 }
