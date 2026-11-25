@@ -1,4 +1,3 @@
-import { renderLog } from "./renderDebug";
 import { Component, Suspense, memo, use, useMemo, useState, type ReactNode } from "react";
 import { RefreshCw, TriangleAlert } from "lucide-react";
 import { appById, loadApp } from "../apps/registry";
@@ -13,7 +12,6 @@ import { Loading } from "./Loading";
  * memo: Shell vẽ lại (đổi số tab, panel, launcher…) không kéo theo vẽ lại cả app.
  */
 export const AppHost = memo(function AppHost({ id, active }: { id: AppId; active: boolean }) {
-  renderLog("AppHost");
   const m = appById(id);
   const tr = useT();
   // Lớp modal riêng của app (xem ModalLayerContext): modal chỉ phủ vùng app, không chặn thanh tab app.

@@ -1,4 +1,3 @@
-import { renderLog } from "./renderDebug";
 import { useEffect } from "react";
 import { ChevronUp, SquareTerminal, X } from "lucide-react";
 import { appById, orderedApps } from "../apps/registry";
@@ -18,7 +17,6 @@ import { closeThisWindow, isMainWindow, launchApp, registerWindowApp, windowAppP
  * Trong app: Ctrl+G / Ctrl+1..9 mở app khác (đã có cửa sổ thì đưa lên, chưa có thì mở cửa sổ mới).
  */
 export function Shell() {
-  renderLog("Shell");
   const activeApp = useWorkbench((s) => s.activeApp);
   const mounted = useWorkbench((s) => s.mounted);
   const tabCount = useWorkbench((s) => (s.activeApp ? s.apps[s.activeApp].tabs.length : 0));

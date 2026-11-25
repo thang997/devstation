@@ -5,7 +5,9 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Instant;
 use std::process::{Output, Stdio};
 
 use serde::Serialize;
@@ -90,8 +92,39 @@ fn err_text(out: &Output) -> String {
     format!("git thoát với mã {:?}", out.status.code())
 }
 
+/* ── Log thời gian (lệnh Ctrl+G "Git: bật/tắt log thời gian") ──
+ * Bật thì mỗi tiến trình git chạy qua `raw` phát event `git-trace` {cwd, args, ms, ok}; UI ghi ra panel Output.
+ * Tắt thì chỉ tốn một lần đọc AtomicBool. */
+static TRACE: AtomicBool = AtomicBool::new(false);
+static APP: OnceLock<AppHandle> = OnceLock::new();
+
+pub fn init(app: AppHandle) {
+    let _ = APP.set(app);
+}
+
+#[tauri::command]
+pub fn git_set_trace(on: bool) {
+    TRACE.store(on, Ordering::Relaxed);
+}
+
+#[derive(Serialize, Clone)]
+struct Trace {
+    cwd: String,
+    args: String,
+    ms: u64,
+    ok: bool,
+}
+
 async fn raw(cwd: &str, args: &[&str]) -> Result<Output, String> {
-    cmd(cwd, args).output().await.map_err(spawn_err)
+    let t0 = Instant::now();
+    let r = cmd(cwd, args).output().await.map_err(spawn_err);
+    if TRACE.load(Ordering::Relaxed) {
+        if let Some(app) = APP.get() {
+            let ok = matches!(&r, Ok(o) if o.status.success());
+            let _ = app.emit("git-trace", Trace { cwd: cwd.into(), args: args.join(" "), ms: t0.elapsed().as_millis() as u64, ok });
+        }
+    }
+    r
 }
 
 async fn git(cwd: &str, args: &[&str]) -> Result<String, String> {
@@ -202,6 +235,15 @@ fn parse_status(text: &str) -> Status {
 pub async fn git_status(path: String) -> Result<Status, String> {
     // Chỉ đọc → không xếp hàng repo_lock (GIT_OPTIONAL_LOCKS=0). Ba tiến trình chạy song song:
     // trên Windows mỗi lần khởi động git.exe tốn ~100ms, chạy nối tiếp thì cộng dồn.
+    //
+    // MERGE_HEAD và số stash đọc thẳng file trong thư mục .git (không tốn thêm tiến trình); không xác định được
+    // thư mục .git (cấu trúc lạ) thì mới hỏi git như cũ.
+    if let Some(gd) = git_dir_of(&path) {
+        let mut st = parse_status(&git(&path, &["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"]).await?);
+        st.merging = gd.join("MERGE_HEAD").is_file();
+        st.stash_count = stash_count_file(&gd);
+        return Ok(st);
+    }
     let (text, merge, stash) = tokio::join!(
         git(&path, &["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"]),
         raw(&path, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]),
@@ -211,6 +253,50 @@ pub async fn git_status(path: String) -> Result<Status, String> {
     st.merging = merge.map(|o| o.status.success()).unwrap_or(false);
     st.stash_count = stash.map(|o| o.lines().filter(|l| !l.trim().is_empty()).count()).unwrap_or(0);
     Ok(st)
+}
+
+/// Thư mục .git của repo có gốc `path`: `.git` là thư mục, hoặc file `gitdir: …` (worktree / submodule).
+/// Trả về (gitdir riêng, commondir chung) gộp lại: MERGE_HEAD nằm ở gitdir riêng; stash nằm ở commondir —
+/// với repo thường hai cái trùng nhau. None = không chắc chắn → để git tự trả lời.
+fn git_dir_of(path: &str) -> Option<GitDirs> {
+    let dot = Path::new(path).join(".git");
+    let own = if dot.is_dir() {
+        dot
+    } else {
+        let s = std::fs::read_to_string(&dot).ok()?;
+        let p = PathBuf::from(s.trim().strip_prefix("gitdir:")?.trim());
+        let p = if p.is_absolute() { p } else { Path::new(path).join(p) };
+        if !p.is_dir() {
+            return None;
+        }
+        p
+    };
+    let common = match std::fs::read_to_string(own.join("commondir")) {
+        Ok(c) => {
+            let c = PathBuf::from(c.trim());
+            if c.is_absolute() { c } else { own.join(c) }
+        }
+        Err(_) => own.clone(),
+    };
+    Some(GitDirs { own, common })
+}
+
+struct GitDirs {
+    own: PathBuf,
+    common: PathBuf,
+}
+
+impl GitDirs {
+    fn join(&self, f: &str) -> PathBuf {
+        self.own.join(f)
+    }
+}
+
+/// Số stash = số dòng reflog `logs/refs/stash` (đúng như `git stash list`); không có file = 0.
+fn stash_count_file(gd: &GitDirs) -> usize {
+    std::fs::read_to_string(gd.common.join("logs").join("refs").join("stash"))
+        .map(|s| s.lines().filter(|l| !l.trim().is_empty()).count())
+        .unwrap_or(0)
 }
 
 /* ── Repo ────────────────────────────────────────── */
@@ -309,9 +395,11 @@ pub struct Commit {
 }
 
 #[tauri::command]
-pub async fn git_log(path: String, limit: Option<u32>) -> Result<Vec<Commit>, String> {
+pub async fn git_log(path: String, limit: Option<u32>, skip: Option<u32>) -> Result<Vec<Commit>, String> {
     let n = format!("-n{}", limit.unwrap_or(200));
-    let out = raw(&path, &["log", &n, "--format=%H%x1f%h%x1f%an%x1f%at%x1f%D%x1f%s%x1e"]).await?;
+    // skip: cuộn vô hạn trong History chỉ lấy TRANG kế tiếp thay vì đọc lại toàn bộ.
+    let sk = format!("--skip={}", skip.unwrap_or(0));
+    let out = raw(&path, &["log", &n, &sk, "--format=%H%x1f%h%x1f%an%x1f%at%x1f%D%x1f%s%x1e"]).await?;
     if !out.status.success() {
         let e = err_text(&out);
         // Repo mới chưa có commit nào.

@@ -1,4 +1,3 @@
-import { renderLog } from "../../shell/renderDebug";
 import { memo, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { useT } from "../../store/lang";
@@ -53,7 +52,6 @@ function uptimeText(sec: number): string {
 /** Dải thống kê server (CPU/RAM/net/disk) kiểu MobaXterm. Chạy phiên ssh ẩn đọc /proc mỗi ~2s. */
 // memo: chỉ state `stat` (event `ssh-stat` mỗi ~2s) làm dải này vẽ lại — không kéo theo tab/terminal/SFTP.
 export const SshStats = memo(function SshStats({ cfg }: { cfg: Omit<ConnectCfg, "cols" | "rows" | "command"> }) {
-  renderLog("SshStats");
   const tr = useT();
   const [stat, setStat] = useState<SshStat | null>(null);
   const [off, setOff] = useState(false); // server không hỗ trợ (không /proc) hoặc lỗi

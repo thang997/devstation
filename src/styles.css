@@ -1184,3 +1184,6 @@ input.invalid, input[aria-invalid="true"] { border-color: var(--danger); }
 .http-msg { display: flex; gap: 6px; align-items: flex-start; white-space: pre-line; }
 .http-msg > span { flex: 1; min-width: 0; }
 .tools-welcome { flex-wrap: wrap; justify-content: center; max-width: 560px; margin-top: 8px; }
+/* History cuộn vô hạn: dòng ngoài màn hình bỏ qua layout/vẽ (danh sách có thể vài nghìn commit). */
+.history-row { content-visibility: auto; contain-intrinsic-size: auto 26px; }
+.history-sentinel { min-height: 1px; }

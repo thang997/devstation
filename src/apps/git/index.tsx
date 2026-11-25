@@ -1,6 +1,5 @@
 import { confirmDialog } from "../../shell/confirm";
 import { Swap } from "../../shell/Swap";
-import { renderLog } from "../../shell/renderDebug";
 import { copyText } from "../../shell/clipboard";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { listen } from "@tauri-apps/api/event";
@@ -17,8 +16,9 @@ import { Loading } from "../../shell/Loading";
 import { listNav, rowKey } from "../../shell/listNav";
 import { git, errText, type Branch, type Commit, type FileChange, type GitAccount, type RemoteOp, type Status } from "./api";
 import { CommitView, FileDiff } from "./DiffParts";
-import { Archive, ArchiveRestore, ArrowDownToLine, ArrowUpFromLine, Check, ChevronsDown, Cloud, CloudDownload, Copy, Download, ExternalLink, EyeOff, FolderGit2, FolderOpen, GitBranch, GitBranchPlus, GitCommitHorizontal, GitMerge, History, LogIn, LogOut, Minus, Pencil, Plus, RefreshCw, RotateCcw, Save, Settings, Trash2, TriangleAlert, Undo2, X } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowDownToLine, ArrowUpFromLine, Check, Cloud, CloudDownload, Copy, Download, ExternalLink, EyeOff, FolderGit2, FolderOpen, GitBranch, GitBranchPlus, GitCommitHorizontal, GitMerge, History, LogIn, LogOut, Minus, Pencil, Plus, RefreshCw, RotateCcw, Save, Settings, Trash2, TriangleAlert, Undo2, X } from "lucide-react";
 import { refreshAllSummaries, repoName, setSummaryFrom, useRepos, type Repo } from "./repos";
+import { toggleTrace, traceDone, traceOn, traceStep } from "./trace";
 
 function openRepo(r: Repo) {
   useWorkbench.getState().openTab({ id: `git:${r.path}`, appId: "git", title: r.name, payload: { path: r.path } });
@@ -188,7 +188,6 @@ const CommitBox = memo(function CommitBox({ api, suggestedMsg, branch, ready, ch
   canUndo: boolean;
   undoShort: string | undefined;
 }) {
-  renderLog("CommitBox");
   const tr = useT();
   const [message, setMessage] = useState("");
   api.current.setMessage = setMessage;
@@ -224,7 +223,6 @@ const CommitBox = memo(function CommitBox({ api, suggestedMsg, branch, ready, ch
 });
 
 function RepoView({ tab }: { tab: Tab }) {
-  renderLog("RepoView");
   const tr = useT();
   const path = String(tab.payload.path);
   const log = useWorkbench((s) => s.log);
@@ -270,27 +268,56 @@ function RepoView({ tab }: { tab: Tab }) {
   /** Chuyển nhánh bị chặn do còn thay đổi chưa commit → hỏi có mang theo không. */
   const [switchDirty, setSwitchDirty] = useState<SwitchTarget | null>(null);
 
-  const refresh = useCallback(async () => {
+  /** Lượt nạp đang chạy + cờ "chạy lại sau khi xong" — gộp các lần gọi trùng (mount + focus cửa sổ, StrictMode). */
+  const inflight = useRef<Promise<void> | null>(null);
+  const again = useRef(false);
+  const load = useCallback(async () => {
     // Bốn lệnh chạy song song phía Rust (lệnh đọc không xếp hàng); phần nào xong hiện phần đó —
     // danh sách Changes không phải chờ History/nhánh.
     const fail = (e: unknown) => setError(errText(e));
     const limit = histLimit.current;
+    const t0 = performance.now();
     await Promise.all([
-      git.status(path).then((s) => { setStatus(s); setSummaryFrom(path, s); }, fail),
-      git.branches(path).then(setBranches, fail),
-      git.log(path, limit).then((h) => { setHistory(h); setHistMore(h.length >= limit); }, fail),
-      git.headPushed(path).then(setHeadPushed, fail),
+      traceStep(path, "status", git.status(path)).then((s) => { setStatus(s); setSummaryFrom(path, s); }, fail),
+      traceStep(path, "branches", git.branches(path)).then(setBranches, fail),
+      traceStep(path, `log -n${limit}`, git.log(path, limit)).then((h) => { setHistory(h); setHistMore(h.length >= limit); }, fail),
+      traceStep(path, "headPushed", git.headPushed(path)).then(setHeadPushed, fail),
     ]);
+    traceDone(path, "refresh", t0);
   }, [path]);
+  /** Nạp lại status/nhánh/lịch sử. Đang có lượt chạy: `force` (sau một thao tác ghi) → chạy thêm MỘT lượt khi lượt
+   * hiện tại xong (lượt đó có thể đã đọc trước khi thao tác ghi xong); không `force` (focus, mount) → dùng chung lượt đang chạy. */
+  const refresh = useCallback((force = false): Promise<void> => {
+    if (inflight.current) {
+      if (force) again.current = true;
+      return inflight.current;
+    }
+    const p = (async () => {
+      do { again.current = false; await load(); } while (again.current);
+    })().finally(() => { inflight.current = null; });
+    inflight.current = p;
+    return p;
+  }, [load]);
 
+  /** Cuộn tới cuối History → nạp TRANG kế (`--skip`), nối vào danh sách. Đang nạp thì bỏ qua lần gọi trùng. */
+  const histLoading = useRef(false);
   const loadMoreHistory = useCallback(async () => {
-    histLimit.current += HISTORY_PAGE;
+    if (histLoading.current) return;
+    histLoading.current = true;
+    const skip = histLimit.current;
     try {
-      const h = await git.log(path, histLimit.current);
-      setHistory(h);
-      setHistMore(h.length >= histLimit.current);
+      const page = await traceStep(path, `log --skip=${skip}`, git.log(path, HISTORY_PAGE, skip));
+      histLimit.current = skip + HISTORY_PAGE;
+      setHistory((prev) => {
+        // Có commit mới chen vào giữa hai lần nạp → trang sau lặp vài commit; bỏ trùng theo hash.
+        const seen = new Set(prev.map((c) => c.hash));
+        return [...prev, ...page.filter((c) => !seen.has(c.hash))];
+      });
+      setHistMore(page.length >= HISTORY_PAGE);
     } catch (e) {
       setError(errText(e));
+    } finally {
+      histLoading.current = false;
     }
   }, [path]);
 
@@ -323,8 +350,8 @@ function RepoView({ tab }: { tab: Tab }) {
     let alive = true;
     const p =
       selected.type === "commit"
-        ? git.show(path, selected.commit.hash)
-        : git.fileDiff(path, selected.file.path, selected.file.kind === "untracked");
+        ? traceStep(path, `show ${selected.commit.short}`, git.show(path, selected.commit.hash))
+        : traceStep(path, `diff ${selected.file.path}`, git.fileDiff(path, selected.file.path, selected.file.kind === "untracked"));
     p.then((d) => alive && setDiff(d || tr("git.noTextualDifference"))).catch((e) => alive && setDiff(`⚠ ${errText(e)}`));
     return () => { alive = false; };
   }, [selected, path, status]);
@@ -342,7 +369,7 @@ function RepoView({ tab }: { tab: Tab }) {
     } finally {
       setBusy(null);
       setProgress("");
-      await refresh();
+      await refresh(true);
     }
   };
 
@@ -473,7 +500,7 @@ function RepoView({ tab }: { tab: Tab }) {
       }
     } finally {
       setBusy(null);
-      await refresh();
+      await refresh(true);
     }
   };
 
@@ -709,7 +736,7 @@ function RepoView({ tab }: { tab: Tab }) {
         </span>
         <span className="grow" />
         {busy && <BusyLabel busy={busy} progress={progress} />}
-        <button className="icon-btn" disabled={!!busy} onClick={() => void refresh()} title={tr("git.reloadStatus")}><RefreshCw /></button>
+        <button className="icon-btn" disabled={!!busy} onClick={() => void refresh(true)} title={tr("git.reloadStatus")}><RefreshCw /></button>
         {/* Nhóm remote tách riêng khỏi các nút khác để không bấm nhầm; mỗi nút chỉ bật khi có việc để làm. */}
         <div className="remote-actions">
           <button
@@ -1028,17 +1055,40 @@ const HistoryList = memo(function HistoryList({
   selectedHash: string | null;
   onSelect: (c: Commit) => void;
   onMenu: (c: Commit, e: React.MouseEvent) => void;
-  /** Có thì còn commit cũ hơn → hiện nút "Load more" cuối danh sách. */
-  onMore?: () => void;
+  /** Có thì còn commit cũ hơn → cuộn gần cuối danh sách tự nạp tiếp (infinite scroll). */
+  onMore?: () => Promise<void>;
 }) {
   const tr = useT();
+  const box = useRef<HTMLDivElement>(null);
+  const sentinel = useRef<HTMLDivElement>(null);
+  const [busy, setBusy] = useState(false);
+  const more = useRef(onMore);
+  more.current = onMore;
+  // Mốc ở cuối danh sách: vào vùng nhìn (+400px) thì nạp trang kế. Nạp xong mà mốc vẫn thấy (khung cao, trang
+  // ngắn) thì observer không bắn lại → tự kiểm tra lại sau mỗi lần nạp.
+  useEffect(() => {
+    const el = sentinel.current, root = box.current;
+    if (!el || !root || !onMore) return;
+    let alive = true;
+    const visible = () => el.getBoundingClientRect().top - root.getBoundingClientRect().bottom < 400;
+    const pull = async () => {
+      while (alive && more.current && visible()) {
+        setBusy(true);
+        try { await more.current(); } finally { if (alive) setBusy(false); }
+        await new Promise((r) => requestAnimationFrame(r)); // chờ danh sách mới vẽ rồi đo lại
+      }
+    };
+    const io = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) void pull(); }, { root, rootMargin: "0px 0px 400px 0px" });
+    io.observe(el);
+    return () => { alive = false; io.disconnect(); };
+  }, [!!onMore]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
-    <div className="history-list" role="listbox" onKeyDown={(e) => listNav(e, { row: ".history-row", select: true })}>
+    <div className="history-list" ref={box} role="listbox" onKeyDown={(e) => listNav(e, { row: ".history-row", select: true })}>
       {history.map((c) => (
         <HistoryRow key={c.hash} c={c} on={c.hash === selectedHash} onSelect={onSelect} onMenu={onMenu} />
       ))}
       {loaded && !history.length && <div className="muted small pad">{tr("git.noCommitsYet")}</div>}
-      {onMore && <button className="rkey-more" onClick={onMore}><ChevronsDown />{tr("git.loadMore")}</button>}
+      {onMore && <div ref={sentinel} className="history-sentinel">{busy && <Loading variant="row" />}</div>}
     </div>
   );
 });
@@ -1050,7 +1100,6 @@ const HistoryRow = memo(function HistoryRow({ c, on, onSelect, onMenu }: {
   onSelect: (c: Commit) => void;
   onMenu: (c: Commit, e: React.MouseEvent) => void;
 }) {
-  renderLog("HistoryRow");
   return (
     <div
       className={`history-row ${on ? "on" : ""}`}
@@ -1134,7 +1183,6 @@ const FileRow = memo(function FileRow({ f, staged, on, checked, action, api }: {
   action: FileAction;
   api: { current: FileRowApi };
 }) {
-  renderLog("FileRow");
   const tr = useT();
   const code = f.kind === "untracked" ? "U" : f.kind === "conflict" ? "!" : staged ? f.x : f.y;
   const slash = f.path.lastIndexOf("/");
@@ -1509,6 +1557,7 @@ const gitApp: AppModule = {
     { id: "git.add", group: "Git", title: t("git.addExistingRepo3"), run: () => void addRepos().catch(() => {}) },
     { id: "git.clone", group: "Git", title: t("git.cloneRepositoryFromUrl"), run: openClone },
     { id: "git.account", group: "Git", title: t("git.gitAccountLoginIdentity"), run: openAccount },
+    { id: "git.trace", group: "Git", title: t("git.traceToggle"), hint: traceOn() ? "ON" : "OFF", run: toggleTrace },
     ...useRepos.getState().repos.map((r) => ({
       id: `git.open.${r.path}`,
       group: "Git",

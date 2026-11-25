@@ -43,6 +43,10 @@ fn main() {
         .manage(redis::RedisState::default())
         .manage(owners::Owners::default())
         .manage(registry::RegistryState::default())
+        .setup(|app| {
+            git::init(app.handle().clone());
+            Ok(())
+        })
         // Đóng cửa sổ app (nút X) / tải lại trang: React không kịp dọn → Rust đóng mọi phiên của cửa sổ đó.
         .on_window_event(|window, ev| {
             if let tauri::WindowEvent::Destroyed = ev {
@@ -70,6 +74,7 @@ fn main() {
             db::db_get_password,
             db::db_forget_password,
             git::git_status,
+            git::git_set_trace,
             git::git_root,
             git::git_find_repos,
             git::git_diff,

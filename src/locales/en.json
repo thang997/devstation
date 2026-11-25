@@ -599,8 +599,11 @@
     "collapseCommitInfo": "Collapse commit info",
     "expandCommitInfo": "Expand commit info (message, author, SHA…)",
     "commitMessagePlaceholder": "Commit message (Ctrl+Enter)",
-    "loadMore": "Load more…",
-    "noStashToPop": "No stash to pop"
+    "noStashToPop": "No stash to pop",
+    "traceToggle": "Git: toggle timing log (what loads and how long)",
+    "traceOn": "Git timing log ON — each git command and each repo load step is written to the Output panel with its duration",
+    "traceOff": "Git timing log OFF",
+    "traceTotal": "{label}: data {data}ms · painted {paint}ms"
   },
   "http": {
     "add": "Add",
@@ -803,9 +806,6 @@
     "copied": "Copied to clipboard",
     "copyFailed": "Copy failed (clipboard blocked)",
     "loadingDots": "Loading…",
-    "toggleRenderLog": "Toggle render log (performance check)",
-    "renderLogOn": "Render log ON — each second the Output panel lists which components re-rendered and how many times",
-    "renderLogOff": "Render log OFF",
     "cancel": "Cancel",
     "cannotOpenWindow": "Could not open window",
     "checkForUpdates": "Check for updates",

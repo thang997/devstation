@@ -6,7 +6,6 @@ import { useWorkbench } from "../store/workbench";
 import { tIn, useLang, useT, type TKey } from "../store/lang";
 import { checkForUpdate, useAppVersion } from "./updater";
 import { exportConfig, importConfig } from "./configTransfer";
-import { renderLogOn, toggleRenderLog } from "./renderDebug";
 import { launchApp } from "./windows";
 
 /** Bỏ dấu tiếng Việt để gõ "tien ich" vẫn khớp "Tiện ích". */
@@ -59,7 +58,6 @@ export function Launcher({ inline = false }: { inline?: boolean }) {
       { id: "shell.exportConfig", group: tr("shell.general"), title: tr("shell.exportConfigToFile"), run: () => void runTransfer(s, () => exportConfig().then((p) => p && tr("shell.exportedConfig", { p }))) },
       { id: "shell.importConfig", group: tr("shell.general"), title: tr("shell.importConfigFromFile"), run: () => void runTransfer(s, () => importConfig().then(() => null)) },
       { id: "shell.resetAppOrder", group: tr("shell.general"), title: tr("shell.resetAppOrder"), run: resetAppOrder },
-      { id: "shell.renderLog", group: tr("shell.general"), title: tr("shell.toggleRenderLog"), hint: renderLogOn() ? "ON" : "OFF", run: () => { const on = toggleRenderLog(); s.log(on ? tr("shell.renderLogOn") : tr("shell.renderLogOff")); if (on && !useWorkbench.getState().panelOpen) s.togglePanel(); } },
       { id: "shell.sidebar", group: tr("shell.general"), title: tr("shell.toggleAppSidebar"), hint: "Ctrl+B", run: s.toggleSidebar },
       ...s.mounted.map((id) => {
         const a = APPS.find((x) => x.id === id)!;

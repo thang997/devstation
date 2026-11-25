@@ -1,4 +1,3 @@
-import { renderLog } from "../../shell/renderDebug";
 import { copyText } from "../../shell/clipboard";
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { Binary, Braces, CircleCheck, CircleX, Copy, Download, FileCode, FileKey, FileUp, Info, KeyRound, TriangleAlert, Wrench, X, type LucideIcon } from "lucide-react";
@@ -181,7 +180,6 @@ function TabView({ tab }: { tab: Tab }) {
 }
 
 function TextToolView({ tool, initial }: { tool: ToolId; initial: string }) {
-  renderLog("TextToolView");
   const tr = useT();
   const [input, setInput] = useState(initial);
   // Gõ chữ: ô nhập cập nhật ngay, phần biến đổi + vẽ kết quả (có thể lớn) chạy ở lượt render hoãn (deferred).
@@ -236,7 +234,6 @@ interface FileB64 {
 }
 
 function Base64EncodeView({ initial }: { initial: string }) {
-  renderLog("Base64EncodeView");
   const tr = useT();
   const [input, setInput] = useState(initial);
   const [file, setFile] = useState<FileB64 | null>(null);
@@ -366,7 +363,6 @@ function verifyErrorText(e: unknown): string {
 }
 
 function JwtView({ initial }: { initial: string }) {
-  renderLog("JwtView");
   const tr = useT();
   const [input, setInput] = useState(initial);
   const [key, setKey] = useState("");
@@ -470,7 +466,6 @@ function JwtView({ initial }: { initial: string }) {
 /* ---------- CSR / Certificate → Public key ---------- */
 
 function CsrView({ initial }: { initial: string }) {
-  renderLog("CsrView");
   const tr = useT();
   const [input, setInput] = useState(initial);
   const [der, setDer] = useState<{ name: string; bytes: Uint8Array } | null>(null);

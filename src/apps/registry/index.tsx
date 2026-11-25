@@ -1,4 +1,3 @@
-import { renderLog } from "../../shell/renderDebug";
 import { copyText } from "../../shell/clipboard";
 import { memo, useCallback, useEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
 import { ChevronsDown, CircleCheck, CircleSlash, Copy, Download, Globe, Hash, KeyRound, Lock, LogIn, Package, Pencil, Play, Plug, Plus, RefreshCw, Save, Square, Tag, Trash2, TriangleAlert, X } from "lucide-react";
@@ -460,7 +459,6 @@ function colKeyDown(e: KeyboardEvent<HTMLElement>) {
 
 /* ── Hàng danh sách (memo): gõ ô lọc / tick / chọn dòng chỉ vẽ lại hàng đổi, không vẽ lại cả trăm hàng ── */
 const ProjectRow = memo(function ProjectRow({ p, on, onPick }: { p: RegProject; on: boolean; onPick: (name: string) => void }) {
-  renderLog("ProjectRow");
   return (
     <div className={`reg-row ${on ? "on" : ""}`} tabIndex={0} onClick={() => onPick(p.name)}>
       <span title={p.public ? "public" : "private"}>{p.public ? <Globe /> : <Lock />}</span>
@@ -474,7 +472,6 @@ const RepoRow = memo(function RepoRow({ r, project, on, checked, onPick, onCheck
   r: RegRepo; project: string; on: boolean; checked: boolean;
   onPick: (name: string) => void; onCheck: (name: string, on: boolean) => void;
 }) {
-  renderLog("RepoRow");
   const tr = useT();
   return (
     <div
@@ -497,7 +494,6 @@ interface ArtApi {
   menu: (a: RegArtifact, x: number, y: number) => void;
 }
 const ArtRow = memo(function ArtRow({ a, api }: { a: RegArtifact; api: { get: () => ArtApi } }) {
-  renderLog("ArtRow");
   const tr = useT();
   return (
     <tr
@@ -524,7 +520,6 @@ const ArtRow = memo(function ArtRow({ a, api }: { a: RegArtifact; api: { get: ()
  *  không vẽ lại 3 cột Projects/Repositories/Artifacts. Mỗi hàng memo: chỉ job đổi mới vẽ lại. */
 const JOBS_SHOWN = 50;
 function JobsPanel() {
-  renderLog("JobsPanel");
   const tr = useT();
   const all = useJobs();
   const shown = all.slice(0, JOBS_SHOWN);
@@ -550,7 +545,6 @@ function JobsPanel() {
 }
 
 const JobRow = memo(function JobRow({ j }: { j: Job }) {
-  renderLog("JobRow");
   const tr = useT();
   const pct = j.total ? Math.min(100, (j.done / j.total) * 100) : 0;
   const speed = (j.phase === "download" || j.phase === "zip") && j.speed ? `${human(j.speed)}/s` : "";
@@ -589,7 +583,6 @@ const JobRow = memo(function JobRow({ j }: { j: Job }) {
 
 /* ── Phiên làm việc với một Harbor ── */
 function Session({ tab }: { tab: Tab }) {
-  renderLog("Session");
   const tr = useT();
   const connId = String(tab.payload.connId);
   const conn = useConns((s) => s.conns.find((c) => c.id === connId));

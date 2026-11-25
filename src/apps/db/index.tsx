@@ -1,5 +1,4 @@
 import { Swap } from "../../shell/Swap";
-import { renderLog } from "../../shell/renderDebug";
 import { copyText } from "../../shell/clipboard";
 import { listNav, rowKey } from "../../shell/listNav";
 import { memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject, type KeyboardEvent as ReactKeyboardEvent } from "react";
@@ -252,7 +251,6 @@ function useNewDbReq() {
 /* ── Sidebar ───────────────────────────────────── */
 
 function Sidebar() {
-  renderLog("Sidebar");
   const tr = useT();
   const conns = useConns((s) => s.conns);
   const [dragId, setDragId] = useState<string | null>(null);
@@ -658,7 +656,6 @@ const SqlEditor = memo(function SqlEditor({ api, textRef, src, onRun, onEmptyCha
   onRun: () => void;
   onEmptyChange: (empty: boolean) => void;
 }) {
-  renderLog("SqlEditor");
   const tr = useT();
   const [sql, setSqlState] = useState("");
   /** Gợi ý khi gõ SQL (tên bảng / cột / database / từ khoá). */
@@ -791,7 +788,6 @@ const SqlEditor = memo(function SqlEditor({ api, textRef, src, onRun, onEmptyCha
 const TableRow = memo(function TableRow({ t, pad, sel, hint, canRename, api, onRename }: {
   t: TableInfo; pad: number; sel: boolean; hint: string; canRename: boolean; api: SessApi; onRename: (t: TableInfo) => void;
 }) {
-  renderLog("TableRow");
   return (
     <div className={`side-item tbl ${sel ? "sel" : ""}`} style={{ paddingLeft: pad }}
       tabIndex={0}
@@ -826,7 +822,6 @@ const DbTree = memo(function DbTree({ width, driver, singleDb, dbs, opened, expa
   selTable: TableInfo | null;
   api: SessApi;
 }) {
-  renderLog("DbTree");
   const tr = useT();
   const [filter, setFilter] = useState("");
   /** Đổi tên bảng tại chỗ (F2). */
@@ -1015,7 +1010,6 @@ function Session({ tab }: { tab: Tab }) {
 }
 
 function SessionBody({ tab }: { tab: Tab }) {
-  renderLog("SessionBody");
   const conn = useConns((s) => s.conns.find((c) => c.id === tab.payload.connId));
   const allConns = useConns((s) => s.conns);
   const log = useWorkbench((s) => s.log);
@@ -2207,7 +2201,6 @@ interface GridEditor {
 
 /** Kết quả các câu không trả bảng: mỗi câu một dòng (số thứ tự · câu lệnh · số dòng bị ảnh hưởng · thời gian). */
 const ExecLog = memo(function ExecLog({ items, total, full }: { items: { o: QueryOut; i: number }[]; total: number; full: boolean }) {
-  renderLog("ExecLog");
   const tr = useT();
   const affected = items.reduce((n, x) => n + x.o.rowsAffected, 0);
   const ms = items.reduce((n, x) => n + x.o.elapsedMs, 0);
@@ -2270,7 +2263,6 @@ const GridRow = memo(function GridRow({ row, r, num, rowEdits, editCol, activeCo
   mask: string;
   api: { current: GridRowApi };
 }) {
-  renderLog("GridRow");
   return (
     <tr data-r={r}>
       {row.map((orig, j) => {
@@ -2314,7 +2306,6 @@ const GridRow = memo(function GridRow({ row, r, num, rowEdits, editCol, activeCo
 const ResultGrid = memo(function ResultGrid({ out: initial, title, editor, pager }: {
   out: QueryOut | null; title?: string; editor?: GridEditor; pager?: GridPager;
 }) {
-  renderLog("ResultGrid");
   const tr = useT();
   // Trang đang xem: sau khi chuyển trang thì thay cho kết quả ban đầu (gắn với đúng `initial`).
   const [view, setView] = useState<{ src: QueryOut | null; out: QueryOut | null }>({ src: null, out: null });
@@ -2823,7 +2814,6 @@ function fmtBytes(v: string | null | undefined): string {
 const TableInfoPanel = memo(function TableInfoPanel({ conn, dbId, table, api, onClose }: {
   conn: Conn; dbId: string; table: TableInfo; api: SessApi; onClose: () => void;
 }) {
-  renderLog("TableInfoPanel");
   const onOpen = () => api.openTable(table);
   const onStructure = () => api.editStruct(table);
   const tr = useT();
@@ -2929,7 +2919,6 @@ function TableStructModal({ conn, dbId, table, tables, onClose, onChanged, getDd
   onChanged: () => void;
   getDdl: () => Promise<string>;
 }) {
-  renderLog("TableStructModal");
   const tr = useT();
   const d = conn.driver;
   const ref = quote(conn, table);

@@ -1,5 +1,4 @@
 import { Swap } from "../../shell/Swap";
-import { renderLog } from "../../shell/renderDebug";
 import { copyText } from "../../shell/clipboard";
 import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
@@ -140,7 +139,6 @@ interface SftpRowApi {
 }
 
 const SftpRow = memo(function SftpRow({ e, sel, api }: { e: SftpEntry; sel: boolean; api: { current: SftpRowApi } }) {
-  renderLog("SftpRow");
   return (
     <div
       className={`sftp-row ${sel ? "sel" : ""}`}
@@ -184,7 +182,6 @@ export const SftpPanel = memo(function SftpPanel({
   /** Ẩn nút upload (container chưa hỗ trợ upload). */
   noUpload?: boolean;
 }) {
-  renderLog("SftpPanel");
   const tr = useT();
   const drv = driver ?? sftp;
   const [sid, setSid] = useState<string | null>(null);

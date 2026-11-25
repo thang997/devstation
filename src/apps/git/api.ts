@@ -60,7 +60,7 @@ export const git = {
     call<string>("git_diff", { path, file, staged, untracked }),
   fileDiff: (path: string, file: string, untracked: boolean) =>
     call<string>("git_file_diff", { path, file, untracked }),
-  log: (path: string, limit = 200) => call<Commit[]>("git_log", { path, limit }),
+  log: (path: string, limit = 200, skip = 0) => call<Commit[]>("git_log", { path, limit, skip }),
   show: (path: string, hash: string) => call<string>("git_show", { path, hash }),
   undoCommit: (path: string) => call<string>("git_undo_commit", { path }),
   commitMessage: (path: string, hash: string) => call<string>("git_commit_message", { path, hash }),

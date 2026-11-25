@@ -1,5 +1,4 @@
 import { Swap } from "../../shell/Swap";
-import { renderLog } from "../../shell/renderDebug";
 import { copyText } from "../../shell/clipboard";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Braces, ChevronDown, ChevronRight, ChevronsDown, Copy, Database, Folder, FolderOpen, FolderTree, Info, KeyRound, List, Minimize2, Pencil, Plug, Plus, RefreshCw, Save, Search, Trash2, TriangleAlert, Unplug, WandSparkles, X } from "lucide-react";
@@ -148,7 +147,6 @@ function treeRows(root: TNode, open: Set<string>): TreeRow[] {
 interface KeyRowApi { toggle: (path: string) => void; open: (key: string) => void; remove: (key: string) => void }
 
 const TreeKeyRow = memo(function TreeKeyRow({ row, isOpen, on, api }: { row: TreeRow; isOpen: boolean; on: boolean; api: { current: KeyRowApi } }) {
-  renderLog("TreeKeyRow");
   const folder = row.kind === "folder";
   return (
     <div
@@ -187,7 +185,6 @@ const TreeKeyRow = memo(function TreeKeyRow({ row, isOpen, on, api }: { row: Tre
 });
 
 const FlatKeyRow = memo(function FlatKeyRow({ k, on, api }: { k: string; on: boolean; api: { current: KeyRowApi } }) {
-  renderLog("FlatKeyRow");
   return (
     <div
       className={`rkey ${on ? "on" : ""}`}
@@ -204,7 +201,6 @@ const FlatKeyRow = memo(function FlatKeyRow({ k, on, api }: { k: string; on: boo
 
 /** Bảng giá trị hash/list/set/zset/stream — memo: chỉ vẽ lại khi đổi key (không theo từng phím gõ ở Session). */
 const DetailGrid = memo(function DetailGrid({ columns, rows }: { columns: string[]; rows: string[][] }) {
-  renderLog("DetailGrid");
   return (
     <div className="grid-wrap">
       <table className="grid mono">
@@ -240,7 +236,6 @@ function useFormReq() {
 /* ── Sidebar ───────────────────────────────────── */
 
 function Sidebar() {
-  renderLog("Sidebar");
   const tr = useT();
   const conns = useConns((s) => s.conns);
   const [sel, setSel] = useState<string | null>(null);
@@ -413,7 +408,6 @@ function Session({ tab }: { tab: Tab }) {
 }
 
 function SessionBody({ tab }: { tab: Tab }) {
-  renderLog("SessionBody");
   const tr = useT();
   const conn = useConns((s) => s.conns.find((c) => c.id === tab.payload.connId));
   const log = useWorkbench((s) => s.log);

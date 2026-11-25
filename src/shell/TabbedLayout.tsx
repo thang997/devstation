@@ -1,4 +1,3 @@
-import { renderLog } from "./renderDebug";
 import { memo, useState, type ComponentType, type ReactNode } from "react";
 import { CircleSlash, Copy, PanelLeft, X, SquareX } from "lucide-react";
 import type { AppId, Tab } from "../apps/types";
@@ -18,12 +17,10 @@ const SIDEBAR_MAX = 520;
 /** Một tab: memo → chuyển tab KHÔNG vẽ lại nội dung các tab (focusTab chỉ đổi activeTabId, object tab giữ nguyên).
  *  Trước đây mỗi lần chuyển tab mọi phiên (vd. DB MariaDB + Cassandra) đều dựng lại cây bảng → khựng. */
 const TabSlot = memo(function TabSlot({ tab, TabView }: { tab: Tab; TabView: ComponentType<{ tab: Tab }> }) {
-  renderLog("TabSlot");
   return <TabView tab={tab} />;
 });
 /** Sidebar cũng memo: chuyển/mở/đóng tab không vẽ lại cây sidebar (DB, SSH, HTTP…) — sidebar tự subscribe store khi cần. */
 const SidebarSlot = memo(function SidebarSlot({ Sidebar }: { Sidebar: ComponentType }) {
-  renderLog("SidebarSlot");
   return <Sidebar />;
 });
 
@@ -39,7 +36,6 @@ export function TabbedLayout({
   /** Hiện khi app chưa có tab nào. */
   empty?: ReactNode;
 }) {
-  renderLog("TabbedLayout");
   const tr = useT();
   const app = useWorkbench((s) => s.apps[appId]);
   const focusTab = useWorkbench((s) => s.focusTab);

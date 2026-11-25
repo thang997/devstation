@@ -1,4 +1,3 @@
-import { renderLog } from "../../shell/renderDebug";
 import { memo, useEffect, useMemo, useState } from "react";
 import { Splitter, useSplitSize } from "../../shell/Resizable";
 import { useT } from "../../store/lang";
@@ -19,7 +18,6 @@ const MAX_LINES = 5000;
 
 /** Thân diff của MỘT file: gutter số dòng cũ | mới, tô màu cả hàng. */
 export const DiffBody = memo(function DiffBody({ file }: { file: DiffFile }) {
-  renderLog("DiffBody");
   const tr = useT();
   if (file.binary) return <div className="empty">{tr("git.binaryFileNoPreview")}</div>;
   if (!file.lines.length) return <div className="empty">{file.status === "R" ? tr("git.renamedOnly") : tr("git.noTextualDifference")}</div>;
@@ -53,7 +51,6 @@ export const DiffBody = memo(function DiffBody({ file }: { file: DiffFile }) {
 
 /** Diff một file đang thay đổi (working tree). Không phải diff chuẩn (lỗi / thông báo) → hiện chữ thô. */
 export const FileDiff = memo(function FileDiff({ text }: { text: string }) {
-  renderLog("FileDiff");
   const parsed = useMemo(() => parseDiff(text), [text]);
   if (!parsed.files.length) return <div className="dv mono"><div className="dv-raw">{text}</div></div>;
   if (parsed.files.length === 1) return <DiffBody file={parsed.files[0]} />;
@@ -89,7 +86,6 @@ function parseHead(head: string[]) {
 
 /** memo: gõ message commit / tiến trình ở RepoView không vẽ lại khung commit (danh sách file + diff). */
 export const CommitView = memo(function CommitView({ text, commit, onCopy }: { text: string; commit: Commit; onCopy: (s: string) => void }) {
-  renderLog("CommitView");
   const tr = useT();
   const { head, files } = useMemo(() => parseDiff(text), [text]);
   const info = useMemo(() => parseHead(head), [head]);
@@ -161,7 +157,6 @@ export const CommitView = memo(function CommitView({ text, commit, onCopy }: { t
 
 /** Một dòng file của commit: memo → đổi file đang chọn / kéo splitter chỉ vẽ lại dòng đổi. */
 const CvFileRow = memo(function CvFileRow({ f, i, on, onSelect }: { f: DiffFile; i: number; on: boolean; onSelect: (i: number) => void }) {
-  renderLog("CvFileRow");
   const tr = useT();
   const slash = f.path.lastIndexOf("/");
   return (

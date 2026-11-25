@@ -4,7 +4,6 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { AppModule } from "../types";
 import { Picker } from "../../shell/Picker";
 import { Spinner } from "../../shell/Loading";
-import { renderLog } from "../../shell/renderDebug";
 import { useWorkbench } from "../../store/workbench";
 import { t, useT } from "../../store/lang";
 
@@ -65,7 +64,6 @@ export async function openTranslated(url: string, cfg: Cfg) {
 }
 
 function TranslateView() {
-  renderLog("TranslateView");
   const tr = useT();
   const [cfg, setCfgState] = useState<Cfg>(readCfg);
   const [url, setUrl] = useState("");

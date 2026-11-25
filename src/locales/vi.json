@@ -599,8 +599,11 @@
     "collapseCommitInfo": "Thu gọn thông tin commit",
     "expandCommitInfo": "Mở rộng thông tin commit (message, tác giả, SHA…)",
     "commitMessagePlaceholder": "Nội dung commit (Ctrl+Enter)",
-    "loadMore": "Tải thêm…",
-    "noStashToPop": "Không có stash để pop"
+    "noStashToPop": "Không có stash để pop",
+    "traceToggle": "Git: bật/tắt log thời gian (nạp gì, mất bao lâu)",
+    "traceOn": "Đã BẬT log thời gian Git — mỗi lệnh git và từng bước nạp repo được ghi ra panel Output kèm thời gian",
+    "traceOff": "Đã TẮT log thời gian Git",
+    "traceTotal": "{label}: dữ liệu {data}ms · vẽ xong {paint}ms"
   },
   "http": {
     "add": "Thêm",
@@ -803,9 +806,6 @@
     "copied": "Đã copy vào clipboard",
     "copyFailed": "Copy thất bại (clipboard bị chặn)",
     "loadingDots": "Đang tải…",
-    "toggleRenderLog": "Bật/tắt log render (kiểm tra hiệu năng)",
-    "renderLogOn": "Đã bật log render — mỗi giây panel Output liệt kê component nào vẽ lại và bao nhiêu lần",
-    "renderLogOff": "Đã tắt log render",
     "cancel": "Huỷ",
     "cannotOpenWindow": "Không mở được cửa sổ",
     "checkForUpdates": "Kiểm tra cập nhật",

@@ -1,5 +1,4 @@
 import { Swap } from "../../shell/Swap";
-import { renderLog } from "../../shell/renderDebug";
 import { copyText } from "../../shell/clipboard";
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { listen } from "@tauri-apps/api/event";
@@ -118,7 +117,6 @@ const HostRow = memo(function HostRow({ h, inFolder, sel, dragging, renaming, ju
   jumpName?: string;
   api: { current: HostRowApi };
 }) {
-  renderLog("HostRow");
   const tr = useT();
   const style = inFolder ? INDENT : undefined;
   if (renaming) return (
@@ -184,7 +182,6 @@ const TunRow = memo(function TunRow({ tn, inFolder, sel, dragging, renaming, st,
   st: string; msg: string;
   api: { current: TunRowApi };
 }) {
-  renderLog("TunRow");
   const tr = useT();
   const on = st === "running" || st === "starting";
   const style = inFolder ? INDENT : undefined;
@@ -244,7 +241,6 @@ const TunRow = memo(function TunRow({ tn, inFolder, sel, dragging, renaming, st,
 });
 
 function Sidebar() {
-  renderLog("Sidebar");
   const tr = useT();
   const hosts = useHosts();
   const folders = useFolders();
@@ -950,7 +946,6 @@ const FILES_MIN = 260;
 const FILES_MAX = 720;
 
 function TabView({ tab }: { tab: Tab }) {
-  renderLog("TabView");
   const tr = useT();
   const p = tab.payload;
   const hosts = useHosts();

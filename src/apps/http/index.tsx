@@ -1,5 +1,4 @@
 import { Swap } from "../../shell/Swap";
-import { renderLog } from "../../shell/renderDebug";
 import { copyText } from "../../shell/clipboard";
 import { memo, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { Braces, Check, ChevronDown, ChevronRight, Copy, CornerRightDown, Download, FileInput, Folder, FolderInput, FolderOpen, FolderPlus, KeyRound, Minimize2, PackageOpen, Pencil, Plus, Save, Send, ShieldAlert, Sparkles, Trash2, TriangleAlert, X, Zap } from "lucide-react";
@@ -209,7 +208,6 @@ function importReqsInto(parent: string | null, reqs: ParsedCurl[], folderName: s
 }
 
 function Sidebar() {
-  renderLog("Sidebar");
   const tr = useT();
   const tree = useTree();
   const [msg, setMsg] = useState("");
@@ -446,7 +444,6 @@ const TreeRow = memo(function TreeRow({
   dragId: string | null;
   api: { current: TreeApi };
 }) {
-  renderLog("TreeRow");
   if (node.kind === "req") {
     return <ReqRow node={node} depth={depth} parent={parent} isEditing={editing === node.id} isSel={sel === node.id} isDragging={dragId === node.id} api={api} />;
   }
@@ -495,7 +492,6 @@ const ReqRow = memo(function ReqRow({ node, depth, parent, isEditing, isSel, isD
   isDragging: boolean;
   api: { current: TreeApi };
 }) {
-  renderLog("ReqRow");
   return (
     <div
       className={`tree-row req ${isSel ? "sel" : ""} ${isDragging ? "dragging" : ""}`}
@@ -697,7 +693,6 @@ function fmtSize(n: number) {
 }
 
 function TabView({ tab }: { tab: Tab }) {
-  renderLog("HttpTab");
   const tr = useT();
   const log = useWorkbench((s) => s.log);
   const [req, setReq] = useState<ReqState>(() => loadReq(tab));
@@ -1028,7 +1023,6 @@ const ResponsePane = memo(function ResponsePane({ resp, sending, resTab, setResT
   resTab: (typeof RES_TABS)[number];
   setResTab: (t: (typeof RES_TABS)[number]) => void;
 }) {
-  renderLog("ResponsePane");
   const tr = useT();
   const [pretty, setPretty] = useState(true);
   const isJson = useMemo(() => {
