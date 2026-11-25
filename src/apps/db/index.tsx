@@ -2211,7 +2211,7 @@ const ExecLog = memo(function ExecLog({ items, total, full }: { items: { o: Quer
       </div>
       <div className="exec-log-list mono">
         {items.map(({ o, i }) => {
-          const sql = (o.sql ?? "").replace(/s+/g, " ").trim();
+          const sql = (o.sql ?? "").replace(/\s+/g, " ").trim();
           return (
             <div key={i} className="exec-log-row" title={o.sql}>
               <span className="exec-log-no muted">{total > 1 ? `#${i + 1}` : ""}</span>

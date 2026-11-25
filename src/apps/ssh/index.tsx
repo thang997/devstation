@@ -615,7 +615,7 @@ async function pickKey(set: (p: string) => void) {
 function parsePort(text: string, emptyDefault?: number): number | null {
   const s = text.trim();
   if (!s) return emptyDefault ?? null;
-  if (!/^d+$/.test(s)) return null;
+  if (!/^\d+$/.test(s)) return null;
   const n = Number(s);
   return n >= 1 && n <= 65535 ? n : null;
 }
