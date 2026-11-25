@@ -18,7 +18,7 @@ import { listNav, rowKey } from "../../shell/listNav";
 import { git, errText, type Branch, type Commit, type FileChange, type GitAccount, type RemoteOp, type Status } from "./api";
 import { CommitView, FileDiff } from "./DiffParts";
 import { Archive, ArchiveRestore, ArrowDownToLine, ArrowUpFromLine, Check, ChevronsDown, Cloud, CloudDownload, Copy, Download, ExternalLink, EyeOff, FolderGit2, FolderOpen, GitBranch, GitBranchPlus, GitCommitHorizontal, GitMerge, History, LogIn, LogOut, Minus, Pencil, Plus, RefreshCw, RotateCcw, Save, Settings, Trash2, TriangleAlert, Undo2, X } from "lucide-react";
-import { refreshAllSummaries, refreshSummary, repoName, useRepos, type Repo } from "./repos";
+import { refreshAllSummaries, repoName, setSummaryFrom, useRepos, type Repo } from "./repos";
 
 function openRepo(r: Repo) {
   useWorkbench.getState().openTab({ id: `git:${r.path}`, appId: "git", title: r.name, payload: { path: r.path } });
@@ -76,10 +76,9 @@ function RepoSwitcher({ currentPath }: { currentPath: string | null }) {
   const summaries = useRepos((s) => s.summaries);
   const current = repos.find((r) => r.path === currentPath);
 
-  useEffect(() => { void refreshAllSummaries(); }, []);
-
   return (
     <Picker
+      onOpen={() => void refreshAllSummaries()}
       title={tr("git.switchAddRepository")}
       filterPlaceholder={tr("git.filterRepository")}
       label={<><span className="branch-glyph"><FolderGit2 /></span> {current?.name ?? tr("git.pickRepository")}</>}
@@ -272,17 +271,16 @@ function RepoView({ tab }: { tab: Tab }) {
   const [switchDirty, setSwitchDirty] = useState<SwitchTarget | null>(null);
 
   const refresh = useCallback(async () => {
-    try {
-      const [s, b, h, pushed] = await Promise.all([git.status(path), git.branches(path), git.log(path, histLimit.current), git.headPushed(path)]);
-      setStatus(s);
-      setBranches(b);
-      setHistory(h);
-      setHistMore(h.length >= histLimit.current);
-      setHeadPushed(pushed);
-      void refreshSummary(path);
-    } catch (e) {
-      setError(errText(e));
-    }
+    // Bốn lệnh chạy song song phía Rust (lệnh đọc không xếp hàng); phần nào xong hiện phần đó —
+    // danh sách Changes không phải chờ History/nhánh.
+    const fail = (e: unknown) => setError(errText(e));
+    const limit = histLimit.current;
+    await Promise.all([
+      git.status(path).then((s) => { setStatus(s); setSummaryFrom(path, s); }, fail),
+      git.branches(path).then(setBranches, fail),
+      git.log(path, limit).then((h) => { setHistory(h); setHistMore(h.length >= limit); }, fail),
+      git.headPushed(path).then(setHeadPushed, fail),
+    ]);
   }, [path]);
 
   const loadMoreHistory = useCallback(async () => {

@@ -50,7 +50,7 @@
   /** Gỡ veil khi không còn gì đang dịch trong vùng đang thấy (đã qua DOMContentLoaded). */
   function maybeUnveil() {
     // Cần: đã qua DOMContentLoaded ~120ms (để IntersectionObserver kịp đưa phần đang thấy vào hàng), hết lô đang chạy.
-    if (veilOn && domReady && Date.now() - readyAt > 120 && inflight === 0 && queue.length === 0 && (sentAny || total === 0)) unveil();
+    if (veilOn && domReady && Date.now() - readyAt > 120 && inflight === 0 && queue.length === 0 && waitCss.size === 0 && (sentAny || total === 0)) unveil();
     else if (veilOn && domReady && !unveilTimer) unveilTimer = setTimeout(function () { unveilTimer = 0; maybeUnveil(); }, 60);
   }
 
@@ -81,22 +81,60 @@
 
   function esc(t) { return t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
   function textOf(html) { tpl.innerHTML = html; return tpl.content.textContent || ""; }
+  /* Thẻ inline nhưng CSS cho hiển thị như khối (menu `<a class="list-group-item">` display:block, nút inline-block, mục
+   * flex…) là một đoạn RIÊNG — gộp chung thì cả menu thành một câu "Lobby Reporting System Firewall Services…",
+   * dịch vụ dịch theo ngữ cảnh câu rồi gộp/xáo mẩu (Services → "Dịch" | "vụ" rơi sang hai mục). Chỉ display inline /
+   * contents mới tính là nằm trong câu. */
+  var dispCache = new WeakMap();
+  function isInl(el) {
+    if (!INLINE[el.tagName]) return false;
+    var d = dispCache.get(el);
+    if (d === undefined) {
+      try { d = getComputedStyle(el).display; } catch (e) { d = "inline"; }
+      // CSS chưa tải xong thì display đo được là mặc định trình duyệt → KHÔNG ghi nhớ (đo lại khi CSS xong).
+      if (cssReady()) dispCache.set(el, d);
+    }
+    return d === "inline" || d === "contents" || d === "none" || d === "";
+  }
+  /** CSS của trang đã tải chưa — trước đó mọi <a>/<span> đều "inline" theo mặc định trình duyệt → tách đoạn sai. */
+  var bootAt = Date.now();
+  function cssReady() {
+    if (Date.now() - bootAt > 2500) return true;
+    var ls = document.querySelectorAll('link[rel~="stylesheet"]');
+    for (var i = 0; i < ls.length; i++) { var l = ls[i]; if (!l.sheet && !l.disabled && l.media !== "print") return false; }
+    return true;
+  }
+  var waitCss = new Set(), cssTimer = 0;
+  /** Dựng đơn vị dịch của một khối rồi đưa vào hàng; CSS chưa xong thì chờ (đo display lúc đó là sai). */
+  function buildRoot(el) {
+    if (!cssReady()) {
+      waitCss.add(el);
+      if (!cssTimer) cssTimer = setTimeout(function () { cssTimer = 0; var rs = Array.from(waitCss); waitCss.clear(); rs.forEach(buildRoot); maybeUnveil(); }, 40);
+      return;
+    }
+    buildUnits(el).forEach(function (u) { total++; enqueue({ kind: "s", unit: u }); });
+  }
   function blocked(el) {
     return el === host || SKIP[el.tagName] || el.getAttribute("translate") === "no" || (el.classList && el.classList.contains("notranslate"));
   }
   /** Khối chứa text node: đi lên qua các phần tử inline. */
   function segRoot(node) {
     var e = node.parentElement;
-    while (e && INLINE[e.tagName] && e.parentElement && e.parentElement !== document.documentElement) e = e.parentElement;
+    while (e && isInl(e) && e.parentElement && e.parentElement !== document.documentElement) e = e.parentElement;
     return e;
   }
-  /** Text node của khối theo thứ tự đọc, chỉ đi qua phần tử inline (khối con là đoạn riêng). */
+  /** Text node của khối theo thứ tự đọc, chỉ đi qua phần tử inline (khối con là đoạn riêng).
+   * `null` = điểm ngắt (<br>): hai bên là hai đơn vị dịch riêng (dòng địa chỉ, nhãn xếp dòng…).
+   * Thẻ inline mà CSS cho thành khối → đưa vào hàng như một khối riêng (khối cha có thể đã chọn trước khi CSS tải xong). */
   function collect(root) {
     var out = [];
     (function walk(el) {
       for (var c = el.firstChild; c; c = c.nextSibling) {
         if (c.nodeType === 3) { if (c.nodeValue.trim()) out.push(c); }
-        else if (c.nodeType === 1 && INLINE[c.tagName] && !blocked(c) && !c.isContentEditable) walk(c);
+        else if (c.nodeType !== 1 || blocked(c) || c.isContentEditable) continue;
+        else if (c.tagName === "BR") out.push(null);
+        else if (isInl(c)) walk(c);
+        else if (INLINE[c.tagName]) deferRoot(c);
       }
     })(root);
     return out;
@@ -105,9 +143,10 @@
   function buildUnits(root) {
     if (!root.isConnected || skipEl(root)) return [];
     var nodes = collect(root);
-    if (!nodes.some(function (n) { return want(n.nodeValue) || (textItems.get(n) && want(textItems.get(n).orig)); })) return [];
+    if (!nodes.some(function (n) { return n && (want(n.nodeValue) || (textItems.get(n) && want(textItems.get(n).orig))); })) return [];
     var units = [], cur = null, chars = 0;
     nodes.forEach(function (n) {
+      if (!n) { cur = null; return; } // <br> → đơn vị mới
       var it = textItems.get(n), v = n.nodeValue;
       if (!it || (v !== it.tr && v !== it.orig)) { it = { orig: v, tr: null }; textItems.set(n, it); }
       var l = it.orig.length;
@@ -138,7 +177,7 @@
       if (!en.isIntersecting) return;
       var el = en.target;
       io.unobserve(el);
-      if (pendingRoots.delete(el)) buildUnits(el).forEach(function (u) { total++; enqueue({ kind: "s", unit: u }); });
+      if (pendingRoots.delete(el)) buildRoot(el);
       var set = pendingByEl.get(el);
       pendingByEl.delete(el);
       if (set) set.forEach(function (x) { enqueue({ kind: "a", el: el, attr: x.slice(1) }); });
@@ -233,7 +272,7 @@
   }
 
   function inLink(node) {
-    for (var e = node.parentElement; e && INLINE[e.tagName]; e = e.parentElement) if (e.tagName === "A") return true;
+    for (var e = node.parentElement; e && isInl(e); e = e.parentElement) if (e.tagName === "A") return true;
     return false;
   }
 
@@ -291,7 +330,7 @@
     if (rootsNoIo.size) {
       var rs = Array.from(rootsNoIo);
       rootsNoIo.clear();
-      rs.forEach(function (r) { buildUnits(r).forEach(function (u) { total++; enqueue({ kind: "s", unit: u }); }); });
+      rs.forEach(buildRoot);
     }
     if (Date.now() < failedUntil) { setTimeout(schedule, failedUntil - Date.now() + 10); return; }
     while (queue.length && inflight < PARALLEL) {

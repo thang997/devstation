@@ -36,6 +36,7 @@ export function Picker({
   keepOpen,
   autoOpen,
   onClose,
+  onOpen,
 }: {
   label: ReactNode;
   items: PickerItem[];
@@ -53,12 +54,15 @@ export function Picker({
   autoOpen?: boolean;
   /** Panel vừa đóng (chọn xong / bấm ra ngoài / Esc). */
   onClose?: () => void;
+  /** Panel vừa mở (vd. nạp dữ liệu phụ lười, chỉ khi người dùng cần xem). */
+  onOpen?: () => void;
 }) {
   const tr = useT();
   const [open, setOpen] = useState(!!autoOpen);
   const wasOpen = useRef(open);
   useEffect(() => {
     if (wasOpen.current && !open) onClose?.();
+    if (!wasOpen.current && open) onOpen?.();
     wasOpen.current = open;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);

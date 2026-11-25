@@ -37,6 +37,9 @@ fn cmd(cwd: &str, args: &[&str]) -> Command {
         .args(args)
         // Không bao giờ hỏi mật khẩu qua terminal (không có terminal) — để Git Credential Manager lo.
         .env("GIT_TERMINAL_PROMPT", "0")
+        // Lệnh đọc (status…) không ghi lại index để làm mới stat cache → không tranh .git/index.lock
+        // với lệnh ghi, nên các lệnh ĐỌC không cần xếp hàng theo repo_lock.
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -197,11 +200,16 @@ fn parse_status(text: &str) -> Status {
 
 #[tauri::command]
 pub async fn git_status(path: String) -> Result<Status, String> {
-    let _serial = repo_lock(&path).lock_owned().await;
-    let text = git(&path, &["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"]).await?;
-    let mut st = parse_status(&text);
-    st.merging = raw(&path, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).await.map(|o| o.status.success()).unwrap_or(false);
-    st.stash_count = git(&path, &["stash", "list", "--format=%gd"]).await.map(|o| o.lines().filter(|l| !l.trim().is_empty()).count()).unwrap_or(0);
+    // Chỉ đọc → không xếp hàng repo_lock (GIT_OPTIONAL_LOCKS=0). Ba tiến trình chạy song song:
+    // trên Windows mỗi lần khởi động git.exe tốn ~100ms, chạy nối tiếp thì cộng dồn.
+    let (text, merge, stash) = tokio::join!(
+        git(&path, &["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"]),
+        raw(&path, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]),
+        git(&path, &["stash", "list", "--format=%gd"]),
+    );
+    let mut st = parse_status(&text?);
+    st.merging = merge.map(|o| o.status.success()).unwrap_or(false);
+    st.stash_count = stash.map(|o| o.lines().filter(|l| !l.trim().is_empty()).count()).unwrap_or(0);
     Ok(st)
 }
 
@@ -253,7 +261,6 @@ pub async fn git_find_repos(dir: String) -> Result<Vec<String>, String> {
 
 #[tauri::command]
 pub async fn git_diff(path: String, file: String, staged: bool, untracked: bool) -> Result<String, String> {
-    let _serial = repo_lock(&path).lock_owned().await;
     if untracked {
         // So file mới với rỗng; --no-index trả mã 1 khi có khác biệt — đó không phải lỗi.
         let out = raw(&path, &["diff", "--no-index", "--", "/dev/null", &file]).await?;
@@ -273,7 +280,6 @@ pub async fn git_diff(path: String, file: String, staged: bool, untracked: bool)
 /// Toàn bộ thay đổi của một file so với HEAD (gộp cả đã stage lẫn chưa stage) — cho giao diện kiểu GitHub Desktop.
 #[tauri::command]
 pub async fn git_file_diff(path: String, file: String, untracked: bool) -> Result<String, String> {
-    let _serial = repo_lock(&path).lock_owned().await;
     if untracked {
         let out = raw(&path, &["diff", "--no-index", "--", "/dev/null", &file]).await?;
         return match out.status.code() {
@@ -304,7 +310,6 @@ pub struct Commit {
 
 #[tauri::command]
 pub async fn git_log(path: String, limit: Option<u32>) -> Result<Vec<Commit>, String> {
-    let _serial = repo_lock(&path).lock_owned().await;
     let n = format!("-n{}", limit.unwrap_or(200));
     let out = raw(&path, &["log", &n, "--format=%H%x1f%h%x1f%an%x1f%at%x1f%D%x1f%s%x1e"]).await?;
     if !out.status.success() {
@@ -333,7 +338,6 @@ pub async fn git_log(path: String, limit: Option<u32>) -> Result<Vec<Commit>, St
 
 #[tauri::command]
 pub async fn git_show(path: String, hash: String) -> Result<String, String> {
-    let _serial = repo_lock(&path).lock_owned().await;
     git(&path, &["show", "--stat", "--patch", "--format=fuller", &hash]).await
 }
 
@@ -350,11 +354,13 @@ async fn has_commit(path: &str) -> bool {
 /// Commit HEAD đã có trên remote nào chưa. Chưa push = false.
 #[tauri::command]
 pub async fn git_head_pushed(path: String) -> Result<bool, String> {
-    let _serial = repo_lock(&path).lock_owned().await;
-    if !has_commit(&path).await {
-        return Ok(false);
+    // Một lệnh thay cho `rev-parse HEAD` + `branch -r --contains HEAD` (lệnh sau duyệt lịch sử cho
+    // TỪNG nhánh remote → chậm rõ với repo nhiều nhánh). rev-list in HEAD nếu HEAD chưa nằm trong
+    // nhánh remote nào; rỗng = đã push. Repo chưa có commit → lỗi → false.
+    match git(&path, &["rev-list", "-n1", "HEAD", "--not", "--remotes"]).await {
+        Ok(o) => Ok(o.trim().is_empty()),
+        Err(_) => Ok(false),
     }
-    Ok(!git(&path, &["branch", "-r", "--contains", "HEAD"]).await?.trim().is_empty())
 }
 
 /// Bỏ commit gần nhất CHƯA PUSH: reset --soft HEAD~1 — commit biến mất, toàn bộ thay đổi của nó
@@ -520,7 +526,6 @@ pub struct Branch {
 
 #[tauri::command]
 pub async fn git_branches(path: String) -> Result<Vec<Branch>, String> {
-    let _serial = repo_lock(&path).lock_owned().await;
     let text = git(
         &path,
         &[

@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { git, errText } from "./api";
+import { git, errText, type Status } from "./api";
 
 export interface Repo {
   /** Thư mục gốc (dấu `/`), dùng làm id. */
@@ -58,10 +58,14 @@ export const useRepos = create<RepoStore>((set, get) => ({
   setSummary: (path, s) => set((st) => ({ summaries: { ...st.summaries, [path]: s } })),
 }));
 
+/** Cập nhật tóm tắt từ một Status đã có (khỏi chạy lại git status). */
+export function setSummaryFrom(path: string, s: Status) {
+  useRepos.getState().setSummary(path, { branch: s.branch, ahead: s.ahead, behind: s.behind, changes: s.files.length });
+}
+
 export async function refreshSummary(path: string) {
   try {
-    const s = await git.status(path);
-    useRepos.getState().setSummary(path, { branch: s.branch, ahead: s.ahead, behind: s.behind, changes: s.files.length });
+    setSummaryFrom(path, await git.status(path));
   } catch (e) {
     useRepos.getState().setSummary(path, { branch: null, ahead: 0, behind: 0, changes: 0, error: errText(e) });
   }
