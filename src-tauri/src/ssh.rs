@@ -35,8 +35,11 @@ struct Term {
     writer: SharedWriter,
     child: Mutex<Box<dyn Child + Send + Sync>>,
     pw: Arc<Mutex<PwState>>,
-    /// Theo dõi dòng lệnh đang gõ để phát hiện `cd` (panel SFTP đi theo).
+    /// Theo dõi dòng lệnh đang gõ để phát hiện `cd` (panel SFTP đi theo) và ghi lịch sử lệnh.
     cmdline: Mutex<CmdLine>,
+    /// Dòng đang hiện trên màn hình (output đã lọc ANSI, từ đầu dòng) — lúc Enter là "dấu nhắc + lệnh" đã echo,
+    /// dùng khi dòng gõ không đáng tin (Tab completion / mũi tên gọi lại lịch sử).
+    screen: Arc<Mutex<String>>,
 }
 
 /// Dò dòng lệnh người dùng gõ để bắt `cd <path>`. `bad` = dòng không đáng tin
@@ -742,17 +745,20 @@ pub async fn ssh_connect(
     let pw = Arc::new(Mutex::new(pw_state_for(&cfg.user, &cfg.host, cfg.port, cfg.jump.as_ref())));
 
     let id = format!("s{}", next_id());
+    let screen = Arc::new(Mutex::new(String::new()));
     {
         let app = app.clone();
         let id = id.clone();
         let pw = pw.clone();
         let writer = writer.clone();
+        let screen_w = screen.clone();
         std::thread::spawn(move || {
             let mut reader = reader;
             let mut buf = [0u8; 16384];
             // Theo dõi dòng hiện tại (đã lọc ANSI) để đọc thư mục từ dấu nhắc shell → panel SFTP đi theo.
             let mut cur_line = String::new();
             let mut last_cwd = String::new();
+            let screen = screen_w;
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
@@ -772,6 +778,10 @@ pub async fn ssh_connect(
                                 }
                             }
                         }
+                        if let Ok(mut s) = screen.lock() {
+                            s.clear();
+                            s.push_str(&cur_line);
+                        }
                         if let Some(cwd) = cwd_from_prompt(&cur_line) {
                             if cwd != last_cwd {
                                 last_cwd = cwd.clone();
@@ -786,11 +796,29 @@ pub async fn ssh_connect(
         });
     }
 
-    state.terms.lock().unwrap().insert(
-        id.clone(),
-        Arc::new(Term { master: Mutex::new(pair.master), writer, child: Mutex::new(child), pw, cmdline: Mutex::new(CmdLine::default()) }),
-    );
+    let term = Arc::new(Term { master: Mutex::new(pair.master), writer, child: Mutex::new(child), pw, cmdline: Mutex::new(CmdLine::default()), screen });
+    state.terms.lock().unwrap().insert(id.clone(), term.clone());
     crate::owners::track(&app, window.label(), crate::owners::Kind::Term, &id);
+    // Theo dõi ssh.exe thoát: ConPTY trên Windows thường KHÔNG trả EOF cho reader khi tiến trình con kết thúc
+    // (vd. jump host "Connection timed out" → ssh thoát mã 255) → reader treo, UI không biết phiên đã đóng.
+    // Thăm dò try_wait mỗi 300ms; thoát thì chờ chút cho reader đẩy nốt output rồi phát `ssh-closed`
+    // (phát trùng với reader cũng không sao — UI bỏ qua id không còn là phiên hiện tại).
+    {
+        let app = app.clone();
+        let id = id.clone();
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let done = match term.child.lock() {
+                Ok(mut c) => !matches!(c.try_wait(), Ok(None)),
+                Err(_) => true,
+            };
+            if done {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                let _ = app.emit("ssh-closed", serde_json::json!({ "id": id }));
+                break;
+            }
+        });
+    }
     Ok(id)
 }
 
@@ -838,6 +866,16 @@ pub async fn ssh_send(app: AppHandle, state: State<'_, SshState>, id: String, da
                             let _ = app.emit("ssh-cd", serde_json::json!({ "id": id, "arg": arg }));
                         }
                     }
+                    // Lịch sử lệnh: chỉ khi dòng trên màn hình là DẤU NHẮC shell/REPL (không ghi phím Enter trong vim/less…).
+                    // Lệnh = dòng đã gõ nếu đáng tin, không thì phần sau dấu nhắc trên màn hình (đã có Tab/↑ hoàn thiện).
+                    let shown = term.screen.lock().map(|s| s.clone()).unwrap_or_default();
+                    if let Some(after) = after_prompt(&shown) {
+                        let typed = String::from_utf8_lossy(&cl.buf).trim().to_string();
+                        let cmd = if !cl.bad && !typed.is_empty() { typed } else { after.trim().to_string() };
+                        if !cmd.is_empty() && cmd.len() <= 4000 {
+                            let _ = app.emit("ssh-cmd", serde_json::json!({ "id": id, "cmd": cmd }));
+                        }
+                    }
                     cl.buf.clear();
                     cl.bad = false;
                 }
@@ -851,6 +889,21 @@ pub async fn ssh_send(app: AppHandle, state: State<'_, SshState>, id: String, da
     let mut w = term.writer.lock().unwrap();
     w.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
     w.flush().map_err(|e| e.to_string())
+}
+
+/// Phần sau dấu nhắc shell trên dòng màn hình (`user@host:~$ ls` → `ls`). Dấu nhắc = `$ `, `# `, `% ` (zsh)
+/// hoặc `> ` (mysql>, psql=>, python >>>…). Không thấy dấu nhắc (đang trong vim, less, nhập mật khẩu…) → None.
+fn after_prompt(line: &str) -> Option<&str> {
+    let mut best: Option<usize> = None;
+    for m in ["$ ", "# ", "% ", "> "] {
+        if let Some(i) = line.find(m) {
+            // Dấu nhắc nằm đầu dòng (tối đa ~200 ký tự) — lấy dấu nhắc XUẤT HIỆN SỚM NHẤT để `echo a > b` không bị cắt.
+            if i < 200 && best.map_or(true, |b| i < b) {
+                best = Some(i);
+            }
+        }
+    }
+    best.map(|i| &line[i + 2..])
 }
 
 /// Nếu `line` là một lệnh `cd` đơn thuần, trả về tham số (chuỗi rỗng = `cd` về home).
@@ -1424,6 +1477,41 @@ fn parse_docker_ps(out: &str) -> Result<Vec<DockerContainer>, String> {
 }
 
 /// Liệt kê container Docker đang chạy trên server (dùng cho panel Docker trong app SSH).
+/// Lịch sử lệnh TRÊN SERVER: cuối `~/.bash_history` + `~/.zsh_history` (mới nhất trước, bỏ trùng).
+/// bash chỉ ghi file khi phiên shell thoát → lệnh của phiên đang mở chưa có ở đây.
+#[tauri::command]
+pub async fn ssh_shell_history(cfg: ConnectCfg) -> Result<Vec<String>, String> {
+    let script = "echo __DS_HIST_BEGIN__; for f in ~/.bash_history ~/.zsh_history; do [ -r \"$f\" ] && tail -n 3000 \"$f\"; done";
+    let out = tauri::async_runtime::spawn_blocking(move || ssh_run_once(&cfg, script, std::time::Duration::from_secs(20), 4_000_000))
+        .await
+        .map_err(|e| e.to_string())??;
+    Ok(parse_shell_history(&out))
+}
+
+fn parse_shell_history(out: &str) -> Vec<String> {
+    // Chỉ lấy phần sau mốc (bỏ dấu nhắc mật khẩu, "Warning: Permanently added…" của ssh).
+    let out = out.rfind("__DS_HIST_BEGIN__").map_or(out, |i| &out[i + "__DS_HIST_BEGIN__".len()..]);
+    let mut seen = std::collections::HashSet::new();
+    let mut v = Vec::new();
+    for raw in out.lines().rev() {
+        let mut l = raw.trim_end_matches('\r').trim();
+        // zsh extended: ": 1700000000:0;lệnh"
+        if l.starts_with(": ") {
+            if let Some(i) = l.find(';') {
+                l = &l[i + 1..];
+            }
+        }
+        // bash HISTTIMEFORMAT: dòng "#1700000000"
+        if l.is_empty() || (l.starts_with('#') && l[1..].chars().all(|c| c.is_ascii_digit())) {
+            continue;
+        }
+        if seen.insert(l.to_string()) {
+            v.push(l.to_string());
+        }
+    }
+    v
+}
+
 #[tauri::command]
 pub async fn ssh_docker_ps(cfg: ConnectCfg) -> Result<Vec<DockerContainer>, String> {
     let out = tauri::async_runtime::spawn_blocking(move || {
@@ -1718,5 +1806,27 @@ mod jump_tests {
     fn jump_args_without_key_uses_plain_proxyjump() {
         let j = JumpCfg { host: "bastion".into(), port: 2222, user: "ops".into(), key_path: None };
         assert_eq!(jump_args(&j).unwrap(), vec!["-J".to_string(), "ops@bastion:2222".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod cmd_history_tests {
+    use super::{after_prompt, parse_shell_history};
+
+    #[test]
+    fn prompt_split() {
+        assert_eq!(after_prompt("root@s1:~# ls -la"), Some("ls -la"));
+        assert_eq!(after_prompt("ubuntu@ip-10-0-1-1:/var/log$ tail -f syslog"), Some("tail -f syslog"));
+        assert_eq!(after_prompt("user@mac ~ % git status"), Some("git status"));
+        assert_eq!(after_prompt("mysql> select 1;"), Some("select 1;"));
+        // ">" trong lệnh không cắt nhầm: lấy dấu nhắc xuất hiện sớm nhất
+        assert_eq!(after_prompt("root@s1:~# echo a > b.txt"), Some("echo a > b.txt"));
+        assert_eq!(after_prompt("  some vim text without prompt"), None);
+    }
+
+    #[test]
+    fn server_history() {
+        let out = "Warning: Permanently added 'x' (ED25519)\r\nroot@x's password: \r\n__DS_HIST_BEGIN__\r\nls\r\n#1700000000\r\ncd /etc\r\nls\r\n: 1700000001:0;git pull\r\n";
+        assert_eq!(parse_shell_history(out), vec!["git pull", "ls", "cd /etc"]);
     }
 }

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
-import { Check, ChevronDown, X } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Folder, FolderOpen, X } from "lucide-react";
 import { createPortal } from "react-dom";
 import { useT } from "../store/lang";
 
@@ -37,6 +37,7 @@ export function Picker({
   autoOpen,
   onClose,
   onOpen,
+  collapsibleGroups,
 }: {
   label: ReactNode;
   items: PickerItem[];
@@ -56,6 +57,9 @@ export function Picker({
   onClose?: () => void;
   /** Panel vừa mở (vd. nạp dữ liệu phụ lười, chỉ khi người dùng cần xem). */
   onOpen?: () => void;
+  /** Nhóm (có tên) thành thư mục gập/mở được, MẶC ĐỊNH ĐÓNG mỗi lần mở panel; đang lọc thì mở hết nhóm có mục khớp.
+   *  Bàn phím: tiêu đề nhóm nằm trong vòng ↑/↓, Enter/Space/→ mở, ← đóng. */
+  collapsibleGroups?: boolean;
 }) {
   const tr = useT();
   const [open, setOpen] = useState(!!autoOpen);
@@ -135,8 +139,23 @@ export function Picker({
     return out;
   }, [shown]);
 
-  /** Thứ tự hiển thị thực (theo nhóm) — để ↑/↓ đi đúng thứ tự trên màn hình. */
-  const flat = useMemo(() => groups.flatMap((g) => g.items).filter((i) => !i.disabled), [groups]);
+  /** Nhóm đang mở (chỉ dùng khi collapsibleGroups) — mở panel thì đóng hết. */
+  const [openGroups, setOpenGroups] = useState<Set<string>>(new Set());
+  useEffect(() => { if (open) setOpenGroups(new Set()); }, [open]);
+  const filtering = !!q.trim();
+  const isFolded = (name: string) => !!collapsibleGroups && !!name && !filtering && !openGroups.has(name);
+  const toggleGroup = (name: string, to?: boolean) =>
+    setOpenGroups((s) => { const n = new Set(s); (to ?? !n.has(name)) ? n.add(name) : n.delete(name); return n; });
+  const GID = "\u0001g:";
+  /** Thứ tự hiển thị thực (theo nhóm) — để ↑/↓ đi đúng thứ tự trên màn hình. Nhóm gập được: tiêu đề nhóm cũng là một điểm dừng. */
+  const flat = useMemo(
+    () => groups.flatMap((g) => [
+      ...(collapsibleGroups && g.name ? [{ id: GID + g.name, label: g.name } as PickerItem] : []),
+      ...(isFolded(g.name) ? [] : g.items.filter((i) => !i.disabled)),
+    ]),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [groups, collapsibleGroups, openGroups, filtering],
+  );
   // Mở panel / đổi bộ lọc → chọn sẵn mục đang chọn (hoặc mục đầu).
   useEffect(() => {
     if (!open) return;
@@ -147,6 +166,7 @@ export function Picker({
     menu.current?.querySelector(`[data-pid="${CSS.escape(hi)}"]`)?.scrollIntoView({ block: "nearest" });
   }, [hi, open]);
   const choose = (it: PickerItem) => {
+    if (it.id.startsWith(GID)) { toggleGroup(it.id.slice(GID.length)); return; }
     if (it.disabled) return;
     if (!keepOpen) { setOpen(false); btn.current?.focus(); }
     onPick(it.id);
@@ -157,6 +177,10 @@ export function Picker({
     const go = (i: number) => { e.preventDefault(); setHi(flat[(i + flat.length) % flat.length].id); };
     if (e.key === "ArrowDown") go(at + 1);
     else if (e.key === "ArrowUp") go(at < 0 ? flat.length - 1 : at - 1);
+    else if (collapsibleGroups && (e.key === "ArrowRight" || e.key === "ArrowLeft") && hi?.startsWith(GID)) {
+      e.preventDefault();
+      toggleGroup(hi.slice(GID.length), e.key === "ArrowRight");
+    }
     else if (e.key === "Home") go(0);
     else if (e.key === "End") go(flat.length - 1);
     else if (e.key === "Enter" || (e.key === " " && (e.target as HTMLElement).tagName !== "INPUT")) {
@@ -212,8 +236,24 @@ export function Picker({
           <div className="picker-list">
             {groups.map((g) => (
               <div key={g.name}>
-                {g.name && <div className="picker-group">{g.name}</div>}
-                {g.items.map((it) => (
+                {g.name && !collapsibleGroups && <div className="picker-group">{g.name}</div>}
+                {g.name && collapsibleGroups && (
+                  <div
+                    data-pid={GID + g.name}
+                    role="option"
+                    aria-selected={false}
+                    aria-expanded={!isFolded(g.name)}
+                    className={`picker-item picker-folder ${hi === GID + g.name ? "hi" : ""}`}
+                    onMouseMove={() => { if (hi !== GID + g.name) setHi(GID + g.name); }}
+                    onClick={() => toggleGroup(g.name)}
+                  >
+                    <span className="picker-check">{isFolded(g.name) ? <ChevronRight /> : <ChevronDown />}</span>
+                    <span className="picker-icon">{isFolded(g.name) ? <Folder /> : <FolderOpen />}</span>
+                    <span className="grow ellipsis">{g.name}</span>
+                    <span className="muted small">{g.items.length}</span>
+                  </div>
+                )}
+                {!isFolded(g.name) && g.items.map((it) => (
                   <div
                     key={it.id}
                     data-pid={it.id}

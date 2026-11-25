@@ -129,6 +129,7 @@ fn main() {
             ssh::ssh_stat_start,
             ssh::ssh_stat_stop,
             ssh::ssh_docker_ps,
+            ssh::ssh_shell_history,
             ssh::docker_fs_list,
             ssh::docker_fs_home,
             ssh::docker_fs_cd,

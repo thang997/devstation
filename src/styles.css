@@ -1187,3 +1187,20 @@ input.invalid, input[aria-invalid="true"] { border-color: var(--danger); }
 /* History cuộn vô hạn: dòng ngoài màn hình bỏ qua layout/vẽ (danh sách có thể vài nghìn commit). */
 .history-row { content-visibility: auto; contain-intrinsic-size: auto 26px; }
 .history-sentinel { min-height: 1px; }
+/* Lịch sử lệnh SSH */
+.cmdh { min-height: 460px; }
+.cmdh .subtabs { border-bottom: none; padding: 0; }
+.cmdh-list { border: 1px solid var(--line); border-radius: 6px; height: 400px; overflow: auto; }
+.cmdh-row { display: flex; align-items: flex-start; gap: 10px; padding: 6px 10px; border-bottom: 1px solid var(--line); cursor: default; content-visibility: auto; contain-intrinsic-size: auto 34px; }
+.cmdh-row:hover, .cmdh-row:focus { background: var(--bg-3); outline: none; }
+.cmdh-row.noted { box-shadow: inset 2px 0 0 var(--warn); }
+.cmdh-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.cmdh-cmd { font-family: var(--mono, monospace); white-space: pre-wrap; word-break: break-all; }
+.cmdh-note { color: var(--warn); font-size: 12px; display: flex; gap: 5px; align-items: center; cursor: text; }
+.cmdh-note-edit { display: flex; gap: 4px; align-items: center; }
+.cmdh-note-edit input { flex: 1; }
+.cmdh-meta { display: flex; gap: 8px; white-space: nowrap; padding-top: 2px; }
+.cmdh-row .row-actions { display: flex; gap: 2px; visibility: hidden; }
+.cmdh-row:hover .row-actions, .cmdh-row:focus-within .row-actions { visibility: visible; }
+.picker-folder { font-weight: 600; }
+.picker-folder .picker-check svg.lucide { width: 12px; height: 12px; }

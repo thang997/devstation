@@ -72,6 +72,8 @@ export const ssh = {
   statStop: (id: string) => invoke<void>("ssh_stat_stop", { id }),
   /** Liệt kê container Docker đang chạy trên server. */
   dockerPs: (cfg: ConnectCfg) => (isTauri() ? invoke<DockerContainer[]>("ssh_docker_ps", { cfg }) : needApp()),
+  /** Cuối ~/.bash_history + ~/.zsh_history trên server (mới nhất trước, bỏ trùng). */
+  shellHistory: (cfg: ConnectCfg) => (isTauri() ? invoke<string[]>("ssh_shell_history", { cfg }) : needApp()),
 };
 
 /** Một mẫu thống kê server từ event `ssh-stat`. */

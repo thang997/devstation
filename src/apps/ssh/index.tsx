@@ -3,7 +3,7 @@ import { copyText } from "../../shell/clipboard";
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
-  ChevronDown, ChevronRight, Container, Copy, CornerDownRight, FileUp, Folder, FolderOpen, FolderPlus, Hash, Image, KeyRound, List, Lock,
+  ChevronDown, ChevronRight, Container, Copy, CornerDownRight, FileUp, Folder, FolderOpen, FolderPlus, Hash, History, Image, KeyRound, List, Lock,
   Monitor, Pencil, Play, Plus, RefreshCw, Save, Search, Server, Settings, Square, SquareTerminal, Target, Trash2, TriangleAlert, Waypoints, X, Zap,
 } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -15,6 +15,8 @@ import { Picker, type PickerItem } from "../../shell/Picker";
 import { Loading, Spinner } from "../../shell/Loading";
 import { ContextMenu, type CtxItem } from "../../shell/ContextMenu";
 import { confirmDialog } from "../../shell/confirm";
+import { CmdHistoryModal } from "./CmdHistory";
+import { addCommand } from "./cmdHistoryStore";
 import { listNav, rowKey } from "../../shell/listNav";
 import { t, useT } from "../../store/lang";
 import { Splitter, useSplitSize } from "../../shell/Resizable";
@@ -369,8 +371,9 @@ function Sidebar() {
           { id: "startAll", icon: <Play />, label: tr("ssh.startAllTunnelsAll"), disabled: !tunnels.some((tn) => !isOn(tn.id)), action: () => tunnels.forEach((tn) => { if (!isOn(tn.id)) void startTunnel(tn.id); }) },
           { id: "stopAll", icon: <Square />, label: tr("ssh.stopAllTunnelsAll"), disabled: !runningCount, action: () => tunnels.forEach((tn) => { if (isOn(tn.id)) void stopTunnel(tn.id); }) },
         ];
-  const [sideTab, setSideTab] = useState<"hosts" | "tunnels">(() => (localStorage.getItem("ssh.sideTab") === "tunnels" ? "tunnels" : "hosts"));
-  const pickSideTab = (v: "hosts" | "tunnels") => { setSideTab(v); localStorage.setItem("ssh.sideTab", v); };
+  // Mở app SSH luôn vào tab Hosts (không nhớ tab lần trước — trước đây hay mở nhầm vào Tunnels).
+  const [sideTab, setSideTab] = useState<"hosts" | "tunnels">("hosts");
+  const pickSideTab = setSideTab;
 
   const [q, setQ] = useState("");
   const ql = q.trim().toLowerCase();
@@ -685,8 +688,18 @@ function HostModal({ host, onClose }: { host: SavedHost; onClose: () => void }) 
               label={<span className="ellipsis">{jumpHost ? <><CornerDownRight /> {`${jumpHost.name || jumpHost.host} (${jumpHost.user}@${jumpHost.host}:${jumpHost.port})`}</> : tr("ssh.jumpNone")}</span>}
               items={[
                 { id: "", label: tr("ssh.jumpNone"), selected: !jumpHost },
-                ...jumpChoices.map((x) => ({ id: x.id, label: x.name || x.host, hint: `${x.user}@${x.host}:${x.port}`, selected: x.id === h.jumpHostId })),
+                // Host không thư mục ở trên cùng (không gập), rồi từng thư mục theo thứ tự sidebar — mặc định gập hết.
+                ...[...jumpChoices.filter((x) => !folders.some((f) => f.id === x.folderId)),
+                  ...folders.flatMap((f) => jumpChoices.filter((x) => x.folderId === f.id))]
+                  .map((x) => ({
+                    id: x.id,
+                    label: x.name || x.host,
+                    hint: `${x.user}@${x.host}:${x.port}`,
+                    selected: x.id === h.jumpHostId,
+                    group: folders.find((f) => f.id === x.folderId)?.name,
+                  })),
               ]}
+              collapsibleGroups
               onPick={(id) => set({ jumpHostId: id || undefined })}
               filterPlaceholder={tr("ssh.searchHostNameIpUser")}
             />
@@ -960,13 +973,18 @@ function TabView({ tab }: { tab: Tab }) {
     : status === "timeout" ? tr("ssh.timedOut")
     : status;
   const statusDot = status === "connected" ? "green" : status === "error" || status === "timeout" ? "red" : status === "connecting" ? "yellow" : "grey";
+  // Lịch sử lệnh: khoá theo host (tab exec thêm #container); nút ⏱ ở toolbar mở modal.
+  const [histOpen, setHistOpen] = useState(false);
+  const histKey = `${String(p.user)}@${String(p.host)}:${String(p.port || 22)}${p.exec ? `#${String(p.container ?? "")}` : ""}`;
+  const onCommand = useCallback((cmd: string) => addCommand(histKey, cmd), [histKey]);
   // Quá CONNECT_TIMEOUT_S giây không kết nối được: chuyển tới tab này rồi hỏi có đóng tab không.
-  const onTimeout = useCallback(() => {
+  const onTimeout = useCallback((reason: string) => {
     const wb = useWorkbench.getState();
     wb.focusTab(tab.id);
+    const host = `${String(p.user)}@${String(p.host)}:${String(p.port || 22)}`;
     void confirmDialog({
       title: tr("ssh.connectTimeoutTitle"),
-      message: tr("ssh.connectTimeoutClose", { host: `${String(p.user)}@${String(p.host)}:${String(p.port || 22)}`, s: 10 }),
+      message: reason ? tr("ssh.connectFailClose", { host, reason }) : tr("ssh.connectTimeoutClose", { host, s: 5 }), // s = CONNECT_TIMEOUT_S trong Terminal.tsx (không import để giữ terminal tải lười)
       confirmLabel: tr("ssh.closeTab"),
     }).then((ok) => { if (ok) useWorkbench.getState().closeTab(tab.id); });
   }, [tab.id, tr]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -1029,6 +1047,7 @@ function TabView({ tab }: { tab: Tab }) {
           >
             <Folder />
           </button>
+          <button className="icon-btn" title={tr("ssh.cmdHistTitle")} onClick={() => setHistOpen(true)}><History /></button>
           <span className="branch-glyph"><Container /></span>
           <b>{container}</b>
           <span className="mono muted small">{tr("ssh.in")} {base.name || cfg.host}</span>
@@ -1048,9 +1067,10 @@ function TabView({ tab }: { tab: Tab }) {
             <Splitter axis="x" live="prev" min={FILES_MIN} max={FILES_MAX} onResize={(d) => setFilesW((w) => w + d)} onReset={() => setFilesW(FILES_DEFAULT)} />
           )}
           <div className="ssh-term-wrap">
-            <Suspense fallback={null}><SshTerminal cfg={execCfg} onStatus={setStatus} onTimeout={onTimeout} /></Suspense>
+            <Suspense fallback={null}><SshTerminal cfg={execCfg} onStatus={setStatus} onTimeout={onTimeout} onCommand={onCommand} /></Suspense>
           </div>
         </div>
+        {histOpen && <CmdHistoryModal hostKey={histKey} title={`${container} · ${cfg.user}@${cfg.host}:${cfg.port}`} cfg={cfg} allowServer={false} onClose={() => setHistOpen(false)} />}
       </div>
     );
   }
@@ -1072,6 +1092,9 @@ function TabView({ tab }: { tab: Tab }) {
           onClick={() => setDockerOpen(true)}
         >
           <Container />
+        </button>
+        <button className="icon-btn" title={tr("ssh.cmdHistTitle")} onClick={() => setHistOpen(true)}>
+          <History />
         </button>
         <Picker
           label={<><span className="branch-glyph"><Monitor /></span> {curHost ? curHost.name || curHost.host : cfg.host}</>}
@@ -1104,12 +1127,14 @@ function TabView({ tab }: { tab: Tab }) {
               onStatus={setStatus}
               onCd={onCd}
               onTimeout={onTimeout}
+              onCommand={onCommand}
             />
           </Suspense>
           <SshStats cfg={cfg} />
         </div>
       </div>
       {dockerOpen && <DockerModal cfg={cfg} base={base} onClose={() => setDockerOpen(false)} />}
+      {histOpen && <CmdHistoryModal hostKey={histKey} title={`${curHost?.name || cfg.host} · ${cfg.user}@${cfg.host}:${cfg.port}`} cfg={cfg} allowServer onClose={() => setHistOpen(false)} />}
     </div>
   );
 }

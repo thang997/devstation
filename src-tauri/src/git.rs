@@ -1333,7 +1333,7 @@ mod tests {
         git(&p, &["init", "-q", "-b", "main"]).await.unwrap();
         git(&p, &["config", "user.name", "Test"]).await.unwrap();
         git(&p, &["config", "user.email", "test@example.com"]).await.unwrap();
-        assert!(git_log(p.clone(), None).await.unwrap().is_empty());
+        assert!(git_log(p.clone(), None, None).await.unwrap().is_empty());
 
         std::fs::write(dir.join("a.txt"), "dòng 1\n").unwrap();
         git_stage(p.clone(), vec!["a.txt".into()]).await.unwrap();
@@ -1357,7 +1357,7 @@ mod tests {
 
         git_discard(p.clone(), vec![], vec!["mới.txt".into()]).await.unwrap();
         git_commit(p.clone(), "Commit hai".into()).await.unwrap();
-        let log = git_log(p.clone(), None).await.unwrap();
+        let log = git_log(p.clone(), None, None).await.unwrap();
         assert_eq!(log.len(), 2);
         assert_eq!(log[0].subject, "Commit hai");
         assert!(git_status(p.clone()).await.unwrap().files.is_empty());
@@ -1367,7 +1367,7 @@ mod tests {
         // Bỏ commit chưa push: commit biến mất, thay đổi vẫn ở Staged, message được trả lại.
         let msg = git_undo_commit(p.clone()).await.unwrap();
         assert_eq!(msg, "Commit hai");
-        assert_eq!(git_log(p.clone(), None).await.unwrap().len(), 1);
+        assert_eq!(git_log(p.clone(), None, None).await.unwrap().len(), 1);
         let a = git_status(p.clone()).await.unwrap().files.into_iter().find(|f| f.path == "a.txt").unwrap();
         assert_eq!(a.x, 'M');
 

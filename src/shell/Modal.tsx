@@ -53,6 +53,8 @@ export function Modal({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
+      // Ô bên trong đã xử lý Esc (huỷ sửa tại chỗ…) → không đóng modal.
+      if (e.defaultPrevented) return;
       // Modal của app đang ẩn (đã chuyển sang tab app khác) thì không phản ứng phím Esc.
       if (layer?.el?.closest(".app-host")?.hasAttribute("hidden")) return;
       onClose();
