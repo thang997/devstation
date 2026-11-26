@@ -75,7 +75,7 @@ const ownerOf = (apps: Record<AppId, AppState>, tabId: string) =>
 export const useWorkbench = create<WorkbenchState>((set) => ({
   activeApp: null,
   mounted: [],
-  apps: { git: freshApp("git"), http: freshApp("http"), ssh: freshApp("ssh"), tools: freshApp("tools"), db: freshApp("db"), redis: freshApp("redis"), registry: freshApp("registry"), translate: freshApp("translate") },
+  apps: { git: freshApp("git"), http: freshApp("http"), ssh: freshApp("ssh"), tools: freshApp("tools"), db: freshApp("db"), redis: freshApp("redis"), registry: freshApp("registry"), translate: freshApp("translate"), pdf: freshApp("pdf") },
   panelOpen: false,
   launcherOpen: false,
   logs: [],

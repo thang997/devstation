@@ -103,33 +103,35 @@ if (isTauri()) {
  * Mở một app: cửa sổ hiện tại chưa có app (màn hình chính) → dùng luôn cửa sổ này;
  * ngược lại → app đã có cửa sổ thì đưa lên trước, chưa có thì mở cửa sổ mới.
  */
-export async function launchApp(id: AppId) {
+/** Trả nhãn cửa sổ đang chứa app sau khi mở (chính cửa sổ này / cửa sổ khác được đưa lên trước); null = vừa mở
+ *  cửa sổ MỚI (nó tự xử lý khi nạp xong — vd. app PDF tự lấy file trong hàng đợi). */
+export async function launchApp(id: AppId): Promise<string | null> {
   const s = useWorkbench.getState();
   s.setLauncher(false);
   if (!isTauri() || (!s.activeApp && !s.mounted.length) || s.activeApp === id) {
     s.openApp(id);
-    return;
+    return labelReady;
   }
   // App đã chạy ngay trong cửa sổ này (vd. đang ở màn hình chính nhưng app vẫn giữ trạng thái) → chỉ chuyển sang.
-  if (s.mounted.includes(id)) { s.openApp(id); return; }
+  if (s.mounted.includes(id)) { s.openApp(id); return labelReady; }
   const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
   const me = await labelReady;
   // 1) Hỏi trực tiếp các cửa sổ đang chạy (sự thật hiện tại, không phụ thuộc sổ localStorage có thể lệch).
   const owner = await askOwner(id, me);
   if (owner) {
     const w = await WebviewWindow.getByLabel(owner);
-    if (w) { await focusWindow(w); return; }
+    if (w) { await focusWindow(w); return owner; }
   }
   // 1b) Dự phòng: sổ đăng ký trong localStorage.
   for (const [l, app] of Object.entries(readReg())) {
     if (app !== id || l === me) continue;
     const w = await WebviewWindow.getByLabel(l);
-    if (w) { await focusWindow(w); return; }
+    if (w) { await focusWindow(w); return l; }
   }
   // 2) Chưa có → mở cửa sổ mới cho app.
   const l = `app-${id}`;
   const existing = await WebviewWindow.getByLabel(l);
-  if (existing) { await focusWindow(existing); return; }
+  if (existing) { await focusWindow(existing); return l; }
   const w = new WebviewWindow(l, {
     url: `index.html?app=${id}`,
     title: `DevStation — ${t(`apps.${id}.title` as TKey)}`,
@@ -145,6 +147,7 @@ export async function launchApp(id: AppId) {
   w.once("tauri://error", (e) => {
     useWorkbench.getState().log(`✗ ${t("shell.cannotOpenWindow")}: ${String(e.payload)}`);
   });
+  return null;
 }
 
 /** Cửa sổ app: tắt app = đóng cửa sổ; trước khi đóng gỡ khỏi sổ đăng ký. */

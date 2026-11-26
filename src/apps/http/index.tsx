@@ -1,7 +1,7 @@
 import { Swap } from "../../shell/Swap";
 import { copyText } from "../../shell/clipboard";
 import { memo, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import { Braces, Check, ChevronDown, ChevronRight, Copy, CornerRightDown, Download, FileInput, Folder, FolderInput, FolderOpen, FolderPlus, KeyRound, Minimize2, PackageOpen, Pencil, Plus, Save, Send, ShieldAlert, Sparkles, Trash2, TriangleAlert, X, Zap } from "lucide-react";
+import { Braces, Check, ChevronDown, Square, Timer, ChevronRight, Copy, CornerRightDown, Download, FileInput, Folder, FolderInput, FolderOpen, FolderPlus, KeyRound, Minimize2, PackageOpen, Pencil, Plus, Save, Send, ShieldAlert, Sparkles, Trash2, TriangleAlert, X, Zap } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { AppModule, Tab } from "../types";
 import { useWorkbench } from "../../store/workbench";
@@ -12,8 +12,8 @@ import { Modal } from "../../shell/Modal";
 import { confirmDialog } from "../../shell/confirm";
 import { listNav, rowKey } from "../../shell/listNav";
 import { Picker } from "../../shell/Picker";
-import { Loading, Spinner } from "../../shell/Loading";
-import { sendHttp, readFile, readDir, errText, NO_AUTH, type Auth, type Header, type HttpResp } from "./api";
+import { Loading } from "../../shell/Loading";
+import { sendHttp, cancelHttp, httpErrText, readFile, readDir, errText, NO_AUTH, type Auth, type Header, type HttpResp } from "./api";
 import { looksLikeCurl, parseCurl, parseCurlFile, type ParsedCurl } from "./curl";
 import { looksLikePostman, parsePostman, type PmNode } from "./postman";
 import { getVars, removeVar, runPreScript, runScript, setVar, substitute, useVars } from "./vars";
@@ -700,6 +700,12 @@ function TabView({ tab }: { tab: Tab }) {
   const [resTab, setResTab] = useState<(typeof RES_TABS)[number]>("Body");
   const [resp, setResp] = useState<HttpResp | null>(null);
   const [sending, setSending] = useState(false);
+  /** Lượt gửi hiện tại: id để Hủy + bỏ qua kết quả của lượt cũ (đã hủy / bị thay). */
+  const sendIdRef = useRef<string | null>(null);
+  const [timeoutSecs, setTimeoutSecs] = useState(() => {
+    const v = localStorage.getItem("devstation.http.timeoutSecs");
+    return v == null ? 30 : Math.max(0, Number(v) || 0);
+  });
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   // Đã lưu vào collection chưa (id của node); null = chưa lưu.
@@ -741,6 +747,10 @@ function TabView({ tab }: { tab: Tab }) {
       const ok = await confirmDialog({ message: tr("http.confirmSendProd", { method: req.method, url }), confirmLabel: tr("http.sendToProd") });
       if (!ok) return;
     }
+    if (sendIdRef.current) return; // đang gửi (Enter ở ô URL không bị chặn bởi nút disabled) → không gửi trùng
+    const sid = `h${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    sendIdRef.current = sid;
+    const current = () => sendIdRef.current === sid;
     setSending(true);
     setError("");
     setScriptMsg(null);
@@ -755,7 +765,7 @@ function TabView({ tab }: { tab: Tab }) {
         });
         setScriptMsg(pre);
         log(`[pre-script] ${pre.message}`);
-        if (!pre.ok) { setSending(false); return; } // pre-script lỗi → không gửi
+        if (!pre.ok) return; // pre-script lỗi → không gửi
       }
       // Thay {{biến}} trong URL / header / body và chèn header xác thực.
       const vars = getVars();
@@ -773,7 +783,10 @@ function TabView({ tab }: { tab: Tab }) {
         headers: hdrs,
         body: BODYLESS.has(req.method) ? null : sub(req.body) || null,
         insecure: req.insecure,
+        id: sid,
+        timeoutSecs,
       });
+      if (!current()) return; // đã hủy → bỏ kết quả về muộn
       setResp(r);
       setResTab("Body");
       log(`${req.method} ${url} → ${r.status} ${r.statusText} (${r.timeMs}ms, ${fmtSize(r.bodyBytes)})`);
@@ -784,13 +797,33 @@ function TabView({ tab }: { tab: Tab }) {
         log(`[script] ${out.message}`);
       }
     } catch (e) {
+      const raw = errText(e);
+      if (raw === "__CANCELLED__" || !current()) {
+        log(`${req.method} ${url} ✗ ${httpErrText("__CANCELLED__")}`);
+        return;
+      }
       setResp(null);
-      setError(errText(e));
-      log(`${req.method} ${url} ✗ ${errText(e)}`);
+      setError(httpErrText(raw));
+      log(`${req.method} ${url} ✗ ${httpErrText(raw)}`);
     } finally {
-      setSending(false);
+      if (current()) {
+        sendIdRef.current = null;
+        setSending(false);
+      }
     }
   };
+
+  /** Hủy request đang gửi: thả UI ngay, Rust bỏ future (đóng kết nối). */
+  const cancelSend = () => {
+    const id = sendIdRef.current;
+    if (!id) return;
+    sendIdRef.current = null;
+    setSending(false);
+    setError(t("http.cancelled"));
+    void cancelHttp(id);
+  };
+  // Đóng tab khi đang gửi → hủy luôn.
+  useEffect(() => () => { if (sendIdRef.current) void cancelHttp(sendIdRef.current); }, []);
 
   const copyCurl = () => {
     void copyText(toCurl(req));
@@ -889,7 +922,18 @@ function TabView({ tab }: { tab: Tab }) {
           onKeyDown={(e) => e.key === "Enter" && void send()}
         />
         {urlIsCurl && <button onClick={() => applyCurl(req.url)} title={tr("http.parseCurlCommandIntoARequest")}><CornerRightDown /> {tr("http.parseCurl")}</button>}
-        <button className="primary" disabled={sending} onClick={() => void send()}><Swap on={sending} a={<><Spinner /> {tr("http.sending")}</>} b={<><Send /> Send</>} /></button>
+        <label className="db-timeout" title={tr("http.timeoutTitle")}>
+          <Timer />
+          <input
+            type="number"
+            min={0}
+            value={timeoutSecs}
+            onChange={(e) => { const v = Math.max(0, Number(e.target.value) || 0); setTimeoutSecs(v); localStorage.setItem("devstation.http.timeoutSecs", String(v)); }}
+          />s
+        </label>
+        <button className={sending ? "danger" : "primary"} onClick={() => (sending ? cancelSend() : void send())} title={sending ? tr("http.cancelTitle") : undefined}>
+          <Swap on={sending} a={<><Square /> {tr("http.cancel")}</>} b={<><Send /> Send</>} />
+        </button>
         <button
           onClick={onSave}
           title={`${savedId ? tr("http.overwriteTheSavedRequest") : tr("http.saveThisRequestIntoAFolder")}${dirty ? ` • ${tr("http.unsavedChanges")}` : ""} (Ctrl+S)`}

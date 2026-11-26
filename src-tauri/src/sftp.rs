@@ -172,7 +172,14 @@ fn looks_like_error(out: &str) -> Option<String> {
         "failure",
     ];
     if FRAGS.iter().any(|f| low.contains(f)) {
-        Some(out.trim().to_string())
+        // Bỏ dòng tiến trình "Uploading <file tạm trên máy> to …" / "Fetching …" — chỉ giữ dòng lỗi.
+        let lines: Vec<&str> = out
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with("Uploading ") && !l.starts_with("Fetching ") && !l.starts_with("Downloading "))
+            .collect();
+        Some(if lines.is_empty() { out.trim().to_string() } else { lines.join("
+") })
     } else {
         None
     }
@@ -192,17 +199,18 @@ fn wait_prompt(session: &SftpSession, timeout: Duration) -> Result<(), String> {
     let (lock, cv) = &*session.buf;
     let deadline = Instant::now() + timeout;
     let mut g = lock.lock().unwrap();
+    let mut exited_at: Option<Instant> = None;
     loop {
         if ends_with_prompt(&g.text) {
             return Ok(());
         }
-        if g.closed {
-            let tail: String = g.text.replace('\r', "");
-            return Err(if tail.trim().is_empty() {
-                "Phiên SFTP đã đóng".to_string()
-            } else {
-                tail.trim().lines().last().unwrap_or("Phiên SFTP đã đóng").to_string()
-            });
+        // ConPTY thường KHÔNG trả EOF khi sftp.exe thoát (vd. đăng nhập thất bại) → tự kiểm tiến trình,
+        // thoát rồi thì chờ ~300ms cho reader đẩy nốt output rồi báo lỗi ngay (trước đây chờ hết 30s).
+        if exited_at.is_none() && matches!(session.child.lock().map(|mut c| c.try_wait()), Ok(Ok(Some(_))) | Err(_)) {
+            exited_at = Some(Instant::now());
+        }
+        if g.closed || exited_at.is_some_and(|t| t.elapsed() >= Duration::from_millis(300)) {
+            return Err(closed_reason(&g.text));
         }
         // Dấu nhắc mật khẩu nhưng không có mật khẩu lưu → panel không có chỗ gõ, báo lỗi.
         if session.pw.lock().unwrap().stuck_without_password() {
@@ -212,9 +220,22 @@ fn wait_prompt(session: &SftpSession, timeout: Duration) -> Result<(), String> {
         if now >= deadline {
             return Err("Hết thời gian chờ SFTP phản hồi".to_string());
         }
-        let (ng, _) = cv.wait_timeout(g, deadline - now).unwrap();
+        let (ng, _) = cv.wait_timeout(g, (deadline - now).min(Duration::from_millis(150))).unwrap();
         g = ng;
     }
+}
+
+/// Lý do phiên sftp đóng: ưu tiên dòng lỗi rõ ràng (Permission denied, Could not resolve…), không thì dòng cuối.
+fn closed_reason(text: &str) -> String {
+    let t = text.replace('\r', "");
+    let lines: Vec<&str> = t.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let err = lines.iter().rev().find(|l| {
+        let l = l.to_ascii_lowercase();
+        ["denied", "error", "could not", "refused", "timed out", "not accessible", "no such", "failed", "closed by", "verification"]
+            .iter()
+            .any(|k| l.contains(k))
+    });
+    err.or(lines.last()).map(|s| s.to_string()).unwrap_or_else(|| "Phiên SFTP đã đóng".to_string())
 }
 
 /// Ghi một lệnh sftp rồi đọc kết quả tới dấu nhắc kế tiếp (giữ `cmd_lock` để nối tiếp).

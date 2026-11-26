@@ -63,12 +63,23 @@ export function setSummaryFrom(path: string, s: Status) {
   useRepos.getState().setSummary(path, { branch: s.branch, ahead: s.ahead, behind: s.behind, changes: s.files.length });
 }
 
-export async function refreshSummary(path: string) {
-  try {
-    setSummaryFrom(path, await git.status(path));
-  } catch (e) {
-    useRepos.getState().setSummary(path, { branch: null, ahead: 0, behind: 0, changes: 0, error: errText(e) });
-  }
+/** Lượt tóm tắt đang chạy theo repo → gọi trùng (StrictMode, mở dropdown repo liên tục) dùng chung, không chạy thêm git status. */
+const inflight = new Map<string, Promise<void>>();
+
+export function refreshSummary(path: string): Promise<void> {
+  const running = inflight.get(path);
+  if (running) return running;
+  const p = (async () => {
+    try {
+      setSummaryFrom(path, await git.status(path));
+    } catch (e) {
+      useRepos.getState().setSummary(path, { branch: null, ahead: 0, behind: 0, changes: 0, error: errText(e) });
+    } finally {
+      inflight.delete(path);
+    }
+  })();
+  inflight.set(path, p);
+  return p;
 }
 
 export const refreshAllSummaries = () => Promise.all(useRepos.getState().repos.map((r) => refreshSummary(r.path)));

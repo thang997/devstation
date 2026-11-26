@@ -173,6 +173,8 @@ export const SshTerminal = memo(function SshTerminal({ cfg, onStatus, onCd, onTi
         }
         if (ev.payload.id === sid) {
           stopWatchdog();
+          // Bỏ phiên khỏi Rust (giải phóng ConPTY/conhost) — không thì nằm lại tới khi đóng cửa sổ.
+          void ssh.disconnect(sid).catch(() => {});
           sid = null;
           closed = true;
           term.write(`\r\n\x1b[90m[${t("ssh.sessionClosedPressRToReconnect")}]\x1b[0m\r\n`);

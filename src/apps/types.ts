@@ -11,7 +11,7 @@ export interface Tab {
   danger?: boolean;
 }
 
-export type AppId = "git" | "http" | "ssh" | "tools" | "db" | "redis" | "registry" | "translate";
+export type AppId = "git" | "http" | "ssh" | "tools" | "db" | "redis" | "registry" | "translate" | "pdf";
 
 /** Một dòng trong launcher (Ctrl+G). */
 export interface Command {

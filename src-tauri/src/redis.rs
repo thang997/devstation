@@ -70,11 +70,28 @@ fn get(state: &RedisState, id: &str) -> Result<ConnectionManager, String> {
 }
 
 #[tauri::command]
-pub async fn redis_connect(app: tauri::AppHandle, window: tauri::Window, state: State<'_, RedisState>, cfg: RedisConfig) -> Result<String, String> {
+pub async fn redis_connect(
+    app: tauri::AppHandle,
+    window: tauri::Window,
+    state: State<'_, RedisState>,
+    cfg: RedisConfig,
+    timeout_ms: Option<u64>,
+) -> Result<String, String> {
     let client = redis::Client::open(url(&cfg)).map_err(|e| e.to_string())?;
-    let mut conn = client.get_connection_manager().await.map_err(|e| e.to_string())?;
-    // PING để biết sai mật khẩu / sai host ngay, thay vì lỗi mơ hồ ở lệnh đầu tiên.
-    let _: String = redis::cmd("PING").query_async(&mut conn).await.map_err(|e| e.to_string())?;
+    // ConnectionManager tự thử lại nhiều lần khi nối lỗi → host chết có thể treo rất lâu.
+    // Giới hạn cả lượt nối + PING (mặc định 5s, như SSH) → `__TIMEOUT__` cho UI.
+    let ms = timeout_ms.unwrap_or(5000).clamp(500, 120_000);
+    let work = async {
+        crate::db::probe_tcp(if cfg.host.is_empty() { "127.0.0.1" } else { &cfg.host }, cfg.port.unwrap_or(6379)).await?;
+        let mut conn = client.get_connection_manager().await.map_err(|e| e.to_string())?;
+        // PING để biết sai mật khẩu / sai host ngay, thay vì lỗi mơ hồ ở lệnh đầu tiên.
+        let _: String = redis::cmd("PING").query_async(&mut conn).await.map_err(|e| e.to_string())?;
+        Ok::<_, String>(conn)
+    };
+    let conn = match tokio::time::timeout(std::time::Duration::from_millis(ms), work).await {
+        Ok(r) => r?,
+        Err(_) => return Err(format!("__TIMEOUT__:{}", ms.div_ceil(1000))),
+    };
     let id = {
         let mut n = state.next.lock().unwrap();
         *n += 1;

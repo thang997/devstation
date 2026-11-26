@@ -1,6 +1,6 @@
 import { createElement } from "react";
 import type { AppId, AppManifest, AppModule } from "./types";
-import { Container, GitBranch, Languages, Send, SquareTerminal, Wrench, Zap, type LucideIcon } from "lucide-react";
+import { Container, FileText, GitBranch, Languages, Send, SquareTerminal, Wrench, Zap, type LucideIcon } from "lucide-react";
 import { DbIcon } from "../shell/icons";
 
 /** Icon app trong launcher / status bar: SVG lucide, mỗi app một màu (`.app-ic` cỡ theo chỗ dùng). */
@@ -61,6 +61,12 @@ export const APPS: AppManifest[] = [
     description: "Open any web page translated to your language in real time",
     keywords: "dich trang web translate google deepl tieng viet browser",
     load: () => import("./translate"),
+  },
+  {
+    id: "pdf", title: "PDF", icon: "", iconNode: ic(FileText, "#ff7b72"),
+    description: "View PDF files, check digital signatures, trust certificates",
+    keywords: "pdf acrobat reader ky so chu ky chung thu signature certificate xem tai lieu",
+    load: () => import("./pdf"),
   },
 ];
 

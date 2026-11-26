@@ -1,6 +1,6 @@
 [package]
 name = "devstation"
-version = "0.6.3"
+version = "0.7.0"
 edition = "2021"
 license = "LicenseRef-Proprietary"
 publish = false
@@ -29,7 +29,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 portable-pty = "0.8"
 base64 = "0.22"
 # App Registry: kiểm sha256 layer + ráp file tar cho `docker load` (MIT/Apache).
-sha2 = "0.10"
+sha2 = { version = "0.10", features = ["oid"] }
 tar = "0.4"
 # Lưu mật khẩu SSH an toàn vào kho của hệ điều hành (không ghi plaintext ra file).
 # keyring chọn backend theo từng nền tảng → khai báo riêng ở các [target...] bên dưới.
@@ -39,6 +39,21 @@ tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 bytes = "1"
 zip = { version = "2", default-features = false }
+# App PDF: kiểm chữ ký số (ByteRange, CMS/PKCS#7, timestamp, phát hiện sửa sau khi ký). BSD-2-Clause, RustCrypto thuần.
+underskrift = { version = "0.1.4", default-features = false, features = ["verify", "tsp"] } # "tsp": verify cần (crate thiếu khai báo)
+x509-cert = "0.2"
+der = "0.7"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+# App PDF — bộ kiểm CMS/CRL/OCSP tự viết (pdfsig.rs): RSA PKCS#1 v1.5 + ECDSA, SHA-1/2; lopdf đọc DSS/DocMDP. MIT/Apache.
+rsa = "0.9"
+sha1 = { version = "0.10", features = ["oid"] }
+p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
+p384 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
+ecdsa = { version = "0.16", features = ["verifying"] }
+spki = "0.7"
+lopdf = "0.39"
+# Mở file .pdf từ Explorer khi app đang chạy → chuyển sang tiến trình đang chạy thay vì mở bản thứ hai (MIT/Apache).
+tauri-plugin-single-instance = "2"
 
 # Sẽ thêm theo từng giai đoạn:
 #   rusqlite (lưu workspace/history),
@@ -48,7 +63,7 @@ zip = { version = "2", default-features = false }
 [target.'cfg(windows)'.dependencies]
 keyring = { version = "3", default-features = false, features = ["windows-native"] }
 # Job Object: tiến trình ssh/sftp con tự chết khi app thoát kiểu gì cũng vậy (procjob.rs). MIT/Apache.
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_Registry", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Security_Cryptography"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Secret Service qua D-Bus (GNOME Keyring/KWallet). crypto-rust để khỏi phụ thuộc OpenSSL.
@@ -56,6 +71,11 @@ keyring = { version = "3", default-features = false, features = ["sync-secret-se
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", default-features = false, features = ["apple-native"] }
+
+# Bản dev (npm run app:dev): tối ưu các crate phụ thuộc — lopdf / rsa / sha2 / sqlx… chạy chậm 5–10 lần ở opt-level 0
+# (kiểm chữ ký PDF mất vài giây). Chỉ build lại thư viện một lần; code của app vẫn biên dịch nhanh như cũ.
+[profile.dev.package."*"]
+opt-level = 2
 
 [profile.release]
 strip = true

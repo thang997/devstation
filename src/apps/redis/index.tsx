@@ -43,11 +43,21 @@ async function pickRedisKey(set: (p: string) => void) {
   if (typeof f === "string") set(f);
 }
 
+/** Không nối được trong 5s (như app SSH) → Rust trả `__TIMEOUT__:<giây>`. */
+const CONNECT_TIMEOUT_MS = 5000;
+const connectTimeoutSecs = (e: unknown): number | null => {
+  const m = /^__TIMEOUT__:(\d+)/.exec(e instanceof Error ? e.message : String(e));
+  return m ? Number(m[1]) : null;
+};
+/** Lỗi xác thực — chỉ lỗi này mới hỏi mật khẩu; lỗi mạng / timeout / sai host → màn "chưa kết nối". */
+const isAuthError = (msg: string) =>
+  /NOAUTH|WRONGPASS|invalid (username-)?password|auth(entication)? (required|failed)|requires? (a )?password/i.test(msg);
+
 /** Mở Redis, nếu bật SSH tunnel thì mở `ssh -L` tới một cổng local rồi nối Redis qua đó.
     Trả về id kết nối + id tunnel (để đóng khi disconnect). */
 async function redisConnectMaybeTunnel(conn: Conn, password: string): Promise<{ id: string; tunnelId: string | null }> {
   if (!conn.ssh?.enabled) {
-    const id = await call<string>("redis_connect", { cfg: { ...conn, password } });
+    const id = await call<string>("redis_connect", { cfg: { ...conn, password }, timeoutMs: CONNECT_TIMEOUT_MS });
     return { id, tunnelId: null };
   }
   const s = conn.ssh;
@@ -61,13 +71,17 @@ async function redisConnectMaybeTunnel(conn: Conn, password: string): Promise<{ 
   });
   const cfg = { ...conn, host: "127.0.0.1", port: localPort, password };
   // Forward vừa mở có thể chưa sẵn sàng ngay → thử lại vài lần.
+  // Thời hạn chung = SSH bắt tay + nối Redis (mỗi phần ~5s như app SSH). Hết hạn, quá thời gian hay sai mật khẩu → thôi.
+  const deadline = Date.now() + 2 * CONNECT_TIMEOUT_MS;
   let lastErr: unknown;
-  for (let i = 0; i < 6; i++) {
+  for (;;) {
+    const left = deadline - Date.now();
     try {
-      const id = await call<string>("redis_connect", { cfg });
+      const id = await call<string>("redis_connect", { cfg, timeoutMs: Math.max(1000, Math.min(CONNECT_TIMEOUT_MS, left)) });
       return { id, tunnelId };
     } catch (e) {
       lastErr = e;
+      if (connectTimeoutSecs(e) != null || isAuthError(errText(e)) || Date.now() + 400 >= deadline) break;
       await new Promise((r) => setTimeout(r, 400));
     }
   }
@@ -493,11 +507,22 @@ function SessionBody({ tab }: { tab: Tab }) {
       await loadKeys(id, "*");
     } catch (e) {
       const msg = errText(e);
-      setError(msg);
-      // Chỉ lỗi xác thực mới hỏi mật khẩu; lỗi mạng / tunnel / sai host → màn "chưa kết nối" có Thử lại + Sửa cấu hình
-      // (trước đây mọi lỗi đều bật modal mật khẩu → tưởng nhầm là sai mật khẩu).
-      if (/NOAUTH|WRONGPASS|invalid (username-)?password|auth(entication)? (required|failed)|requires? (a )?password/i.test(msg)) setNeedPw(true);
-      else setOffline(true);
+      const secs = connectTimeoutSecs(e);
+      const shown = secs != null ? t("redis.connectTimeout", { s: secs }) : msg;
+      setError(shown);
+      // Chỉ lỗi xác thực mới hỏi mật khẩu; lỗi mạng / tunnel / sai host / timeout → màn "chưa kết nối" có Thử lại + Sửa cấu hình
+      // (trước đây mọi lỗi đều bật modal mật khẩu → tưởng nhầm là sai mật khẩu) + hỏi đóng tab như app SSH.
+      if (isAuthError(msg)) setNeedPw(true);
+      else {
+        setNeedPw(false);
+        setOffline(true);
+        useWorkbench.getState().focusTab(tab.id);
+        void confirmDialog({
+          title: t("redis.connectFailTitle"),
+          message: t("redis.connectFailClose", { name: conn.name, reason: shown }),
+          confirmLabel: t("redis.closeTab"),
+        }).then((ok) => { if (ok) useWorkbench.getState().closeTab(tab.id); });
+      }
     } finally {
       setConnecting(false);
     }
@@ -622,6 +647,7 @@ function SessionBody({ tab }: { tab: Tab }) {
           <div className="muted small">Redis · {describe(conn)}</div>
           {error && <div className="error-box pre"><TriangleAlert /> {error}</div>}
           <div className="toolbar">
+            <button onClick={() => useWorkbench.getState().closeTab(tab.id)}><X />{tr("redis.closeTab")}</button>
             <button onClick={() => openForm(conn.id)}><Pencil />{tr("redis.editConfig")}</button>
             <button className="primary" autoFocus onClick={() => void connect()}><Plug />{tr("redis.connect")}</button>
           </div>

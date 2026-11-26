@@ -1406,9 +1406,12 @@ fn ssh_run_once(cfg: &ConnectCfg, command: &str, timeout: std::time::Duration, m
     let _ = child.kill();
     match out.as_deref() {
         Ok("\u{0}SUDO_NOPW") => return Err(
-            "Docker cần sudo nhưng chưa có mật khẩu để điền: host dùng key / chưa lưu mật khẩu SSH.              Hãy thêm user vào nhóm docker (sudo usermod -aG docker <user>), cấu hình sudo NOPASSWD cho docker,              hoặc đăng nhập terminal bằng mật khẩu một lần để lưu.".into()),
+            "Cần sudo nhưng chưa có mật khẩu để điền (host dùng key hoặc chưa lưu mật khẩu SSH). \
+             Hãy đăng nhập terminal bằng mật khẩu một lần để lưu, cấu hình sudo NOPASSWD, \
+             hoặc với Docker: thêm user vào nhóm docker (sudo usermod -aG docker <user>).".into()),
         Ok("\u{0}SUDO_BAD") => return Err(
-            "sudo từ chối mật khẩu SSH đã lưu (mật khẩu sudo khác mật khẩu đăng nhập?).              Thêm user vào nhóm docker hoặc cấu hình sudo NOPASSWD cho docker.".into()),
+            "sudo từ chối mật khẩu SSH đã lưu (mật khẩu sudo khác mật khẩu đăng nhập?). \
+             Cấu hình sudo NOPASSWD, hoặc với Docker: thêm user vào nhóm docker.".into()),
         _ => {}
     }
     let out = out.map(|s| s.replace(SUDO_PROMPT, ""));
@@ -1536,6 +1539,41 @@ async fn ssh_run_cmd(cfg: ConnectCfg, command: String, secs: u64, max_bytes: usi
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Thao tác file bằng **sudo** trên host — cho thư mục cần quyền root mà phiên SFTP (chạy bằng user SSH) không ghi được.
+/// Một lệnh ssh một-lần: `sudo -p __DS_SUDO__: sh -c '…'`; dấu nhắc mật khẩu được `ssh_run_once` tự điền bằng mật khẩu SSH
+/// đã lưu (keyring), sudo NOPASSWD thì không hỏi. `install`: chép file tạm (UI vừa đưa lên /tmp bằng SFTP) đè lên `to`
+/// bằng `cp` — file đích đã có thì GIỮ owner/quyền — rồi xoá file tạm. `rmdir` chỉ xoá thư mục rỗng (như SFTP).
+#[tauri::command]
+pub async fn ssh_sudo_fs(cfg: ConnectCfg, op: String, path: String, to: Option<String>) -> Result<(), String> {
+    let p = shq(&path);
+    let dest = || to.as_deref().map(shq).ok_or_else(|| "thiếu đường dẫn đích".to_string());
+    let script = match op.as_str() {
+        "touch" => format!("touch -- {p}"),
+        "mkdir" => format!("mkdir -- {p}"),
+        "rm" => format!("rm -f -- {p}"),
+        "rmdir" => format!("rmdir -- {p}"),
+        "rename" => format!("mv -- {p} {}", dest()?),
+        "install" => format!("cp -- {p} {} && rm -f -- {p}", dest()?),
+        o => return Err(format!("thao tác không hỗ trợ: {o}")),
+    };
+    let cmd = format!("sudo -p {SUDO_PROMPT} sh -c {} 2>&1", shq(&script));
+    let out = tauri::async_runtime::spawn_blocking(move || ssh_run_once(&cfg, &cmd, std::time::Duration::from_secs(60), 100_000))
+        .await
+        .map_err(|e| e.to_string())??;
+    let t = out.trim();
+    if t.is_empty() {
+        return Ok(());
+    }
+    let low = t.to_lowercase();
+    if low.contains("sudo: command not found") || low.contains("sudo: not found") {
+        return Err("Máy chủ không có sudo.".into());
+    }
+    if low.contains("is not in the sudoers") || low.contains("not allowed to execute") {
+        return Err("User SSH không có quyền sudo trên máy này.".into());
+    }
+    Err(t.lines().last().unwrap_or(t).to_string())
 }
 
 /// Bắt các lỗi `docker exec` thường gặp từ output (trả thông báo gọn). None = không phải lỗi rõ ràng.

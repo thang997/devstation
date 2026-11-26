@@ -27,6 +27,10 @@ export interface HttpReq {
   headers: { name: string; value: string }[];
   body: string | null;
   insecure: boolean;
+  /** Id để hủy bằng `cancelHttp`. */
+  id?: string;
+  /** Giới hạn thời gian cả request (giây); 0 = không giới hạn. Mặc định 30. */
+  timeoutSecs?: number;
 }
 
 export interface HttpResp {
@@ -44,6 +48,17 @@ const needApp = new Error(t("http.needApp"));
 export function sendHttp(req: HttpReq): Promise<HttpResp> {
   if (!isTauri()) return Promise.reject(new Error(t("http.needAppCors")));
   return invoke<HttpResp>("http_send", { req });
+}
+
+/** Hủy request đang gửi (id truyền trong `sendHttp`). */
+export const cancelHttp = (id: string) => invoke<void>("http_cancel", { id }).catch(() => {});
+
+/** Rust báo hết giờ / bị hủy bằng mã → UI dịch ra câu theo ngôn ngữ. */
+export function httpErrText(msg: string): string {
+  const m = /^__TIMEOUT__:(\d+)/.exec(msg);
+  if (m) return Number(m[1]) > 0 ? t("http.timedOut", { s: m[1] }) : t("http.timedOutNoLimit");
+  if (msg === "__CANCELLED__") return t("http.cancelled");
+  return msg;
 }
 
 export interface ImportedFile {

@@ -3,8 +3,12 @@
 //! Chạy ở Rust nên KHÔNG dính CORS (khác với gọi fetch trong webview) và dùng lại được
 //! chứng chỉ hệ thống. Việc tách curl làm ở phía UI; ở đây chỉ nhận request đã dựng sẵn.
 
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
+
+use tokio::sync::Notify;
 
 use serde::{Deserialize, Serialize};
 
@@ -16,6 +20,7 @@ pub struct HeaderKV {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HttpReq {
     method: String,
     url: String,
@@ -24,6 +29,12 @@ pub struct HttpReq {
     body: Option<String>,
     /// Bỏ qua kiểm tra chứng chỉ TLS (repo/dev self-signed). Mặc định false.
     insecure: bool,
+    /// Id do UI sinh để hủy (`http_cancel`). None = không hủy được.
+    #[serde(default)]
+    id: Option<String>,
+    /// Giới hạn thời gian cả request (kết nối + tải thân), giây. None = 30; 0 = không giới hạn.
+    #[serde(default)]
+    timeout_secs: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -43,8 +54,62 @@ pub struct HttpResp {
 /// Giới hạn thân trả về để không nuốt cả trăm MB vào webview.
 const MAX_BODY: usize = 8 * 1024 * 1024;
 
+/// Client dùng chung (giữ kết nối keep-alive / phiên TLS giữa các lần gửi — trước đây mỗi request dựng client mới:
+/// nạp lại kho chứng chỉ + bắt tay TCP/TLS từ đầu). [0] = kiểm chứng chỉ, [1] = `insecure`.
+fn client(insecure: bool) -> Result<reqwest::Client, String> {
+    static C: OnceLock<Mutex<[Option<reqwest::Client>; 2]>> = OnceLock::new();
+    let mut g = C.get_or_init(|| Mutex::new([None, None])).lock().unwrap();
+    let slot = &mut g[insecure as usize];
+    if let Some(c) = slot {
+        return Ok(c.clone());
+    }
+    let c = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(15))
+        .danger_accept_invalid_certs(insecure)
+        .user_agent(concat!("DevStation/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|e| e.to_string())?;
+    *slot = Some(c.clone());
+    Ok(c)
+}
+
+/// Request đang chạy theo id (để nút Hủy dừng được).
+fn cancels() -> &'static Mutex<HashMap<String, Arc<Notify>>> {
+    static M: OnceLock<Mutex<HashMap<String, Arc<Notify>>>> = OnceLock::new();
+    M.get_or_init(Default::default)
+}
+
+/// Hủy request đang gửi (bỏ future → reqwest đóng kết nối).
+#[tauri::command]
+pub fn http_cancel(id: String) {
+    if let Some(n) = cancels().lock().unwrap().remove(&id) {
+        n.notify_one();
+    }
+}
+
 #[tauri::command]
 pub async fn http_send(req: HttpReq) -> Result<HttpResp, String> {
+    let secs = req.timeout_secs.unwrap_or(30);
+    let notify = req.id.as_ref().map(|id| {
+        let n = Arc::new(Notify::new());
+        cancels().lock().unwrap().insert(id.clone(), n.clone());
+        n
+    });
+    let work = send_inner(&req, secs);
+    let res = match notify {
+        Some(n) => tokio::select! {
+            r = work => r,
+            _ = n.notified() => Err("__CANCELLED__".to_string()),
+        },
+        None => work.await,
+    };
+    if let Some(id) = &req.id {
+        cancels().lock().unwrap().remove(id);
+    }
+    res
+}
+
+async fn send_inner(req: &HttpReq, secs: u64) -> Result<HttpResp, String> {
     let mut url = req.url.trim().to_string();
     if url.is_empty() {
         return Err("URL trống".into());
@@ -57,14 +122,10 @@ pub async fn http_send(req: HttpReq) -> Result<HttpResp, String> {
     let method = reqwest::Method::from_bytes(req.method.trim().to_uppercase().as_bytes())
         .map_err(|_| format!("Method không hợp lệ: {}", req.method))?;
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .danger_accept_invalid_certs(req.insecure)
-        .user_agent(concat!("DevStation/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    let mut rb = client.request(method, &url);
+    let mut rb = client(req.insecure)?.request(method, &url);
+    if secs > 0 {
+        rb = rb.timeout(Duration::from_secs(secs));
+    }
     for h in &req.headers {
         let name = h.name.trim();
         if name.is_empty() {
@@ -83,7 +144,7 @@ pub async fn http_send(req: HttpReq) -> Result<HttpResp, String> {
     }
 
     let t0 = Instant::now();
-    let resp = rb.send().await.map_err(friendly)?;
+    let mut resp = rb.send().await.map_err(|e| friendly(e, secs))?;
 
     let status = resp.status();
     let status_text = status.canonical_reason().unwrap_or("").to_string();
@@ -93,12 +154,20 @@ pub async fn http_send(req: HttpReq) -> Result<HttpResp, String> {
         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
         .collect();
 
-    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    // Đọc thân theo từng khúc: chỉ GIỮ tối đa MAX_BODY, phần sau chỉ đếm byte (trước đây đọc cả thân vào RAM
+    // rồi mới cắt → tải file vài GB là ngốn vài GB RAM).
+    let mut kept: Vec<u8> = Vec::new();
+    let mut total = 0usize;
+    while let Some(chunk) = resp.chunk().await.map_err(|e| friendly(e, secs))? {
+        total += chunk.len();
+        if kept.len() < MAX_BODY {
+            let take = (MAX_BODY - kept.len()).min(chunk.len());
+            kept.extend_from_slice(&chunk[..take]);
+        }
+    }
     let time_ms = t0.elapsed().as_millis();
-    let total = bytes.len();
     let truncated = total > MAX_BODY;
-    let slice = if truncated { &bytes[..MAX_BODY] } else { &bytes[..] };
-    let body = String::from_utf8_lossy(slice).into_owned();
+    let body = String::from_utf8_lossy(&kept).into_owned();
 
     Ok(HttpResp {
         status: status.as_u16(),
@@ -192,9 +261,10 @@ pub async fn http_read_dir(dir: String) -> Result<Vec<ImportedFile>, String> {
 }
 
 /// Thông báo lỗi dễ hiểu cho các trường hợp hay gặp.
-fn friendly(e: reqwest::Error) -> String {
+fn friendly(e: reqwest::Error, secs: u64) -> String {
+    // Hết giờ khi đang tải thân cũng báo là timeout (trước đây ra "error decoding response body").
     if e.is_timeout() {
-        return "Hết thời gian chờ (quá 30 giây)".into();
+        return format!("__TIMEOUT__:{secs}");
     }
     if e.is_connect() {
         return format!("Không kết nối được tới máy chủ: {e}");

@@ -7,6 +7,8 @@ mod db;
 mod git;
 mod http;
 mod owners;
+mod pdf;
+mod pdfsig;
 mod procjob;
 mod redis;
 mod registry;
@@ -32,6 +34,8 @@ fn write_text_file(path: String, content: String) -> Result<(), String> {
 
 fn main() {
     tauri::Builder::default()
+        // Phải đăng ký ĐẦU TIÊN: mở file .pdf khi app đang chạy → chuyển cho tiến trình đang chạy (app PDF).
+        .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| pdf::on_second_instance(app, argv, cwd)))
         .plugin(tauri_plugin_dialog::init())
         // Tự cập nhật: đọc latest.json trên GitHub Releases, kiểm chữ ký bằng pubkey trong tauri.conf.json.
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -43,8 +47,10 @@ fn main() {
         .manage(redis::RedisState::default())
         .manage(owners::Owners::default())
         .manage(registry::RegistryState::default())
+        .manage(pdf::PdfState::default())
         .setup(|app| {
             git::init(app.handle().clone());
+            pdf::init(app.handle());
             Ok(())
         })
         // Đóng cửa sổ app (nút X) / tải lại trang: React không kịp dọn → Rust đóng mọi phiên của cửa sổ đó.
@@ -115,6 +121,7 @@ fn main() {
             git::git_account,
             git::git_sign_out,
             http::http_send,
+            http::http_cancel,
             http::http_read_file,
             http::http_read_dir,
             ssh::ssh_connect,
@@ -130,6 +137,7 @@ fn main() {
             ssh::ssh_stat_stop,
             ssh::ssh_docker_ps,
             ssh::ssh_shell_history,
+            ssh::ssh_sudo_fs,
             ssh::docker_fs_list,
             ssh::docker_fs_home,
             ssh::docker_fs_cd,
@@ -188,6 +196,19 @@ fn main() {
             registry::registry_save_password,
             registry::registry_get_password,
             registry::registry_forget_password,
+            pdf::pdf_read,
+            pdf::pdf_verify,
+            pdf::pdf_verify_path,
+            pdf::pdf_open_url,
+            pdf::pdf_has_pending,
+            pdf::pdf_take_pending,
+            pdf::pdf_trust_list,
+            pdf::pdf_trust_add,
+            pdf::pdf_trust_remove,
+            pdf::pdf_default_status,
+            pdf::pdf_register_default,
+            pdf::pdf_unregister_default,
+            pdf::pdf_open_settings,
         ])
         .build(tauri::generate_context!())
         .expect("không khởi động được DevStation")

@@ -1,7 +1,7 @@
 import { confirmDialog } from "../../shell/confirm";
 import { Swap } from "../../shell/Swap";
 import { copyText } from "../../shell/clipboard";
-import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { AppModule, Tab } from "../types";
@@ -13,7 +13,7 @@ import { ContextMenu, type CtxItem } from "../../shell/ContextMenu";
 import { Modal } from "../../shell/Modal";
 import { Splitter, useSplitSize } from "../../shell/Resizable";
 import { Loading } from "../../shell/Loading";
-import { listNav, rowKey } from "../../shell/listNav";
+import { rowKey } from "../../shell/listNav";
 import { git, errText, type Branch, type Commit, type FileChange, type GitAccount, type RemoteOp, type Status } from "./api";
 import { CommitView, FileDiff } from "./DiffParts";
 import { Archive, ArchiveRestore, ArrowDownToLine, ArrowUpFromLine, Check, Cloud, CloudDownload, Copy, Download, ExternalLink, EyeOff, FolderGit2, FolderOpen, GitBranch, GitBranchPlus, GitCommitHorizontal, GitMerge, History, LogIn, LogOut, Minus, Pencil, Plus, RefreshCw, RotateCcw, Save, Settings, Trash2, TriangleAlert, Undo2, X } from "lucide-react";
@@ -414,6 +414,47 @@ function RepoView({ tab }: { tab: Tab }) {
   const toggleCheckAll = () =>
     setUnchecked(checkState === "all" ? new Set(committable.map((f) => f.path)) : new Set());
   /** Hành động của dòng file — ref ổn định để `FileRow` (memo) chỉ vẽ lại dòng có dữ liệu đổi. */
+  /** ↑/↓/Home/End/PageUp/PageDown trong danh sách file (đã ảo hoá → dòng ngoài vùng nhìn không có trong DOM, phải
+   *  đi theo chỉ số trên danh sách gộp Conflicts + Changes rồi cuộn tới / focus lại dòng). */
+  const fileKeyNav = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if ((e.target as HTMLElement).closest("input, textarea, button")) return;
+    const box = e.currentTarget;
+    const all: { f: FileChange; group: string; i: number }[] = [
+      ...conflicts.map((f, i) => ({ f, group: "conflicts", i })),
+      ...committable.map((f, i) => ({ f, group: "changes", i })),
+    ];
+    if (!all.length) return;
+    const rowH = box.querySelector<HTMLElement>(".file-row")?.offsetHeight || 24;
+    const page = Math.max(1, Math.floor(box.clientHeight / rowH) - 1);
+    const curPath = selected?.type === "file" ? selected.file.path : null;
+    const cur = curPath ? all.findIndex((x) => x.f.path === curPath) : -1;
+    const step: Record<string, number> = { ArrowDown: 1, ArrowUp: -1, PageDown: page, PageUp: -page };
+    let n: number;
+    if (e.key === "Home") n = 0;
+    else if (e.key === "End") n = all.length - 1;
+    else if (e.key in step) n = cur < 0 ? (step[e.key] > 0 ? 0 : all.length - 1) : cur + step[e.key];
+    else return;
+    e.preventDefault();
+    n = Math.max(0, Math.min(all.length - 1, n));
+    if (n === cur) return;
+    const it = all[n];
+    const body = box.querySelector<HTMLElement>(`[data-group="${it.group}"] .file-group-body`);
+    if (n === 0) box.scrollTop = 0; // về đầu: thấy cả banner merge + tiêu đề nhóm
+    else if (body) {
+      const top = body.offsetTop + it.i * rowH;
+      if (top < box.scrollTop) box.scrollTop = top;
+      else if (top + rowH > box.scrollTop + box.clientHeight) box.scrollTop = top + rowH - box.clientHeight;
+    }
+    fileApi.current.select(it.f, false);
+    // Dòng đích có thể chưa được vẽ (nhảy xa: scroll → đọc vùng nhìn ở khung sau → vẽ lại) → thử focus vài khung hình.
+    let tries = 0;
+    const focus = () => {
+      const row = box.querySelector<HTMLElement>(`[data-group="${it.group}"] .file-row[data-i="${it.i}"]`);
+      if (row) row.focus({ preventScroll: true });
+      else if (++tries < 15) requestAnimationFrame(focus);
+    };
+    requestAnimationFrame(focus);
+  };
   const fileApi = useRef<FileRowApi>(null!);
   fileApi.current = {
     select: (f, staged) => setSelected({ type: "file", file: f, staged }),
@@ -848,7 +889,7 @@ function RepoView({ tab }: { tab: Tab }) {
 
       <div className="split">
         <div className="pane narrow changes" style={{ width: changesW, flex: "0 0 auto" }}>
-          <div className="file-lists" role="listbox" onKeyDown={(e) => listNav(e, { row: ".file-row", select: true })}>
+          <FileScrollBox onKeyDown={fileKeyNav}>
             {status?.merging && (
               <div className={`merge-banner${conflicts.length ? " bad" : ""}`}>
                 <GitMerge />
@@ -860,12 +901,13 @@ function RepoView({ tab }: { tab: Tab }) {
               </div>
             )}
             {conflicts.length > 0 && (
-              <FileGroup title={`Conflicts (${conflicts.length})`} files={conflicts} selected={selected} staged={false}
+              <FileGroup group="conflicts" title={`Conflicts (${conflicts.length})`} files={conflicts} selected={selected} staged={false}
                 action="resolve" api={fileApi}
               />
             )}
             {committable.length > 0 && (
               <FileGroup
+                group="changes"
                 title={`Changes (${checkedFiles.length}/${committable.length})`}
                 files={committable}
                 selected={selected}
@@ -893,7 +935,7 @@ function RepoView({ tab }: { tab: Tab }) {
               />
             )}
             {status && !files.length && <div className="muted small pad">{tr("git.noChanges")}</div>}
-          </div>
+          </FileScrollBox>
           <CommitBox
             api={boxApi}
             suggestedMsg={suggestedMsg}
@@ -1041,7 +1083,15 @@ function RepoView({ tab }: { tab: Tab }) {
 /** Số commit nạp mỗi trang trong History. */
 const HISTORY_PAGE = 200;
 
-/** Danh sách commit: memo để kéo giãn khối không phải vẽ lại 200 dòng mỗi khung hình. */
+/** Số dòng vẽ dư phía trên/dưới vùng nhìn (cuộn nhanh không thấy khoảng trống). */
+const HISTORY_OVERSCAN = 20;
+
+/**
+ * Danh sách commit **ảo hoá**: chỉ vẽ các dòng đang thấy (+ đệm) giữa hai khối đệm cao tương ứng — lịch sử vài nghìn
+ * commit không còn vài nghìn phần tử trong DOM (trước đây ~60 MB/tab với repo lớn). Dòng cao đều (một hàng, cắt …),
+ * chiều cao đo lúc chạy. Cuộn vô hạn: mốc cuối danh sách vào vùng nhìn (+400px) thì nạp trang kế.
+ * Bàn phím tự xử lý theo CHỈ SỐ (↑/↓/Home/End/PageUp/PageDown) vì hàng ngoài vùng nhìn không có trong DOM.
+ */
 const HistoryList = memo(function HistoryList({
   history,
   loaded,
@@ -1064,6 +1114,36 @@ const HistoryList = memo(function HistoryList({
   const [busy, setBusy] = useState(false);
   const more = useRef(onMore);
   more.current = onMore;
+  const [rowH, setRowH] = useState(26);
+  // Vùng nhìn: [scrollTop, chiều cao khung] — cập nhật theo khung hình khi cuộn / đổi cỡ.
+  const [view, setView] = useState({ top: 0, h: 800 });
+  const raf = useRef(0);
+  const readView = useCallback(() => {
+    raf.current = 0;
+    const el = box.current;
+    if (!el || el.clientHeight === 0) return; // tab ẩn → giữ vùng cũ
+    setView((v) => (v.top === el.scrollTop && v.h === el.clientHeight ? v : { top: el.scrollTop, h: el.clientHeight }));
+  }, []);
+  const onScroll = useCallback(() => { if (!raf.current) raf.current = requestAnimationFrame(readView); }, [readView]);
+  useEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    const ro = new ResizeObserver(onScroll);
+    ro.observe(el);
+    readView();
+    return () => { ro.disconnect(); if (raf.current) cancelAnimationFrame(raf.current); };
+  }, [onScroll, readView]);
+  // Đo chiều cao dòng thật (font / theme khác nhau) từ dòng đầu đang vẽ.
+  useLayoutEffect(() => {
+    const r = box.current?.querySelector<HTMLElement>(".history-row");
+    const h = r?.offsetHeight;
+    if (h && Math.abs(h - rowH) > 0.5) setRowH(h);
+  });
+
+  const n = history.length;
+  const start = Math.max(0, Math.floor(view.top / rowH) - HISTORY_OVERSCAN);
+  const end = Math.min(n, Math.ceil((view.top + view.h) / rowH) + HISTORY_OVERSCAN);
+
   // Mốc ở cuối danh sách: vào vùng nhìn (+400px) thì nạp trang kế. Nạp xong mà mốc vẫn thấy (khung cao, trang
   // ngắn) thì observer không bắn lại → tự kiểm tra lại sau mỗi lần nạp.
   useEffect(() => {
@@ -1082,20 +1162,61 @@ const HistoryList = memo(function HistoryList({
     io.observe(el);
     return () => { alive = false; io.disconnect(); };
   }, [!!onMore]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** Chọn commit thứ `i`: cuộn cho nó vào vùng nhìn rồi focus dòng sau khi vẽ. */
+  const pick = (i: number) => {
+    const el = box.current;
+    const c = history[i];
+    if (!el || !c) return;
+    const top = i * rowH;
+    if (top < el.scrollTop) el.scrollTop = top;
+    else if (top + rowH > el.scrollTop + el.clientHeight) el.scrollTop = top + rowH - el.clientHeight;
+    readView();
+    onSelect(c);
+    let tries = 0; // dòng đích có thể chưa vẽ ở khung đầu → thử vài khung hình
+    const focus = () => {
+      const row = el.querySelector<HTMLElement>(`.history-row[data-i="${i}"]`);
+      if (row) row.focus({ preventScroll: true });
+      else if (++tries < 15) requestAnimationFrame(focus);
+    };
+    requestAnimationFrame(focus);
+  };
+  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if ((e.target as HTMLElement).closest("input, textarea")) return;
+    const page = Math.max(1, Math.floor((box.current?.clientHeight ?? 0) / rowH) - 1);
+    const cur = selectedHash ? history.findIndex((c) => c.hash === selectedHash) : -1;
+    const step: Record<string, number> = { ArrowDown: 1, ArrowUp: -1, PageDown: page, PageUp: -page };
+    let i: number;
+    if (e.key === "Home") i = 0;
+    else if (e.key === "End") i = n - 1;
+    else if (e.key in step) i = cur < 0 ? (step[e.key] > 0 ? 0 : n - 1) : cur + step[e.key];
+    else return;
+    e.preventDefault();
+    i = Math.max(0, Math.min(n - 1, i));
+    if (i !== cur) pick(i);
+  };
+
+  const rows = [];
+  for (let i = start; i < end; i++) {
+    const c = history[i];
+    rows.push(<HistoryRow key={c.hash} c={c} i={i} on={c.hash === selectedHash} onSelect={onSelect} onMenu={onMenu} />);
+  }
   return (
-    <div className="history-list" ref={box} role="listbox" onKeyDown={(e) => listNav(e, { row: ".history-row", select: true })}>
-      {history.map((c) => (
-        <HistoryRow key={c.hash} c={c} on={c.hash === selectedHash} onSelect={onSelect} onMenu={onMenu} />
-      ))}
-      {loaded && !history.length && <div className="muted small pad">{tr("git.noCommitsYet")}</div>}
+    <div className="history-list" ref={box} role="listbox" onScroll={onScroll} onKeyDown={onKeyDown}>
+      <div style={{ height: start * rowH }} />
+      {rows}
+      <div style={{ height: (n - end) * rowH }} />
+      {loaded && !n && <div className="muted small pad">{tr("git.noCommitsYet")}</div>}
       {onMore && <div ref={sentinel} className="history-sentinel">{busy && <Loading variant="row" />}</div>}
     </div>
   );
 });
 
 /** Một dòng commit: memo → đổi commit đang chọn chỉ vẽ lại 2 dòng (cũ + mới). */
-const HistoryRow = memo(function HistoryRow({ c, on, onSelect, onMenu }: {
+const HistoryRow = memo(function HistoryRow({ c, i, on, onSelect, onMenu }: {
   c: Commit;
+  /** Chỉ số trong danh sách (để bàn phím focus lại đúng dòng sau khi ảo hoá vẽ lại). */
+  i: number;
   on: boolean;
   onSelect: (c: Commit) => void;
   onMenu: (c: Commit, e: React.MouseEvent) => void;
@@ -1103,6 +1224,7 @@ const HistoryRow = memo(function HistoryRow({ c, on, onSelect, onMenu }: {
   return (
     <div
       className={`history-row ${on ? "on" : ""}`}
+      data-i={i}
       tabIndex={0}
       role="option"
       aria-selected={on}
@@ -1135,7 +1257,49 @@ interface FileRowApi {
   action: (f: FileChange, kind: FileAction) => void;
 }
 
+/** Vùng đang nhìn của khung cuộn danh sách file — các nhóm file đọc để chỉ vẽ dòng đang thấy. */
+const FileViewCtx = createContext<{ top: number; h: number }>({ top: 0, h: 800 });
+/** Số dòng file vẽ dư phía trên/dưới vùng nhìn. */
+const FILE_OVERSCAN = 20;
+
+/**
+ * Khung cuộn danh sách file: theo dõi scrollTop / chiều cao (theo khung hình) và đưa qua context → khi cuộn chỉ
+ * các `FileGroup` vẽ lại (phần tử con do RepoView tạo giữ nguyên, RepoView không vẽ lại).
+ */
+function FileScrollBox({ onKeyDown, children }: { onKeyDown: (e: React.KeyboardEvent<HTMLDivElement>) => void; children: React.ReactNode }) {
+  const box = useRef<HTMLDivElement>(null);
+  const [view, setView] = useState({ top: 0, h: 800 });
+  const raf = useRef(0);
+  const read = useCallback(() => {
+    raf.current = 0;
+    const el = box.current;
+    if (!el || el.clientHeight === 0) return; // tab ẩn → giữ vùng cũ
+    setView((v) => (v.top === el.scrollTop && v.h === el.clientHeight ? v : { top: el.scrollTop, h: el.clientHeight }));
+  }, []);
+  const onScroll = useCallback(() => { if (!raf.current) raf.current = requestAnimationFrame(read); }, [read]);
+  useEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    const ro = new ResizeObserver(onScroll);
+    ro.observe(el);
+    read();
+    return () => { ro.disconnect(); if (raf.current) cancelAnimationFrame(raf.current); };
+  }, [onScroll, read]);
+  return (
+    <div className="file-lists" ref={box} role="listbox" onScroll={onScroll} onKeyDown={onKeyDown}>
+      <FileViewCtx.Provider value={view}>{children}</FileViewCtx.Provider>
+    </div>
+  );
+}
+
+/**
+ * Một nhóm file (Conflicts / Changes), **ảo hoá**: chỉ vẽ các dòng nằm trong vùng nhìn của khung cuộn (±20) giữa hai
+ * khối đệm — repo vài nghìn file thay đổi không còn vài nghìn dòng trong DOM. Vị trí nhóm trong khung đo bằng
+ * `offsetTop` (khung `position: relative`), dòng cao đều đo lúc chạy.
+ */
 function FileGroup(props: {
+  /** Khoá nhóm (bàn phím tìm nhóm qua `data-group`). */
+  group: string;
   title: string;
   files: FileChange[];
   staged: boolean;
@@ -1149,33 +1313,59 @@ function FileGroup(props: {
   /** Có thì mỗi dòng có ô tick (file nằm trong tập này = bỏ tick). */
   unchecked?: Set<string>;
 }) {
+  const view = useContext(FileViewCtx);
+  const body = useRef<HTMLDivElement>(null);
+  const [off, setOff] = useState(0);
+  const [rowH, setRowH] = useState(24);
+  useLayoutEffect(() => {
+    const el = body.current;
+    if (!el) return;
+    if (el.offsetTop !== off) setOff(el.offsetTop);
+    const h = el.querySelector<HTMLElement>(".file-row")?.offsetHeight;
+    if (h && Math.abs(h - rowH) > 0.5) setRowH(h);
+  });
   const sel = props.selected;
   const selPath = sel?.type === "file" && sel.staged === props.staged ? sel.file.path : null;
+  const n = props.files.length;
+  const start = Math.max(0, Math.min(n, Math.floor((view.top - off) / rowH) - FILE_OVERSCAN));
+  const end = Math.max(start, Math.min(n, Math.ceil((view.top + view.h - off) / rowH) + FILE_OVERSCAN));
+  const rows = [];
+  for (let i = start; i < end; i++) {
+    const f = props.files[i];
+    rows.push(
+      <FileRow
+        key={f.path}
+        f={f}
+        i={i}
+        staged={props.staged}
+        on={f.path === selPath}
+        checked={props.unchecked ? !props.unchecked.has(f.path) : undefined}
+        action={props.action}
+        api={props.api}
+      />,
+    );
+  }
   return (
-    <div>
+    <div data-group={props.group}>
       <div className="file-group">
         {props.headerLead}
         <span className="grow">{props.title}</span>
         {props.headerAction}
       </div>
-      {props.files.map((f) => (
-        <FileRow
-          key={f.path}
-          f={f}
-          staged={props.staged}
-          on={f.path === selPath}
-          checked={props.unchecked ? !props.unchecked.has(f.path) : undefined}
-          action={props.action}
-          api={props.api}
-        />
-      ))}
+      <div className="file-group-body" ref={body}>
+        <div style={{ height: start * rowH }} />
+        {rows}
+        <div style={{ height: (n - end) * rowH }} />
+      </div>
     </div>
   );
 }
 
 /** Một dòng file: memo + props nguyên thuỷ → tick / chọn một file chỉ vẽ lại dòng đó. */
-const FileRow = memo(function FileRow({ f, staged, on, checked, action, api }: {
+const FileRow = memo(function FileRow({ f, i, staged, on, checked, action, api }: {
   f: FileChange;
+  /** Chỉ số trong nhóm (bàn phím focus lại đúng dòng sau khi ảo hoá vẽ lại). */
+  i: number;
   staged: boolean;
   on: boolean;
   /** undefined = không có ô tick. */
@@ -1189,6 +1379,7 @@ const FileRow = memo(function FileRow({ f, staged, on, checked, action, api }: {
   return (
     <div
       className={`file-row ${on ? "on" : ""}`}
+      data-i={i}
       tabIndex={0}
       role="option"
       aria-selected={on}

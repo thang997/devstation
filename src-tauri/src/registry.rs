@@ -759,6 +759,19 @@ pub fn registry_temp_dir() -> Result<String, String> {
             }
         }
     }
+    // Cache blob / `.part` ở thư mục gốc: lượt tải bị gián đoạn (mất mạng, tắt app) giữ lại để tải tiếp, nhưng trước đây
+    // KHÔNG bao giờ dọn → nằm mãi (đo được 284 MB của một lượt 6 ngày trước). File không đổi > 1 ngày = bỏ.
+    if let Some(root) = out.parent() {
+        if let Ok(rd) = std::fs::read_dir(root) {
+            for e in rd.flatten() {
+                let Ok(m) = e.metadata() else { continue };
+                let old = m.modified().ok().and_then(|t| t.elapsed().ok()).is_some_and(|d| d > Duration::from_secs(86_400));
+                if m.is_file() && old {
+                    let _ = std::fs::remove_file(e.path());
+                }
+            }
+        }
+    }
     Ok(out.to_string_lossy().to_string())
 }
 

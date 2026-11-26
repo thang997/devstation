@@ -7,7 +7,9 @@ import { t } from "../store/lang";
  */
 export function useSplitSize(key: string, initial: number, min: number, max: number) {
   const [size, setSize] = useState(() => {
-    const saved = Number(localStorage.getItem(`split.${key}`));
+    // Chưa lưu → null; Number(null) = 0 (hữu hạn) sẽ bị kẹp về min thay vì dùng `initial`.
+    const raw = localStorage.getItem(`split.${key}`);
+    const saved = raw === null || raw === "" ? NaN : Number(raw);
     // Kẹp cả hai đầu: giá trị cũ/hỏng (vd. > max sau khi đổi bố cục) không được làm vỡ layout.
     return Number.isFinite(saved) ? Math.max(min, Math.min(max, saved)) : initial;
   });

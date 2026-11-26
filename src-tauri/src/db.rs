@@ -534,10 +534,39 @@ async fn get_ctx(state: &DbState, id: &str, schema: Option<&str>) -> Result<Pool
     Ok(state.schema_pools.lock().unwrap().entry(key).or_insert(pool).clone())
 }
 
+/// Thử mở TCP tới server trước khi nối thật: sqlx / ConnectionManager tự thử lại khi bị từ chối → cổng không có dịch vụ
+/// cũng phải chờ hết thời hạn mới báo. Bị từ chối / không phân giải được tên → báo NGAY lỗi thật; vào được thì để driver nối.
+pub(crate) async fn probe_tcp(host: &str, port: u16) -> Result<(), String> {
+    match tokio::net::TcpStream::connect((host, port)).await {
+        Ok(_) => Ok(()),
+        Err(e) => Err(format!("{host}:{port} — {e}")),
+    }
+}
+
 #[tauri::command]
-pub async fn db_connect(app: tauri::AppHandle, window: tauri::Window, state: State<'_, DbState>, cfg: ConnConfig) -> Result<String, String> {
-    let pool = open(&cfg).await.map_err(|e| e.to_string())?;
-    let via_proxysql = is_proxysql(&pool).await;
+pub async fn db_connect(
+    app: tauri::AppHandle,
+    window: tauri::Window,
+    state: State<'_, DbState>,
+    cfg: ConnConfig,
+    timeout_ms: Option<u64>,
+) -> Result<String, String> {
+    // Không nối được trong thời hạn (mặc định 5s, như SSH) → báo `__TIMEOUT__` cho UI (bỏ future = huỷ lượt nối).
+    // Trước đây chờ tới acquire_timeout 10s (Pg/MySQL) hoặc lâu hơn nữa (Cassandra).
+    let ms = timeout_ms.unwrap_or(5000).clamp(500, 120_000);
+    let work = async {
+        let default_port = match cfg.driver.as_str() { "postgres" => Some(5432), "mysql" => Some(3306), "cassandra" => Some(9042), _ => None };
+        if let Some(dp) = default_port {
+            probe_tcp(if cfg.host.is_empty() { "localhost" } else { &cfg.host }, cfg.port.unwrap_or(dp)).await?;
+        }
+        let pool = open(&cfg).await.map_err(|e| e.to_string())?;
+        let via = is_proxysql(&pool).await;
+        Ok::<_, String>((pool, via))
+    };
+    let (pool, via_proxysql) = match timeout(Duration::from_millis(ms), work).await {
+        Ok(r) => r?,
+        Err(_) => return Err(format!("__TIMEOUT__:{}", ms.div_ceil(1000))),
+    };
     let id = {
         let mut n = state.next_id.lock().unwrap();
         *n += 1;

@@ -5,6 +5,7 @@ import { initTheme } from "./store/theme";
 import { loadLang } from "./store/lang";
 import { useWorkbench } from "./store/workbench";
 import { unregisterOnClose, windowAppParam } from "./shell/windows";
+import { initFileOpen } from "./shell/fileOpen";
 import "./styles.css";
 
 initTheme();
@@ -22,7 +23,8 @@ if (windowAppParam) useWorkbench.getState().openApp(windowAppParam);
 
 
 // Nạp file ngôn ngữ đã chọn trước lần vẽ đầu (en có sẵn trong bundle → không chờ).
-void loadLang().finally(() => {
+// initFileOpen: app được mở bằng file .pdf (Explorer) → cửa sổ main vào thẳng app PDF.
+void Promise.all([loadLang(), initFileOpen()]).finally(() => {
   ReactDOM.createRoot(document.getElementById("root")!).render(
     <React.StrictMode>
       <Shell />

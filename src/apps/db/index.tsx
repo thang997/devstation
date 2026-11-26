@@ -34,12 +34,22 @@ async function pickDbKey(set: (p: string) => void) {
   if (typeof f === "string") set(f);
 }
 
+/** Không nối được trong 5s (như app SSH) → Rust trả `__TIMEOUT__:<giây>`. */
+const CONNECT_TIMEOUT_MS = 5000;
+const connectTimeoutSecs = (e: unknown): number | null => {
+  const m = /^__TIMEOUT__:(\d+)/.exec(e instanceof Error ? e.message : String(e));
+  return m ? Number(m[1]) : null;
+};
+/** Lỗi xác thực (sai/thiếu mật khẩu) — chỉ lỗi này mới hỏi mật khẩu; lỗi mạng/timeout hiện màn "chưa kết nối". */
+const isAuthError = (msg: string) =>
+  /access denied|password authentication failed|no password (was )?(supplied|provided)|authentication failed|auth(entication)? (error|required)|bad credentials|invalid (username|password|credentials)|28P01|\b1045\b/i.test(msg);
+
 /** Mở kết nối DB, nếu bật SSH tunnel thì mở `ssh -L` tới một cổng local rồi nối DB qua đó.
     Trả về id kết nối DB + id tunnel (để đóng khi disconnect). */
 async function dbConnectMaybeTunnel(conn: Conn, password: string): Promise<{ id: string; tunnelId: string | null }> {
   const useTunnel = !!conn.ssh?.enabled && conn.driver !== "sqlite";
   if (!useTunnel) {
-    const id = await call<string>("db_connect", { cfg: { ...conn, password } });
+    const id = await call<string>("db_connect", { cfg: { ...conn, password }, timeoutMs: CONNECT_TIMEOUT_MS });
     return { id, tunnelId: null };
   }
   const s = conn.ssh!;
@@ -53,13 +63,17 @@ async function dbConnectMaybeTunnel(conn: Conn, password: string): Promise<{ id:
   });
   const cfg = { ...conn, host: "127.0.0.1", port: localPort, password };
   // Forward vừa mở có thể chưa sẵn sàng ngay → thử lại vài lần trước khi bỏ cuộc.
+  // Thời hạn chung = SSH bắt tay + nối DB (mỗi phần ~5s như app SSH). Hết hạn, quá thời gian hay sai mật khẩu → thôi.
+  const deadline = Date.now() + 2 * CONNECT_TIMEOUT_MS;
   let lastErr: unknown;
-  for (let i = 0; i < 6; i++) {
+  for (;;) {
+    const left = deadline - Date.now();
     try {
-      const id = await call<string>("db_connect", { cfg });
+      const id = await call<string>("db_connect", { cfg, timeoutMs: Math.max(1000, Math.min(CONNECT_TIMEOUT_MS, left)) });
       return { id, tunnelId };
     } catch (e) {
       lastErr = e;
+      if (connectTimeoutSecs(e) != null || isAuthError(errText(e)) || Date.now() + 400 >= deadline) break;
       await new Promise((r) => setTimeout(r, 400));
     }
   }
@@ -1022,6 +1036,8 @@ function SessionBody({ tab }: { tab: Tab }) {
   const [connecting, setConnecting] = useState(false);
   /** Chỉ hiện form nhập mật khẩu khi KHÔNG tự kết nối được (chưa lưu / sai mật khẩu). */
   const [needPw, setNeedPw] = useState(false);
+  /** Nối lỗi KHÔNG phải do mật khẩu (timeout / sai host / mạng) → màn "chưa kết nối" có Thử lại. */
+  const [offline, setOffline] = useState(false);
   const [dbs, setDbs] = useState<string[]>([]);
   /** DB đã "mở kết nối" (có caret, đã nạp) — kiểu Navicat; ⊇ expanded. */
   const [opened, setOpened] = useState<Set<string>>(new Set());
@@ -1136,6 +1152,7 @@ function SessionBody({ tab }: { tab: Tab }) {
   const connect = async (pw: string = password) => {
     if (!conn) return;
     setConnecting(true);
+    setOffline(false);
     setError("");
     try {
       const { id, tunnelId } = await dbConnectMaybeTunnel(conn, pw);
@@ -1157,9 +1174,25 @@ function SessionBody({ tab }: { tab: Tab }) {
       const auto = configured || (list.length === 1 ? list[0] : null);
       if (auto) { setOpened(new Set([auto])); setExpanded(new Set([auto])); void loadTables(id, auto); }
     } catch (e) {
-      setError(errText(e));
-      // Kết nối hỏng (vd. mật khẩu lưu bị sai) → hiện form để nhập lại.
-      if (needsPassword) setNeedPw(true);
+      const msg = errText(e);
+      const secs = connectTimeoutSecs(e);
+      const shown = secs != null ? t("db.connectTimeout", { s: secs }) : msg;
+      setError(shown);
+      if (needsPassword && isAuthError(msg)) {
+        // Sai / thiếu mật khẩu (vd. mật khẩu lưu bị sai) → modal nhập lại.
+        setNeedPw(true);
+      } else {
+        // Timeout / sai host / mạng → màn "chưa kết nối" + hỏi đóng tab (như app SSH). Trước đây mọi lỗi đều
+        // mở modal mật khẩu (tưởng nhầm sai mật khẩu); SQLite lỗi thì quay spinner mãi.
+        setNeedPw(false);
+        setOffline(true);
+        useWorkbench.getState().focusTab(tab.id);
+        void confirmDialog({
+          title: t("db.connectFailTitle"),
+          message: t("db.connectFailClose", { name: conn.name, reason: shown }),
+          confirmLabel: t("db.closeTab"),
+        }).then((ok) => { if (ok) useWorkbench.getState().closeTab(tab.id); });
+      }
     } finally {
       setConnecting(false);
     }
@@ -1776,6 +1809,21 @@ function SessionBody({ tab }: { tab: Tab }) {
     const connectingScreen = (
       <div className="view">
         <Loading label={<><div>{tr("db.connectingTo")} <b>{conn.name}</b>…</div><div className="muted small">{DRIVERS[conn.driver].name} · {describe(conn)}</div></>} />
+      </div>
+    );
+    if (!connecting && !needPw && offline) return (
+      <div className="view">
+        <div className="empty conn-offline">
+          <Unplug />
+          <div><b>{conn.name}</b> — {tr("db.notConnected")}</div>
+          <div className="muted small">{DRIVERS[conn.driver].name} · {describe(conn)}</div>
+          {error && <div className="error-box pre"><TriangleAlert /> {error}</div>}
+          <div className="toolbar">
+            <button onClick={() => useWorkbench.getState().closeTab(tab.id)}><X />{tr("db.closeTab")}</button>
+            <button onClick={() => openForm(conn.id)}><Pencil />{tr("db.editConfig2")}</button>
+            <button className="primary" autoFocus onClick={() => void connect()}><RefreshCw />{tr("db.retryConnect")}</button>
+          </div>
+        </div>
       </div>
     );
     if (connecting || !needPw) return connectingScreen;

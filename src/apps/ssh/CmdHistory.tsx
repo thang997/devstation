@@ -8,6 +8,21 @@ import { listNav, rowKey } from "../../shell/listNav";
 import { useT } from "../../store/lang";
 import { ssh, errText, type ConnectCfg } from "./api";
 import { clearCommands, removeCommand, setNote, useCmdHistory, useCmdNotes } from "./cmdHistoryStore";
+import { cmdKind, KIND_ORDER, type CmdKind } from "./cmdKind";
+import type { TKey } from "../../store/lang";
+
+/** Nhãn loại tác vụ (đoán theo tên lệnh — xem cmdKind.ts). */
+const KIND_KEY: Record<CmdKind, TKey> = {
+  read: "ssh.kindRead", write: "ssh.kindWrite", modify: "ssh.kindModify", delete: "ssh.kindDelete",
+  service: "ssh.kindService", install: "ssh.kindInstall", network: "ssh.kindNetwork",
+};
+/** Cache theo nội dung lệnh (phân loại thuần, gọi lại cho mỗi lần lọc/vẽ). */
+const kindCache = new Map<string, CmdKind | null>();
+const kindOf = (cmd: string) => {
+  let k = kindCache.get(cmd);
+  if (k === undefined) { k = cmdKind(cmd); kindCache.set(cmd, k); }
+  return k;
+};
 
 type Src = "app" | "server";
 interface Row { cmd: string; ts?: number; n?: number }
@@ -27,6 +42,8 @@ export function CmdHistoryModal({ hostKey, title, cfg, allowServer, onClose }: {
   const [src, setSrc] = useState<Src>("app");
   const [q, setQ] = useState("");
   const [onlyNoted, setOnlyNoted] = useState(false);
+  /** Lọc theo loại tác vụ (null = tất cả, "none" = chưa nhận ra). */
+  const [kindF, setKindF] = useState<CmdKind | "none" | null>(null);
   const [server, setServer] = useState<string[] | null>(null);
   const [serverErr, setServerErr] = useState("");
   const [serverBusy, setServerBusy] = useState(false);
@@ -42,15 +59,22 @@ export function CmdHistoryModal({ hostKey, title, cfg, allowServer, onClose }: {
   };
   useEffect(() => { if (src === "server" && server == null && !serverBusy) loadServer(); }, [src]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const base: Row[] = useMemo(() => (src === "app" ? local : (server ?? []).map((cmd) => ({ cmd }))), [src, local, server]);
+  /** Số lệnh mỗi loại (trên toàn danh sách nguồn, chưa lọc) cho các nút lọc. */
+  const counts = useMemo(() => {
+    const c = new Map<CmdKind | "none", number>();
+    for (const r of base) { const k = kindOf(r.cmd) ?? "none"; c.set(k, (c.get(k) ?? 0) + 1); }
+    return c;
+  }, [base]);
   const rows: Row[] = useMemo(() => {
-    const base: Row[] = src === "app" ? local : (server ?? []).map((cmd) => ({ cmd }));
     const k = q.trim().toLowerCase();
     return base.filter((r) => {
       const note = notes[r.cmd];
       if (onlyNoted && !note) return false;
+      if (kindF && (kindOf(r.cmd) ?? "none") !== kindF) return false;
       return !k || r.cmd.toLowerCase().includes(k) || (note ?? "").toLowerCase().includes(k);
     });
-  }, [src, local, server, q, notes, onlyNoted]);
+  }, [base, q, notes, onlyNoted, kindF]);
 
   const api = useRef({
     copy: (cmd: string) => void copyText(cmd),
@@ -85,6 +109,19 @@ export function CmdHistoryModal({ hostKey, title, cfg, allowServer, onClose }: {
           <button disabled={!rows.length} onClick={copyAll} title={tr("ssh.cmdHistCopyAllHint")}><Copy />{tr("ssh.cmdHistCopyAll")}</button>
           {src === "server" && <button disabled={serverBusy} onClick={loadServer}><RefreshCw />{tr("ssh.refresh")}</button>}
           {src === "app" && <button className="danger" disabled={!local.length} onClick={clear}><Trash2 />{tr("ssh.cmdHistClear")}</button>}
+        </div>
+        <div className="cmdh-kinds" role="group" aria-label={tr("ssh.kindFilter")}>
+          <button className={`cmdh-chip ${kindF == null ? "on" : ""}`} onClick={() => setKindF(null)}>{tr("ssh.kindAll")} <span className="muted">{base.length}</span></button>
+          {KIND_ORDER.filter((k) => counts.get(k)).map((k) => (
+            <button key={k} className={`cmdh-chip k-${k} ${kindF === k ? "on" : ""}`} onClick={() => setKindF(kindF === k ? null : k)}>
+              <i className="cmdh-dot" />{tr(KIND_KEY[k])} <span className="muted">{counts.get(k)}</span>
+            </button>
+          ))}
+          {counts.get("none") ? (
+            <button className={`cmdh-chip ${kindF === "none" ? "on" : ""}`} onClick={() => setKindF(kindF === "none" ? null : "none")} title={tr("ssh.kindOtherHint")}>
+              {tr("ssh.kindOther")} <span className="muted">{counts.get("none")}</span>
+            </button>
+          ) : null}
         </div>
         {src === "server" && serverErr && <div className="error-box">{serverErr}</div>}
         <div className="cmdh-list" role="listbox" onKeyDown={(e) => listNav(e, { row: ".cmdh-row" })}>
@@ -139,7 +176,10 @@ const CmdRow = memo(function CmdRow({ cmd, ts, n, note, editing, removable, api 
       })}
     >
       <div className="cmdh-main">
-        <code className="cmdh-cmd" title={cmd}>{cmd}</code>
+        <div className="cmdh-line">
+          <KindTag cmd={cmd} />
+          <code className="cmdh-cmd" title={cmd}>{cmd}</code>
+        </div>
         {editing ? (
           <NoteEditor initial={note} onSave={(v) => api.current.save(cmd, v)} onCancel={api.current.cancel} />
         ) : note ? (
@@ -158,6 +198,12 @@ const CmdRow = memo(function CmdRow({ cmd, ts, n, note, editing, removable, api 
     </div>
   );
 });
+
+function KindTag({ cmd }: { cmd: string }) {
+  const tr = useT();
+  const k = kindOf(cmd);
+  return k ? <span className={`cmdh-kind k-${k}`}>{tr(KIND_KEY[k])}</span> : <span className="cmdh-kind none" />;
+}
 
 function NoteEditor({ initial, onSave, onCancel }: { initial: string; onSave: (v: string) => void; onCancel: () => void }) {
   const tr = useT();

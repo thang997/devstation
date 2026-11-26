@@ -195,3 +195,10 @@ export function dockerFs(cfg: ConnectCfg, container: string): FsDriver {
 }
 
 export const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/** Thao tác file bằng sudo trên host (thư mục cần quyền root). `install`: chép file tạm `path` đè lên `to` rồi xoá file tạm. */
+export const sudoFs = (cfg: SftpCfg, op: "touch" | "mkdir" | "rm" | "rmdir" | "rename" | "install", path: string, to?: string) =>
+  invoke<void>("ssh_sudo_fs", { cfg, op, path, to: to ?? null });
+
+/** Lỗi SFTP do thiếu quyền ghi. */
+export const isPermDenied = (e: unknown) => /permission denied/i.test(errText(e));

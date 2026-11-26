@@ -14,7 +14,7 @@ import { confirmDialog } from "../../shell/confirm";
 import { listNav, rowKey } from "../../shell/listNav";
 import { useT } from "../../store/lang";
 import { Loading, Spinner } from "../../shell/Loading";
-import { sftp, errText, type FsDriver, type SftpCfg, type SftpEntry, type SftpPreview } from "./api";
+import { sftp, errText, isPermDenied, sudoFs, type FsDriver, type SftpCfg, type SftpEntry, type SftpPreview } from "./api";
 
 /** Chặn preview ở ~2MB — file lớn hơn chỉ cho Download. */
 const PREVIEW_MAX = 2 * 1024 * 1024;
@@ -184,6 +184,29 @@ export const SftpPanel = memo(function SftpPanel({
 }) {
   const tr = useT();
   const drv = driver ?? sftp;
+  // ── Thư mục cần quyền root: phiên SFTP chạy bằng user SSH (không phải root như terminal đã `sudo`) → "Permission denied".
+  //    Hỏi một lần cho mỗi phiên panel rồi làm lại bằng sudo (lệnh ssh một-lần, tự điền mật khẩu SSH đã lưu). Chỉ host — container dùng docker exec.
+  const sudoOk = useRef(false);
+  const viaSudo = async (path: string, normal: () => Promise<void>, sudo: () => Promise<void>) => {
+    try {
+      await normal();
+    } catch (er) {
+      if (driver || !isPermDenied(er)) throw er;
+      if (!sudoOk.current) {
+        const ok = await confirmDialog({
+          title: tr("ssh.sudoTitle"),
+          message: tr("ssh.sudoAsk", { path, user: cfg.user }),
+          confirmLabel: tr("ssh.sudoRetry"),
+          danger: false,
+        });
+        if (!ok) throw new Error(tr("ssh.sftpNoPermission", { path, user: cfg.user }));
+        sudoOk.current = true;
+      }
+      await sudo();
+    }
+  };
+  /** File tạm trên /tmp (user SSH ghi được) để sudo chép vào chỗ cần quyền root. */
+  const tmpPath = (name: string) => `/tmp/.ds-up-${Date.now().toString(36)}-${name.replace(/[^\w.-]/g, "_")}`;
   const [sid, setSid] = useState<string | null>(null);
   const [opening, setOpening] = useState(true);
   const [openErr, setOpenErr] = useState("");
@@ -364,7 +387,12 @@ export const SftpPanel = memo(function SftpPanel({
     if (typeof local !== "string") return;
     setBusy(true);
     try {
-      await drv.put(sid, local, joinPath(cwd, baseName(local)));
+      const dest = joinPath(cwd, baseName(local));
+      await viaSudo(dest, () => drv.put(sid, local, dest), async () => {
+        const tmp = tmpPath(baseName(local));
+        await drv.put(sid, local, tmp);
+        await sudoFs(cfg, "install", tmp, dest);
+      });
       await load(sid, cwd);
     } catch (er) {
       setErr(errText(er));
@@ -384,7 +412,7 @@ export const SftpPanel = memo(function SftpPanel({
     setBusy(true);
     try {
       const path = joinPath(cwd, e.name);
-      await (e.kind === "dir" ? drv.rmdir(sid, path) : drv.rm(sid, path));
+      await viaSudo(path, () => (e.kind === "dir" ? drv.rmdir(sid, path) : drv.rm(sid, path)), () => sudoFs(cfg, e.kind === "dir" ? "rmdir" : "rm", path));
       await load(sid, cwd);
     } catch (er) {
       setErr(errText(er));
@@ -399,7 +427,9 @@ export const SftpPanel = memo(function SftpPanel({
     if (!sid || !nm || nm === e.name) return;
     setBusy(true);
     try {
-      await drv.rename(sid, joinPath(cwd, e.name), joinPath(cwd, nm));
+      const from = joinPath(cwd, e.name);
+      const to = joinPath(cwd, nm);
+      await viaSudo(from, () => drv.rename(sid, from, to), () => sudoFs(cfg, "rename", from, to));
       await load(sid, cwd);
     } catch (er) {
       setErr(errText(er));
@@ -415,7 +445,8 @@ export const SftpPanel = memo(function SftpPanel({
     if (!sid || !nm) return;
     setBusy(true);
     try {
-      await drv.mkdir(sid, joinPath(cwd, nm));
+      const path = joinPath(cwd, nm);
+      await viaSudo(path, () => drv.mkdir(sid, path), () => sudoFs(cfg, "mkdir", path));
       await load(sid, cwd);
     } catch (er) {
       setErr(errText(er));
@@ -433,7 +464,8 @@ export const SftpPanel = memo(function SftpPanel({
     if (!sid || dir === null || !nm) return;
     setBusy(true);
     try {
-      await drv.touch(sid, joinPath(dir, nm));
+      const path = joinPath(dir, nm);
+      await viaSudo(path, () => drv.touch(sid, path), () => sudoFs(cfg, "touch", path));
       if (dir === cwd) await load(sid, cwd);
     } catch (er) {
       setErr(errText(er));
@@ -649,7 +681,12 @@ export const SftpPanel = memo(function SftpPanel({
           onClose={() => setPreview(null)}
           onDownload={() => void download(preview.e)}
           onSave={async (text) => {
-            await drv.write(sid, joinPath(cwd, preview.e.name), text);
+            const path = joinPath(cwd, preview.e.name);
+            await viaSudo(path, () => drv.write(sid, path, text), async () => {
+              const tmp = tmpPath(preview.e.name);
+              await drv.write(sid, tmp, text);
+              await sudoFs(cfg, "install", tmp, path);
+            });
             setPreview((x) => (x ? { ...x, p: { ...x.p, data: text, size: new TextEncoder().encode(text).length } } : x));
             void load(sid, cwd);
           }}
