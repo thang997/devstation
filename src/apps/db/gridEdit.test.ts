@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildUpdates, countSql, isPageable, orderedSql, pagedSql, parseSourceTable, sortRows, sqlLiteral } from "./gridEdit";
+import { bitLiteral, buildUpdates, countSql, isPageable, orderedSql, pagedSql, parseSourceTable, sortRows, sqlLiteral } from "./gridEdit";
 
 describe("parseSourceTable", () => {
   it("nhận câu SELECT đơn bảng (có/không schema, alias, WHERE/ORDER/LIMIT)", () => {
@@ -40,6 +40,21 @@ describe("buildUpdates", () => {
       pkCols: ["id"],
     });
     expect(out).toEqual([{ row: 1, sql: "UPDATE `shop`.`users` SET `id` = '99', `note` = NULL WHERE `id` = '2';" }]);
+  });
+  it("cột BIT (MySQL) ghi số trần, không bọc nháy", () => {
+    const edits = new Map([[0, new Map<number, string | null>([[1, "0"], [2, "b'1'"], [3, "abc"]])]]);
+    const out = buildUpdates({
+      driver: "mysql",
+      tableRef: "`t`",
+      columns: ["id", "isactive", "flags", "name"],
+      rows: [["1", "1", "0", "x"]],
+      edits,
+      pkCols: ["id"],
+      bitCols: [1, 2],
+    });
+    expect(out[0].sql).toBe("UPDATE `t` SET `isactive` = 0, `flags` = b'1', `name` = 'abc' WHERE `id` = '1';");
+    expect(bitLiteral("x'y", "mysql")).toBe("'x''y'");
+    expect(bitLiteral(null, "mysql")).toBe("NULL");
   });
 });
 

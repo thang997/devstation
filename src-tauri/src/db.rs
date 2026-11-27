@@ -78,6 +78,10 @@ pub struct QueryOut {
     truncated: bool,
     /// Cassandra phân trang bằng driver: token (base64) để lấy trang kế; None = hết dữ liệu.
     paging_state: Option<String>,
+    /// MySQL: chỉ số các cột kiểu BIT (giá trị đã đổi ra số thập phân) — UI ghi lại bằng số trần, không bọc nháy
+    /// (`'1'` vào cột BIT là chuỗi nhị phân 0x31 → lỗi "Data too long").
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    bit_cols: Vec<usize>,
 }
 
 #[derive(Serialize)]
@@ -254,8 +258,19 @@ macro_rules! cell {
 }
 
 /// Chạy SQL trên một pool cụ thể. Viết bằng macro để khỏi phải khai báo trait bound generic của sqlx.
+/// MySQL BIT qua giao thức text là byte thô big-endian (`\x01`) → đổi ra số thập phân ("1", "0", BIT(n) → số).
+fn bit_to_string(b: &[u8]) -> String {
+    if b.len() > 8 {
+        return format!("0x{}", b.iter().map(|x| format!("{x:02x}")).collect::<String>());
+    }
+    b.iter().fold(0u64, |acc, x| (acc << 8) | *x as u64).to_string()
+}
+
 macro_rules! run_on {
-    ($pool:expr, $sql:expr, $limit:expr) => {{
+    ($pool:expr, $sql:expr, $limit:expr) => {
+        run_on!($pool, $sql, $limit, false)
+    };
+    ($pool:expr, $sql:expr, $limit:expr, $mysql:expr) => {{
         let mut out = QueryOut::default();
         let mut stream = sqlx::raw_sql($sql).fetch_many($pool);
         // Câu lệnh mới bắt đầu trả dòng → bỏ kết quả của câu trước, chỉ giữ câu cuối.
@@ -272,6 +287,16 @@ macro_rules! run_on {
                 Either::Right(row) => {
                     if fresh {
                         out.columns = row.columns().iter().map(|c| c.name().to_string()).collect();
+                        out.bit_cols = if $mysql {
+                            row.columns()
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, c)| sqlx::TypeInfo::name(c.type_info()).eq_ignore_ascii_case("BIT"))
+                                .map(|(i, _)| i)
+                                .collect()
+                        } else {
+                            Vec::new()
+                        };
                         out.rows.clear();
                         out.truncated = false;
                         fresh = false;
@@ -280,7 +305,20 @@ macro_rules! run_on {
                         out.truncated = true;
                         continue;
                     }
-                    out.rows.push((0..row.len()).map(|i| cell!(row, i)).collect());
+                    let bits = &out.bit_cols;
+                    let cells = (0..row.len())
+                        .map(|i| {
+                            if bits.contains(&i) {
+                                match row.try_get_unchecked::<Option<Vec<u8>>, _>(i) {
+                                    Ok(v) => v.map(|b| bit_to_string(&b)),
+                                    Err(_) => cell!(row, i),
+                                }
+                            } else {
+                                cell!(row, i)
+                            }
+                        })
+                        .collect();
+                    out.rows.push(cells);
                 }
             }
         }
@@ -298,7 +336,7 @@ async fn run(pool: &Pool, sql: &str, limit: usize) -> Result<QueryOut, String> {
     let started = Instant::now();
     let mut out = match pool {
         Pool::Pg(p) => run_on!(p, sql, limit),
-        Pool::My(p) => run_on!(p, sql, limit),
+        Pool::My(p) => run_on!(p, sql, limit, true),
         Pool::Lite(p) => run_on!(p, sql, limit),
         Pool::Cass(s) => run_cass(s, sql, limit).await,
     }?;

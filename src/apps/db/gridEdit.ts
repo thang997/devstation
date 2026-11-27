@@ -49,6 +49,14 @@ export function sqlLiteral(v: string | null, driver: GridDriver): string {
   return `'${s}'`;
 }
 
+/** Giá trị cho cột BIT (MySQL): số → số trần; `b'0101'` / `0x..` giữ nguyên; còn lại bọc nháy như thường. */
+export function bitLiteral(v: string | null, driver: GridDriver): string {
+  if (v === null) return "NULL";
+  const s = v.trim();
+  if (/^\d+$/.test(s) || /^b'[01]*'$/i.test(s) || /^0x[0-9a-f]+$/i.test(s)) return s;
+  return sqlLiteral(v, driver);
+}
+
 /**
  * Sinh câu UPDATE cho từng dòng có ô sửa. `rows` là dữ liệu GỐC (chưa sửa) → WHERE theo khoá chính gốc,
  * nên sửa cả cột khoá chính vẫn đúng dòng.
@@ -60,8 +68,12 @@ export function buildUpdates(opts: {
   rows: (string | null)[][];
   edits: GridEdits;
   pkCols: string[];
+  /** MySQL: chỉ số cột kiểu BIT — ghi bằng số trần (`'1'` vào cột BIT là chuỗi nhị phân 0x31 → lỗi). */
+  bitCols?: number[];
 }): { row: number; sql: string }[] {
   const { driver, tableRef, columns, rows, edits, pkCols } = opts;
+  const bits = new Set(opts.bitCols ?? []);
+  const lit = (c: number, v: string | null) => (bits.has(c) ? bitLiteral(v, driver) : sqlLiteral(v, driver));
   const out: { row: number; sql: string }[] = [];
   const rowIdxs = [...edits.keys()].sort((a, b) => a - b);
   for (const r of rowIdxs) {
@@ -69,10 +81,11 @@ export function buildUpdates(opts: {
     if (!cells || !cells.size) continue;
     const set = [...cells.entries()]
       .sort(([a], [b]) => a - b)
-      .map(([c, v]) => `${quoteIdent(columns[c], driver)} = ${sqlLiteral(v, driver)}`);
+      .map(([c, v]) => `${quoteIdent(columns[c], driver)} = ${lit(c, v)}`);
     const where = pkCols.map((pk) => {
-      const v = rows[r][columns.indexOf(pk)];
-      return v === null ? `${quoteIdent(pk, driver)} IS NULL` : `${quoteIdent(pk, driver)} = ${sqlLiteral(v, driver)}`;
+      const c = columns.indexOf(pk);
+      const v = rows[r][c];
+      return v === null ? `${quoteIdent(pk, driver)} IS NULL` : `${quoteIdent(pk, driver)} = ${lit(c, v)}`;
     });
     out.push({ row: r, sql: `UPDATE ${tableRef} SET ${set.join(", ")} WHERE ${where.join(" AND ")};` });
   }

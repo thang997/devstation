@@ -94,6 +94,8 @@ interface QueryOut {
   paging?: { base: string; page: number; size: number; hasNext: boolean; cass?: { states: (string | null)[] } };
   /** Cassandra: token để lấy trang kế (backend trả về); null/undefined = hết dữ liệu. */
   pagingState?: string | null;
+  /** MySQL: chỉ số các cột kiểu BIT (giá trị đã là số thập phân) — ghi lại bằng số trần. */
+  bitCols?: number[];
   /** Đang sắp theo cột nào của lưới (bấm tiêu đề cột): phân trang → ORDER BY phía server, không thì sắp phía UI. */
   sort?: GridSort;
 }
@@ -1634,7 +1636,10 @@ function SessionBody({ tab }: { tab: Tab }) {
     if (withData) {
       const data = await call<QueryOut>("db_query", { id: dbId!, sql: `SELECT * FROM ${ref} LIMIT 5000`, limit: 5000 });
       if (data.columns.length && data.rows.length) {
-        const esc = (v: string | null) => (v === null ? "NULL" : `'${v.replace(/'/g, "''")}'`);
+        const bits = new Set(data.bitCols ?? []);
+        // Cột BIT (MySQL) là số → ghi số trần; bọc nháy sẽ thành chuỗi nhị phân ('1' = 0x31).
+        const esc = (v: string | null, c: number) =>
+          v === null ? "NULL" : bits.has(c) && /^\d+$/.test(v) ? v : `'${v.replace(/'/g, "''")}'`;
         const colList = data.columns.map(qi).join(", ");
         content += "\n" + data.rows.map((r) => `INSERT INTO ${ref} (${colList}) VALUES (${r.map(esc).join(", ")});`).join("\n") + "\n";
         if (data.truncated) content += `-- (only first ${data.rows.length} rows dumped)\n`;
@@ -2553,7 +2558,7 @@ const ResultGrid = memo(function ResultGrid({ out: initial, title, editor, pager
 
   const save = async () => {
     if (!t?.ok || !editor || !nChanges) return;
-    const stmts = buildUpdates({ driver: editor.driver, tableRef: t.tableRef, columns: out.columns, rows, edits, pkCols: t.pkCols });
+    const stmts = buildUpdates({ driver: editor.driver, tableRef: t.tableRef, columns: out.columns, rows, edits, pkCols: t.pkCols, bitCols: out.bitCols });
     setSaving(true);
     setNote(null);
     const res = await editor.save(stmts.map((x) => x.sql));
