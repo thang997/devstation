@@ -1,26 +1,30 @@
 import { useSyncExternalStore } from "react";
 import { Clock, Download, RotateCw, X } from "lucide-react";
-import { isTauri } from "@tauri-apps/api/core";
-import type { Update } from "@tauri-apps/plugin-updater";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { Modal } from "./Modal";
 import { Spinner } from "./Loading";
 import { t, useT } from "../store/lang";
 
 /**
- * Tự cập nhật kiểu GitHub Desktop (tauri-plugin-updater):
- *   kiểm tra latest.json trên GitHub Releases (lúc mở + mỗi 30 phút) → có bản mới thì TỰ TẢI NGẦM
- *   (download, kiểm chữ ký) → status bar hiện "⟳ Restart to update" → bấm → install (NSIS chế độ quiet,
- *   không hiện cửa sổ cài) rồi app tự mở lại vào bản mới.
+ * Tự cập nhật kiểu GitHub Desktop — tải + giữ bản mới ở PHÍA RUST (`src-tauri/src/update.rs`):
+ *   cửa sổ main kiểm tra latest.json (lúc mở + mỗi 30 phút) → có bản mới thì Rust TỰ TẢI NGẦM (kiểm chữ ký, status bar
+ *   không hiện gì) → xong phát `ds-update` tới mọi cửa sổ → status bar hiện "⬇ vX" → bấm → modal ghi chú:
+ *   "Khởi động lại ngay" = cài (NSIS quiet) + mở lại; "Muộn hơn" = giữ bản đã tải, TẮT HẲN APP LÀ CÀI LUÔN (không mở
+ *   lại) → lần mở sau là bản mới. Trước đây byte bản mới nằm trong cửa sổ main (API JS) → tắt app là mất.
  * Không chạy ở `app:dev` và ngoài Tauri.
  */
+
+/** Thông tin bản mới (từ Rust `UpdInfo`). */
+interface UpdInfo { version: string; currentVersion: string; body?: string | null }
+interface UpdStatus { phase: "idle" | "downloading" | "ready"; info: UpdInfo | null; done: number; total: number }
 
 type State =
   | { kind: "idle" }
   | { kind: "checking" }
   | { kind: "none" }
-  | { kind: "downloading"; update: Update; done: number; total: number }
-  | { kind: "ready"; update: Update }
-  | { kind: "installing"; update: Update }
+  | { kind: "downloading"; update: UpdInfo; done: number; total: number }
+  | { kind: "ready"; update: UpdInfo }
+  | { kind: "installing"; update: UpdInfo }
   | { kind: "error"; message: string };
 
 let state: State = { kind: "idle" };
@@ -42,12 +46,40 @@ if (isTauri()) {
 }
 export const useAppVersion = () => useSyncExternalStore(subscribe, () => appVersion);
 const useModalOpen = () => useSyncExternalStore(subscribe, () => modalOpen);
-export const openUpdateModal = () => { modalOpen = true; emit(); };
+export const openUpdateModal = () => { modalOpen = true; emit(); pollWhileDownloading(); };
 const closeUpdateModal = () => { modalOpen = false; emit(); };
 
-/** Kiểm tra bản mới. `manual` = người dùng bấm (mở modal báo kết quả, kể cả lỗi / đã mới nhất). */
+const enabled = isTauri() && !import.meta.env.DEV;
+
+/** Áp trạng thái từ Rust (không đè trạng thái "đang cài" / lỗi người dùng đang xem). */
+function apply(st: UpdStatus) {
+  if (state.kind === "installing") return;
+  if (st.phase === "ready" && st.info) set({ kind: "ready", update: st.info });
+  else if (st.phase === "downloading" && st.info) set({ kind: "downloading", update: st.info, done: st.done, total: st.total });
+}
+
+// Mọi cửa sổ: đồng bộ trạng thái lúc mở (bản mới có thể đã tải xong từ trước) + nghe `ds-update` của Rust.
+if (enabled) {
+  void invoke<UpdStatus>("update_status").then(apply).catch(() => {});
+  void import("@tauri-apps/api/event").then(({ listen }) => listen<UpdStatus>("ds-update", (e) => apply(e.payload))).catch(() => {});
+}
+
+/** Modal đang mở lúc tải (người dùng bấm kiểm tra) → đọc tiến trình mỗi 500ms cho thanh %; status bar không hiện %. */
+let polling = false;
+function pollWhileDownloading() {
+  if (!enabled || polling) return;
+  polling = true;
+  const tick = async () => {
+    if (!modalOpen || state.kind !== "downloading") { polling = false; return; }
+    apply(await invoke<UpdStatus>("update_status").catch(() => ({ phase: "idle", info: null, done: 0, total: 0 } as UpdStatus)));
+    setTimeout(() => void tick(), 500);
+  };
+  void tick();
+}
+
+/** Kiểm tra bản mới (Rust tự tải ngầm nếu có). `manual` = người dùng bấm (mở modal báo kết quả, kể cả lỗi / đã mới nhất). */
 export async function checkForUpdate(manual = false) {
-  if (!isTauri() || import.meta.env.DEV) {
+  if (!enabled) {
     if (manual) { set({ kind: "error", message: t("shell.updateChecksOnlyWorkInThe") }); openUpdateModal(); }
     return;
   }
@@ -58,47 +90,26 @@ export async function checkForUpdate(manual = false) {
   }
   set({ kind: "checking" });
   if (manual) openUpdateModal();
+  if (manual) setTimeout(pollWhileDownloading, 800); // check xong mới bắt đầu tải → theo dõi tiến trình trong modal
   try {
-    const { check } = await import("@tauri-apps/plugin-updater");
-    const update = await check();
-    if (!update) { set({ kind: "none" }); return; }
-    void downloadInBackground(update, manual);
+    const st = await invoke<UpdStatus>("update_check");
+    if (st.phase === "idle") set({ kind: "none" });
+    else apply(st);
   } catch (e) {
     // Lỗi mạng khi tự kiểm tra → im lặng (thử lại ở lần định kỳ sau); chỉ báo khi người dùng tự bấm.
     set(manual ? { kind: "error", message: String(e) } : { kind: "idle" });
   }
 }
 
-/** Tải bản mới ngầm (không cài) — xong thì chuyển sang "ready" chờ người dùng bấm khởi động lại. */
-async function downloadInBackground(update: Update, manual: boolean) {
-  let done = 0;
-  let total = 0;
-  set({ kind: "downloading", update, done, total });
-  try {
-    await update.download((ev) => {
-      if (ev.event === "Started") total = ev.data.contentLength ?? 0;
-      else if (ev.event === "Progress") done += ev.data.chunkLength;
-      set({ kind: "downloading", update, done, total });
-    });
-    set({ kind: "ready", update });
-  } catch (e) {
-    set(manual ? { kind: "error", message: String(e) } : { kind: "idle" });
-  }
-}
-
-/** Cài bản đã tải + khởi động lại. Trên Windows install() tự đóng app; trình cài (quiet) mở lại app. */
-async function restartToUpdate(update: Update) {
+/** "Khởi động lại ngay": Rust cài bản đã tải + mở lại app (Windows: app thoát ngay, trình cài quiet mở lại). */
+async function restartToUpdate(update: UpdInfo) {
   set({ kind: "installing", update });
   try {
-    await update.install();
-    const { relaunch } = await import("@tauri-apps/plugin-process");
-    await relaunch(); // macOS/Linux; Windows thường không tới đây vì app đã được đóng để cài
+    await invoke("update_install");
   } catch (e) {
     set({ kind: "error", message: String(e) });
   }
 }
-
-const pct = (done: number, total: number) => (total ? `${Math.min(100, Math.round((done / total) * 100))}%` : "");
 
 /** Version hiện tại ở status bar — bấm để kiểm tra cập nhật. */
 export function VersionLabel() {
@@ -112,21 +123,22 @@ export function VersionLabel() {
   );
 }
 
-/** Nút ở status bar: đang tải ngầm (mờ) → "⟳ Restart to update" (nổi bật). */
+/** Nút ở status bar: đang tải ngầm → KHÔNG hiện gì; tải xong → "⬇ v<mới>", bấm → modal ghi chú cập nhật +
+ *  "Khởi động lại ngay" (cài bản đã tải sẵn); đang cài → spinner. */
 export function UpdateButton() {
   const s = useUpdateState();
   const tr = useT();
-  if (s.kind === "downloading") {
+  if (s.kind === "ready") {
     return (
-      <button className="sb-version" onClick={openUpdateModal} title={tr("shell.downloadingInBackground")}>
-        <Download /> v{s.update.version} {pct(s.done, s.total)}
+      <button className="sb-update" onClick={openUpdateModal} title={tr("shell.updateReady", { version: s.update.version })}>
+        <Download /> v{s.update.version}
       </button>
     );
   }
-  if (s.kind === "ready" || s.kind === "installing") {
+  if (s.kind === "installing") {
     return (
-      <button className="sb-update" onClick={openUpdateModal} title={tr("shell.updateReady", { version: s.update.version })}>
-        {s.kind === "installing" ? <Spinner /> : <RotateCw />} {s.kind === "installing" ? tr("shell.installing") : tr("shell.restartToUpdate")}
+      <button className="sb-update" onClick={openUpdateModal} title={tr("shell.installing")}>
+        <Spinner /> {tr("shell.installing")}
       </button>
     );
   }
@@ -160,7 +172,7 @@ export function UpdateHost() {
                 <div className="muted small">{tr("shell.downloadingInBackground")}</div>
               </div>
             )}
-            {s.kind === "ready" && <div className="muted small">{tr("shell.restartWarning")}</div>}
+            {s.kind === "ready" && <div className="muted small">{tr("shell.restartWarning")} {tr("shell.laterInstallsOnExit")}</div>}
             {s.kind === "installing" && <div className="muted small">{tr("shell.installing")}</div>}
           </>
         )}

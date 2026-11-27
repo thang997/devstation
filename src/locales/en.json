@@ -903,7 +903,8 @@
     "youReOnTheLatestVersion": "You're on the latest version.",
     "tabCount": "{n} tab(s)",
     "output": "OUTPUT",
-    "closePanel": "Close panel"
+    "closePanel": "Close panel",
+    "laterInstallsOnExit": "Choose Later and the update installs automatically when you fully close the app."
   },
   "ssh": {
     "addAHostToOpenA": "Add a host to open a real terminal (via the machine's ssh.exe), create MobaXterm-style tunnels (-L/-R/-D).",

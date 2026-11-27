@@ -903,7 +903,8 @@
     "youReOnTheLatestVersion": "Bạn đang dùng phiên bản mới nhất.",
     "tabCount": "{n} tab",
     "output": "OUTPUT",
-    "closePanel": "Đóng panel"
+    "closePanel": "Đóng panel",
+    "laterInstallsOnExit": "Chọn Để sau thì bản mới tự cài khi bạn tắt hẳn app."
   },
   "ssh": {
     "addAHostToOpenA": "Thêm host để mở terminal thật (qua ssh.exe của máy), tạo tunnel kiểu MobaXterm (-L/-R/-D).",

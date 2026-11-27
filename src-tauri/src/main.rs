@@ -15,6 +15,7 @@ mod registry;
 mod sftp;
 mod ssh;
 mod webtr;
+mod update;
 
 /// Lệnh mẫu để UI kiểm tra cầu nối Rust ↔ webview.
 /// Các module git / http / ssh sẽ đăng ký lệnh của mình vào đây.
@@ -51,6 +52,7 @@ fn main() {
         .manage(owners::Owners::default())
         .manage(registry::RegistryState::default())
         .manage(pdf::PdfState::default())
+        .manage(update::UpdState::default())
         .setup(|app| {
             git::init(app.handle().clone());
             pdf::init(app.handle());
@@ -211,6 +213,9 @@ fn main() {
             pdf::pdf_default_status,
             pdf::pdf_register_default,
             pdf::pdf_unregister_default,
+            update::update_status,
+            update::update_check,
+            update::update_install,
             pdf::pdf_open_settings,
         ])
         .build(tauri::generate_context!())
@@ -220,6 +225,8 @@ fn main() {
             if let tauri::RunEvent::Exit = ev {
                 ssh::kill_all(&app.state::<ssh::SshState>());
                 sftp::kill_all(&app.state::<sftp::SftpState>());
+                // Đã tải sẵn bản mới mà chọn "Muộn hơn" → tắt hẳn app là cài luôn (không mở lại app).
+                update::install_on_exit(&app.state::<update::UpdState>());
             }
         });
 }

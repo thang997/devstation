@@ -29,9 +29,18 @@ pub struct PdfState {
 }
 
 /// Lọc các tham số dòng lệnh là file .pdf có thật (tương đối thì tính theo `cwd`).
+/// Tên file tạm chỉ dùng để mở hộp thoại "How do you want to open .pdf files?" khi đặt app mặc định. OpenWith.exe
+/// LUÔN mở file bằng app vừa chọn → DevStation nhận file này qua dòng lệnh → phải bỏ qua (không mở tab nào).
+pub const CHOOSER_FILE: &str = "DevStation-default-app.pdf";
+#[cfg_attr(not(windows), allow(dead_code))]
+const MINI_PDF: &[u8] = b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n";
+fn is_chooser_file(a: &str) -> bool {
+    std::path::Path::new(a).file_name().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(CHOOSER_FILE))
+}
+
 pub fn pdf_args<I: IntoIterator<Item = String>>(args: I, cwd: Option<&std::path::Path>) -> Vec<String> {
     args.into_iter()
-        .filter(|a| !a.starts_with('-') && a.to_ascii_lowercase().ends_with(".pdf"))
+        .filter(|a| !a.starts_with('-') && a.to_ascii_lowercase().ends_with(".pdf") && !is_chooser_file(a))
         .map(|a| {
             let p = std::path::PathBuf::from(&a);
             match (p.is_absolute(), cwd) {
@@ -65,6 +74,10 @@ pub fn init(app: &tauri::AppHandle) {
 /// file → chỉ đưa cửa sổ lên trước.
 #[cfg_attr(debug_assertions, allow(dead_code))] // chỉ dùng ở bản cài (single-instance)
 pub fn on_second_instance(app: &tauri::AppHandle, argv: Vec<String>, cwd: String) {
+    // Mở từ hộp thoại chọn app mặc định (file tạm) → không mở file, không đưa cửa sổ nào lên.
+    if argv.iter().skip(1).any(|a| is_chooser_file(a)) {
+        return;
+    }
     let files = pdf_args(argv.into_iter().skip(1), Some(std::path::Path::new(&cwd)));
     let wins = app.webview_windows();
     let target = ["app-pdf", "main"]
@@ -1320,17 +1333,14 @@ pub async fn pdf_register_default(file: Option<String>) -> Result<DefaultStatus,
         write_registration(&exe)?;
         del_value("Software\\DevStation", OPT_OUT); // chủ động đăng ký lại → bỏ dấu "đã gỡ"
 
-        // Hộp thoại cần một tên file .pdf: dùng file đang mở, không có thì một file tạm (chỉ để chọn app, không mở).
-        let target = match file.filter(|f| std::path::Path::new(f).is_file()) {
-            Some(f) => f,
-            None => {
-                let p = std::env::temp_dir().join("DevStation.pdf");
-                if !p.is_file() {
-                    std::fs::write(&p, b"%PDF-1.4\n%%EOF\n").map_err(|e| e.to_string())?;
-                }
-                p.to_string_lossy().into_owned()
-            }
-        };
+        // Hộp thoại cần một file .pdf. LUÔN dùng file tạm riêng (`CHOOSER_FILE`): chọn xong Windows mở file bằng app
+        // vừa chọn → DevStation nhận ra tên này và bỏ qua (trước đây mở ra một tab file tạm). `file` giữ cho tương thích.
+        let _ = file;
+        let p = std::env::temp_dir().join(CHOOSER_FILE);
+        if !p.is_file() {
+            std::fs::write(&p, MINI_PDF).map_err(|e| e.to_string())?;
+        }
+        let target = p.to_string_lossy().into_owned();
         let openwith = std::env::var_os("SystemRoot")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| "C:\\Windows".into())
