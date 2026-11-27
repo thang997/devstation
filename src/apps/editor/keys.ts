@@ -9,7 +9,7 @@ export type ActionId =
   | "new" | "open" | "save" | "saveAs" | "reload"
   | "format" | "minify" | "b64decode" | "b64encode" | "urlDecode" | "urlEncode" | "jwtDecode"
   | "upper" | "lower" | "sortAsc" | "sortDesc" | "unique" | "trimTrailing" | "joinLines" | "removeEmpty"
-  | "validate" | "gotoLine" | "replace" | "duplicateLine" | "wrap" | "zoomIn" | "zoomOut" | "zoomReset" | "shortcuts";
+  | "validate" | "gotoLine" | "replace" | "duplicateLine" | "wrap" | "zoomIn" | "zoomOut" | "zoomReset" | "shortcuts" | "preview";
 
 export interface Shortcut {
   /** Phím hiển thị (Windows). */
@@ -82,6 +82,7 @@ export const SHORTCUTS: ShortcutGroup[] = [
   {
     title: "editor.kgView",
     items: [
+      { keys: "Ctrl+Alt+P", cm: "Mod-Alt-p", action: "preview", label: "editor.aPreview" },
       { keys: "Alt+Z", cm: "Alt-z", action: "wrap", label: "editor.aWrap" },
       { keys: "Ctrl+= / Ctrl+-", cm: "Mod-=", action: "zoomIn", label: "editor.aZoom" },
       { keys: "Ctrl+0", cm: "Mod-0", action: "zoomReset", label: "editor.aZoomReset" },

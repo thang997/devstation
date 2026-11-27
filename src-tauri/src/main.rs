@@ -226,6 +226,7 @@ fn main() {
             editor::editor_default_status,
             editor::editor_register_default,
             editor::editor_unregister_default,
+            editor::editor_open_in_browser,
             update::update_status,
             update::update_check,
             update::update_install,

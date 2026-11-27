@@ -369,3 +369,39 @@ pub fn editor_unregister_default() -> Result<(), String> {
     #[cfg(not(windows))]
     Err("Chỉ hỗ trợ trên Windows".into())
 }
+
+/* ── Xem trước HTML: mở file đã lưu bằng TRÌNH DUYỆT mặc định (có JS + tài nguyên ngoài) ── */
+
+/// Mở file HTML bằng trình duyệt mặc định (app đang mở link `http`), KHÔNG bằng app mặc định của `.html` — người dùng
+/// có thể đã đặt Editor làm app cho `.html` → mở lại chính Editor. Chỉ nhận .html/.htm/.xhtml/.svg đang có trên đĩa.
+#[tauri::command]
+pub fn editor_open_in_browser(path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    let ext = p.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    if !["html", "htm", "xhtml", "svg"].contains(&ext.as_str()) || !p.is_file() {
+        return Err("Chỉ mở được file HTML đã lưu".into());
+    }
+    let url = format!("file:///{}", path.replace('\\', "/").replace(' ', "%20").replace('#', "%23"));
+    #[cfg(windows)]
+    {
+        // Trình duyệt mặc định = exe đang mở giao thức http.
+        let browser = crate::pdf::winreg::default_exe_for("http").filter(|b| !b.to_ascii_lowercase().ends_with("\\openwith.exe"));
+        match browser {
+            Some(b) => {
+                std::process::Command::new(b).arg(&url).spawn().map_err(|e| e.to_string())?;
+            }
+            None => return Err("Không tìm thấy trình duyệt mặc định".into()),
+        }
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open").arg(&url).spawn().map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open").arg(&url).spawn().map_err(|e| e.to_string())?;
+        Ok(())
+    }
+}

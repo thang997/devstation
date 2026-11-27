@@ -1364,7 +1364,8 @@ svg.pdf-home-ic { width: 40px; height: 40px; color: #ff7b72; }
 .ed-app.file-drop::after { content: ""; position: absolute; inset: 4px; border: 2px dashed var(--primary); border-radius: 0; background: color-mix(in srgb, var(--primary) 8%, transparent); pointer-events: none; z-index: 5; }
 .ed-tab { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .ed-tab > .toolbar { flex: 0 0 auto; border-bottom: 1px solid var(--line); padding: 4px 8px; gap: 4px; }
-.ed-host { flex: 1; min-height: 0; overflow: hidden; }
+.ed-body { flex: 1; min-height: 0; display: flex; }
+.ed-host { flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
 .ed-host .cm-editor { height: 100%; }
 .ed-status { flex: 0 0 auto; display: flex; align-items: center; gap: 14px; padding: 2px 10px; border-top: 1px solid var(--line); background: var(--bg-2); font-size: 12px; color: var(--muted); min-height: 24px; }
 .ed-status button { border: none; background: none; color: var(--muted); padding: 1px 4px; font-size: 12px; }
@@ -1386,3 +1387,9 @@ svg.pdf-home-ic { width: 40px; height: 40px; color: #ff7b72; }
 .tb-sep { width: 1px; align-self: stretch; background: var(--line); margin: 2px 4px; }
 .icon-btn.on { color: var(--accent); background: var(--bg-3); }
 .pdf-home-ic.ed-home-ic { color: #3fb950; } /* cùng màu icon Editor trong launcher */
+/* Xem trước HTML: khung phẳng như .pane, nội dung trên nền trắng như trình duyệt (HTML không đặt màu nền). */
+.ed-preview-wrap { display: flex; min-width: 0; min-height: 0; }
+.ed-preview { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; border-left: 1px solid var(--line); }
+.ed-preview .pane-title { border-radius: 0; }
+.ed-preview-note { font-weight: normal; }
+.ed-preview-frame { flex: 1; width: 100%; border: 0; background: #fff; }

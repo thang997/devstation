@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import {
   AlignLeft, Binary, CaseLower, CaseUpper, CheckCheck, Eraser, FilePlus, FileText, FolderOpen, Keyboard, Link2, ListOrdered,
-  Minimize2, Replace, RotateCcw, Save, Search, SortAsc, SortDesc, Unlink2, WrapText, Rows3, KeyRound, CopyMinus, Merge,
+  Minimize2, Replace, RotateCcw, Save, Search, SortAsc, SortDesc, Unlink2, WrapText, Rows3, KeyRound, CopyMinus, Merge, Eye,
 } from "lucide-react";
 import { Compartment, EditorSelection, EditorState, Prec, type Extension } from "@codemirror/state";
 import {
@@ -22,13 +22,15 @@ import { edHighlight, edTheme } from "./theme";
 import { LANGS, langLabel, loadLang, sniffLang, type LangId } from "./langs";
 import { EXTRA_KEYS, SHORTCUTS, keysOf, type ActionId } from "./keys";
 import {
-  TransformError, b64decode, b64encode, canFormat, canMinify, checkSyntax, formatText, joinLines, jwtDecode, minifyText,
+  type SyntaxIssue, TransformError, b64decode, b64encode, canFormat, canMinify, checkSyntax, formatText, joinLines, jwtDecode, minifyText,
   prettyIfJson, removeEmptyLines, sortLines, toLower, toUpper, trimTrailing, uniqueLines, urlDecode, urlEncode,
 } from "./transforms";
 import {
   getDoc, keepText, newDoc, openDialog, patchDoc, registerGetter, reload, save, scheduleDraft, takeInitial, useDocsVersion,
 } from "./store";
 import { openShortcuts } from "./ShortcutsModal";
+import { HtmlPreview } from "./HtmlPreview";
+import { Splitter, useSplitSize } from "../../shell/Resizable";
 
 const ENCODINGS: { id: string; enc: string; bom: boolean; label: string }[] = [
   { id: "utf-8", enc: "utf-8", bom: false, label: "UTF-8" },
@@ -41,10 +43,29 @@ const encLabel = (enc: string, bom: boolean) => ENCODINGS.find((e) => e.enc === 
 
 const LS_WRAP = "devstation.editor.wrap";
 const LS_FONT = "devstation.editor.fontSize";
+const LS_PREVIEW = "devstation.editor.preview";
+/** Ngôn ngữ có xem trước. */
+const PREVIEWABLE: LangId[] = ["html"];
 const CHECKABLE: LangId[] = ["json", "xml", "javascript"];
 
 /** Thông báo ở status bar: kết quả kiểm cú pháp / lỗi chuyển đổi. */
-interface Msg { kind: "good" | "bad" | "info"; text: string; pos?: number }
+interface Msg { kind: "good" | "bad" | "info"; text: string; pos?: number; sel?: [number, number] }
+
+/** Nhảy tới chỗ lỗi: đặt con trỏ (hoặc bôi đen đoạn lỗi), cuộn cho nó vào GIỮA khung (cả ngang — dòng JSON dài),
+ *  focus ô soạn để gõ sửa ngay. */
+function jumpTo(v: EditorView, caret: number, sel?: [number, number]) {
+  const selection = sel && sel[1] > sel[0] ? EditorSelection.range(sel[0], sel[1]) : EditorSelection.cursor(caret);
+  v.dispatch({ selection: EditorSelection.create([selection]), effects: EditorView.scrollIntoView(caret, { y: "center", x: "center" }) });
+  v.focus();
+}
+
+/** Câu báo lỗi cú pháp: "Dòng L, cột C: …" — JSON dùng câu dễ hiểu theo loại lỗi, XML/JS dùng thông báo của parser. */
+function issueText(i: SyntaxIssue): string {
+  const where = t("editor.errAt", { line: i.line, col: i.col });
+  if (!i.kind) return `${where}: ${i.message}`;
+  const key = `editor.json_${i.kind}` as TKey;
+  return `${where}: ${t(key, { close: i.expect ?? "" })}`;
+}
 
 /** Lỗi chuyển đổi → câu dịch (mã đã biết) hoặc thông báo gốc của parser. */
 function transformErr(e: unknown): string {
@@ -77,6 +98,18 @@ export const EditorTab = memo(function EditorTab({ tab }: { tab: Tab }) {
   const checkTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const sniffTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const api = useRef<{ run: (a: ActionId) => void }>({ run: () => {} });
+  /* ── Xem trước HTML (bật mặc định, nhớ localStorage); nội dung đẩy sang sau 300ms khi gõ ── */
+  const [previewOn, setPreviewOn] = useState(() => localStorage.getItem(LS_PREVIEW) !== "0");
+  const [previewHtml, setPreviewHtml] = useState("");
+  const [previewW, setPreviewW] = useSplitSize("editor.preview", 520, 240, 1400);
+  const previewTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  /** Đang hiện khung xem trước (EditorView.updateListener đọc qua ref — listener tạo một lần). */
+  const showPreviewRef = useRef(false);
+  const pushPreview = useCallback((now = false) => {
+    clearTimeout(previewTimer.current);
+    const go = () => { const v = viewRef.current; if (v && showPreviewRef.current) setPreviewHtml(v.state.doc.toString()); };
+    if (now) go(); else previewTimer.current = setTimeout(go, 300);
+  }, []);
 
   /* ── Kiểm cú pháp (JSON / XML / JS): gạch chân chỗ lỗi + status bar ── */
   const runCheck = useCallback(async (show: boolean) => {
@@ -97,14 +130,14 @@ export const EditorTab = memo(function EditorTab({ tab }: { tab: Tab }) {
       setMsg(text.trim() ? { kind: "good", text: t("editor.valid", { lang: langLabel(d.lang) }) } : null);
       return;
     }
-    const from = Math.min(issue.from, v.state.doc.length);
-    const to = Math.min(v.state.doc.length, from + 1);
-    v.dispatch(setDiagnostics(v.state, [{ from, to, severity: "error", message: issue.message }]));
-    setMsg({ kind: "bad", text: issue.message, pos: from });
-    if (show) {
-      v.dispatch({ selection: { anchor: from }, scrollIntoView: true });
-      v.focus();
-    }
+    const len = v.state.doc.length;
+    const from = Math.min(issue.from, len);
+    const to = Math.max(from, Math.min(len, issue.to));
+    const caret = Math.min(issue.caret, len);
+    const text2 = issueText(issue);
+    v.dispatch(setDiagnostics(v.state, [{ from, to: to > from ? to : Math.min(len, from + 1), severity: "error", message: text2 }]));
+    setMsg({ kind: "bad", text: text2, pos: caret, sel: issue.select ? [from, to] : undefined });
+    if (show) jumpTo(v, caret, issue.select ? [from, to] : undefined);
   }, [id]);
   const scheduleCheck = useCallback(() => {
     clearTimeout(checkTimer.current);
@@ -154,6 +187,7 @@ export const EditorTab = memo(function EditorTab({ tab }: { tab: Tab }) {
         if (u.docChanged) {
           if (!silent.current) scheduleDraft(id);
           scheduleCheck();
+          if (showPreviewRef.current) pushPreview();
           const d = getDoc(id);
           // Tab mới chưa chọn ngôn ngữ: dán JSON/XML… vào thì tự đoán.
           if (d && !d.path && !d.langManual && d.lang === "text") {
@@ -185,6 +219,7 @@ export const EditorTab = memo(function EditorTab({ tab }: { tab: Tab }) {
       registerGetter(id, null);
       clearTimeout(checkTimer.current);
       clearTimeout(sniffTimer.current);
+      clearTimeout(previewTimer.current);
       v.destroy();
       viewRef.current = null;
     };
@@ -210,6 +245,12 @@ export const EditorTab = memo(function EditorTab({ tab }: { tab: Tab }) {
     localStorage.setItem(LS_WRAP, wrap ? "1" : "0");
   }, [wrap]);
   useEffect(() => { localStorage.setItem(LS_FONT, String(font)); }, [font]);
+  const showPreview = previewOn && PREVIEWABLE.includes(lang);
+  useEffect(() => {
+    showPreviewRef.current = showPreview;
+    if (showPreview) pushPreview(true);
+  }, [showPreview, pushPreview]);
+  useEffect(() => { localStorage.setItem(LS_PREVIEW, previewOn ? "1" : "0"); }, [previewOn]);
 
   /* ── Áp chuyển đổi cho đoạn chọn (nhiều vùng chọn → từng vùng), không chọn gì → cả file ── */
   const transform = useCallback(async (fn: (s: string) => string | Promise<string>, okText?: string) => {
@@ -300,6 +341,10 @@ export const EditorTab = memo(function EditorTab({ tab }: { tab: Tab }) {
       case "zoomOut": setFont((f) => Math.max(8, f - 1)); break;
       case "zoomReset": setFont(13); break;
       case "shortcuts": openShortcuts(); break;
+      case "preview":
+        if (!PREVIEWABLE.includes(d.lang)) { setMsg({ kind: "info", text: tr("editor.cannotPreview", { lang: langLabel(d.lang) }) }); break; }
+        setPreviewOn((p) => !p);
+        break;
     }
   };
 
@@ -358,17 +403,30 @@ export const EditorTab = memo(function EditorTab({ tab }: { tab: Tab }) {
         <button className="icon-btn" title={`${tr("editor.aReplace")} (Ctrl+H)`} onClick={() => api.current.run("replace")}><Replace /></button>
         <button className="icon-btn" title={`${tr("editor.aGotoLine")} (Ctrl+L)`} onClick={() => api.current.run("gotoLine")}><ListOrdered /></button>
         <button className={`icon-btn ${wrap ? "on" : ""}`} title={`${tr("editor.aWrap")} (Alt+Z)`} onClick={() => api.current.run("wrap")}><WrapText /></button>
+        {PREVIEWABLE.includes(doc.lang) && (
+          <button className={`icon-btn ${showPreview ? "on" : ""}`} title={`${tr("editor.aPreview")} (Ctrl+Alt+P)`} onClick={() => api.current.run("preview")}><Eye /></button>
+        )}
         <span className="grow" />
         <button className="icon-btn" title={`${tr("editor.aShortcuts")} (F1)`} onClick={() => api.current.run("shortcuts")}><Keyboard /></button>
       </div>
-      <div className="ed-host" ref={host} style={{ ["--ed-font" as string]: `${font}px` }} onContextMenu={onContext} />
+      <div className="ed-body">
+        <div className="ed-host" ref={host} style={{ ["--ed-font" as string]: `${font}px` }} onContextMenu={onContext} />
+        {showPreview && (
+          <>
+            <Splitter axis="x" live="next" min={240} max={1400} onResize={(dx) => setPreviewW((w) => w - dx)} onReset={() => setPreviewW(520)} />
+            <div className="ed-preview-wrap" style={{ width: previewW, flex: "0 0 auto" }}>
+              <HtmlPreview html={previewHtml} path={doc.path} onClose={() => setPreviewOn(false)} />
+            </div>
+          </>
+        )}
+      </div>
       <div className="ed-status">
         <span>{tr("editor.lnCol", { line: pos.line, col: pos.col })}</span>
         {pos.sel > 0 && <span>{tr("editor.selected", { n: pos.sel })}</span>}
         <span>{tr("editor.lines", { n: pos.lines })}</span>
         <span className={`grow ellipsis ed-msg ${msg?.kind ?? ""}`} title={msg?.text}>
           {msg && (msg.pos != null
-            ? <button className="bad" onClick={() => { const v = viewRef.current; if (v && msg.pos != null) { v.dispatch({ selection: { anchor: msg.pos }, scrollIntoView: true }); v.focus(); } }}>{msg.text}</button>
+            ? <button className="bad" title={tr("editor.jumpToError")} onClick={() => { const v = viewRef.current; if (v && msg.pos != null) jumpTo(v, msg.pos, msg.sel); }}>{msg.text}</button>
             : msg.text)}
         </span>
         <Picker

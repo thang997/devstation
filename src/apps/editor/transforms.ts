@@ -4,6 +4,7 @@
  * SQL (sql-formatter) — các thư viện nặng chỉ tải khi dùng lần đầu.
  */
 import type { LangId } from "./langs";
+import { lintJson, type JsonErrKind } from "./jsonLint";
 
 /** Lỗi chuyển đổi hiển thị cho người dùng (không phải lỗi lập trình). */
 export class TransformError extends Error {}
@@ -152,7 +153,31 @@ export function minifyText(text: string, lang: LangId): string {
 
 /* ── Kiểm lỗi cú pháp (XML / JSON / JS) → vị trí lỗi để gạch chân + nhảy tới ── */
 
-export interface SyntaxIssue { from: number; message: string }
+export interface SyntaxIssue {
+  /** Đoạn gạch chân. */
+  from: number;
+  to: number;
+  /** Chỗ đặt con trỏ khi bấm Check (thiếu dấu → chỗ cần gõ dấu). */
+  caret: number;
+  /** Bôi đen đoạn lỗi thay vì chỉ đặt con trỏ (dấu thừa, token sai). */
+  select: boolean;
+  line: number;
+  col: number;
+  /** JSON: loại lỗi (UI dịch ra câu dễ hiểu); XML/JS: thông báo gốc của parser. */
+  kind?: JsonErrKind;
+  expect?: "]" | "}";
+  message: string;
+}
+
+const lineCol = (text: string, pos: number) => {
+  let line = 1, col = 1;
+  for (let k = 0; k < pos && k < text.length; k++) { if (text.charCodeAt(k) === 10) { line++; col = 1; } else col++; }
+  return { line, col };
+};
+const issueAt = (text: string, from: number, message: string): SyntaxIssue => {
+  const f = Math.min(Math.max(0, from), text.length);
+  return { from: f, to: Math.min(text.length, f + 1), caret: f, select: false, message, ...lineCol(text, f) };
+};
 
 /** Offset của dòng `line` (1-based), cột `col` (1-based). */
 function offsetOf(text: string, line: number, col: number): number {
@@ -169,10 +194,11 @@ export async function checkSyntax(text: string, lang: LangId): Promise<SyntaxIss
   if (!text.trim()) return null;
   if (lang === "json") {
     try { JSON.parse(text); return null; } catch (e) {
-      const msg = (e as Error).message;
-      const m = /position (\d+)/.exec(msg) ?? /line (\d+) column (\d+)/.exec(msg);
-      const from = m ? (m.length === 3 ? offsetOf(text, +m[1], +m[2]) : +m[1]) : 0;
-      return { from: Math.min(from, text.length), message: msg };
+      // Thông báo + vị trí của trình duyệt khó hiểu (trỏ vào token SAU chỗ thiếu) → tự dò lại cho chính xác.
+      const r = lintJson(text);
+      if (!r) return issueAt(text, 0, (e as Error).message);
+      const select = !["missingComma", "missingColon", "unexpectedEnd", "empty"].includes(r.kind);
+      return { from: r.from, to: r.to, caret: r.caret, select, line: r.line, col: r.col, kind: r.kind, expect: r.expect, message: (e as Error).message };
     }
   }
   if (lang === "xml") {
@@ -181,7 +207,7 @@ export async function checkSyntax(text: string, lang: LangId): Promise<SyntaxIss
     if (!err) return null;
     const msg = (err.textContent ?? "").replace(/\s+/g, " ").trim();
     const m = /line (\d+) at column (\d+)/i.exec(msg) ?? /line (\d+)[^\d]+(\d+)/i.exec(msg);
-    return { from: m ? offsetOf(text, +m[1], +m[2]) : 0, message: msg.replace(/^This page contains the following errors:\s*/i, "").replace(/Below is a rendering.*$/i, "") };
+    return issueAt(text, m ? offsetOf(text, +m[1], +m[2]) : 0, msg.replace(/^This page contains the following errors:\s*/i, "").replace(/Below is a rendering.*$/i, "").replace(/^error on line \d+ at column \d+:\s*/i, ""));
   }
   if (lang === "javascript") {
     const { parse } = await import("acorn");
@@ -190,7 +216,7 @@ export async function checkSyntax(text: string, lang: LangId): Promise<SyntaxIss
       return null;
     } catch (e) {
       const err = e as Error & { pos?: number };
-      return { from: Math.min(err.pos ?? 0, text.length), message: err.message };
+      return issueAt(text, err.pos ?? 0, err.message.replace(/\s*\(\d+:\d+\)$/, ""));
     }
   }
   return null;
