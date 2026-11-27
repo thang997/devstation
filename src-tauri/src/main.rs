@@ -3,6 +3,7 @@
 
 use tauri::Manager;
 
+mod editor;
 mod db;
 mod git;
 mod http;
@@ -53,6 +54,7 @@ fn main() {
         .manage(registry::RegistryState::default())
         .manage(pdf::PdfState::default())
         .manage(update::UpdState::default())
+        .manage(editor::EditorState::default())
         .setup(|app| {
             git::init(app.handle().clone());
             pdf::init(app.handle());
@@ -213,6 +215,17 @@ fn main() {
             pdf::pdf_default_status,
             pdf::pdf_register_default,
             pdf::pdf_unregister_default,
+            editor::editor_read,
+            editor::editor_write,
+            editor::editor_draft_put,
+            editor::editor_draft_get,
+            editor::editor_draft_del,
+            editor::editor_draft_gc,
+            editor::editor_has_pending,
+            editor::editor_take_pending,
+            editor::editor_default_status,
+            editor::editor_register_default,
+            editor::editor_unregister_default,
             update::update_status,
             update::update_check,
             update::update_install,

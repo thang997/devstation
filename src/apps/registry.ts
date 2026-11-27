@@ -1,6 +1,6 @@
 import { createElement } from "react";
 import type { AppId, AppManifest, AppModule } from "./types";
-import { Container, FileText, GitBranch, Languages, Send, SquareTerminal, Wrench, Zap, type LucideIcon } from "lucide-react";
+import { Container, FileCode2, FileText, GitBranch, Languages, Send, SquareTerminal, Wrench, Zap, type LucideIcon } from "lucide-react";
 import { DbIcon } from "../shell/icons";
 
 /** Icon app trong launcher / status bar: SVG lucide, mỗi app một màu (`.app-ic` cỡ theo chỗ dùng). */
@@ -67,6 +67,12 @@ export const APPS: AppManifest[] = [
     description: "View PDF files, check digital signatures, trust certificates",
     keywords: "pdf acrobat reader ky so chu ky chung thu signature certificate xem tai lieu",
     load: () => import("./pdf"),
+  },
+  {
+    id: "editor", title: "Editor", icon: "", iconNode: ic(FileCode2, "#3fb950"),
+    description: "Text editor: syntax colors, format JSON/XML/JS, Base64/URL/JWT decode, keeps unsaved tabs",
+    keywords: "editor notepad notepad++ soan thao text txt json xml js format lam dep base64 decode van ban",
+    load: () => import("./editor"),
   },
 ];
 

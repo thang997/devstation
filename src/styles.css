@@ -1,6 +1,10 @@
 /* Bảng màu & kiểu chữ lấy theo GitHub Desktop (dark): Primer dark.
    Bố cục giữ nguyên — chỉ đổi màu, bo góc, viền, chữ. */
 :root {
+  /* Editor (CodeMirror): màu tô cú pháp kiểu GitHub dark */
+  --hl-keyword: #ff7b72; --hl-string: #a5d6ff; --hl-number: #79c0ff; --hl-comment: #8b949e; --hl-function: #d2a8ff;
+  --hl-type: #ffa657; --hl-property: #79c0ff; --hl-tag: #7ee787; --hl-def: #ffa657; --hl-punct: #c9d1d9;
+  --hl-selection: #264f78; --hl-active-line: #161b2280; --hl-match: #3fb95040; --hl-search: #bb800966; --hl-search-sel: #f2cc6066;
   --bg: #0d1117;        /* canvas */
   --bg-2: #161b22;      /* sidebar / header */
   --bg-3: #21262d;      /* hover / nút */
@@ -29,6 +33,10 @@
 
 /* ── Nền sáng (GitHub Primer light). Giữ nút chính xanh dương như nền tối. ── */
 :root[data-theme="light"] {
+  /* Editor (CodeMirror): màu tô cú pháp kiểu GitHub light */
+  --hl-keyword: #cf222e; --hl-string: #0a3069; --hl-number: #0550ae; --hl-comment: #6e7781; --hl-function: #8250df;
+  --hl-type: #953800; --hl-property: #0550ae; --hl-tag: #116329; --hl-def: #953800; --hl-punct: #24292f;
+  --hl-selection: #add6ff; --hl-active-line: #eaeef280; --hl-match: #4ac26b40; --hl-search: #fff8c5; --hl-search-sel: #ffd33d99;
   /* Nền sáng dịu kiểu PonTea Toolkit — không dùng trắng gắt #fff cho canvas. */
   --bg: #f4f5f7;        /* canvas: xám rất nhạt, đỡ chói */
   --bg-2: #eceef1;      /* sidebar / header: sâu hơn một bậc để tách khối */
@@ -447,7 +455,7 @@ input::placeholder, textarea::placeholder { color: #6e7681; }
   border-radius: 3px; padding: 3px 8px; color: var(--fg); font-size: 12px;
 }
 .side-search:focus { border-color: var(--primary); outline: none; }
-.ssh-fields { display: flex; flex-direction: column; gap: 8px; padding-left: 10px; border-left: 2px solid var(--line); margin-left: 2px; }
+.ssh-fields { display: flex; flex-direction: column; gap: 8px; padding-left: 10px; border-left: 1px solid var(--line); margin-left: 2px; }
 /* Sơ đồ đường đi của tunnel (local → server → đích). */
 .tun-flow { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 8px 10px;
   background: var(--bg-2); border: 1px solid var(--line); border-radius: 0; font-size: 12px; }
@@ -1063,7 +1071,7 @@ svg.lucide.spin { animation: spin .8s linear infinite; }
 .copy-toast {
   position: fixed; left: 50%; bottom: 38px; transform: translateX(-50%); z-index: 1000;
   display: inline-flex; align-items: center; gap: 8px; max-width: min(560px, 90vw);
-  padding: 7px 12px; border-radius: 6px; font-size: 12.5px; pointer-events: none;
+  padding: 7px 12px; border-radius: 0; font-size: 12.5px; pointer-events: none;
   background: var(--bg-2); color: var(--fg); border: 1px solid var(--line);
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35); animation: copy-toast-in 0.14s ease-out;
 }
@@ -1157,7 +1165,7 @@ body { font-variant-numeric: tabular-nums; }
 .redis-offline .error-box, .conn-offline .error-box { max-width: 560px; text-align: left; }
 
 /* Khung hỏi/nhập inline (không phải lỗi): nền trung tính. */
-.inline-panel { margin: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg-2); display: flex; flex-direction: column; gap: 8px; }
+.inline-panel { margin: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 0; background: var(--bg-2); display: flex; flex-direction: column; gap: 8px; }
 
 .ctx-item.hi { background: var(--accent); color: #fff; }
 .ctx-item.hi .ctx-hint { color: #ffffffcc; }
@@ -1192,10 +1200,9 @@ input.invalid, input[aria-invalid="true"] { border-color: var(--danger); }
 /* Lịch sử lệnh SSH */
 .cmdh { min-height: 460px; }
 .cmdh .subtabs { border-bottom: none; padding: 0; }
-.cmdh-list { border: 1px solid var(--line); border-radius: 6px; height: 400px; overflow: auto; }
+.cmdh-list { border: 1px solid var(--line); border-radius: 0; height: 400px; overflow: auto; }
 .cmdh-row { display: flex; align-items: flex-start; gap: 10px; padding: 6px 10px; border-bottom: 1px solid var(--line); cursor: default; content-visibility: auto; contain-intrinsic-size: auto 34px; }
 .cmdh-row:hover, .cmdh-row:focus { background: var(--bg-3); outline: none; }
-.cmdh-row.noted { box-shadow: inset 2px 0 0 var(--warn); }
 .cmdh-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .cmdh-cmd { font-family: var(--mono, monospace); white-space: pre-wrap; word-break: break-all; }
 .cmdh-note { color: var(--warn); font-size: 12px; display: flex; gap: 5px; align-items: center; cursor: text; }
@@ -1222,7 +1229,7 @@ input.invalid, input[aria-invalid="true"] { border-color: var(--danger); }
 /* ───────── App PDF ───────── */
 .pdf-app { height: 100%; display: flex; flex-direction: column; position: relative; }
 .pdf-app > .tabbed { flex: 1; min-height: 0; }
-.pdf-app.file-drop::after { content: ""; position: absolute; inset: 4px; border: 2px dashed var(--primary); border-radius: 8px; background: color-mix(in srgb, var(--primary) 8%, transparent); pointer-events: none; z-index: 5; }
+.pdf-app.file-drop::after { content: ""; position: absolute; inset: 4px; border: 2px dashed var(--primary); border-radius: 0; background: color-mix(in srgb, var(--primary) 8%, transparent); pointer-events: none; z-index: 5; }
 .pdf-tab { height: 100%; display: flex; flex-direction: column; min-height: 0; }
 .pdf-toolbar { padding: 4px 8px; border-bottom: 1px solid var(--line); background: var(--bg-2); flex: 0 0 auto; gap: 2px; }
 .pdf-toolbar .icon-btn { height: 26px; min-width: 26px; justify-content: center; }
@@ -1230,7 +1237,7 @@ input.invalid, input[aria-invalid="true"] { border-color: var(--danger); }
 .pdf-sep { width: 1px; height: 18px; background: var(--line); margin: 0 6px; }
 .pdf-page-input { width: 44px; text-align: center; padding: 2px 4px; }
 .pdf-page-total { margin: 0 4px 0 2px; min-width: 34px; }
-.pdf-find { display: flex; align-items: center; gap: 2px; border: 1px solid var(--line); border-radius: 6px; padding: 0 2px 0 8px; background: var(--bg-1); }
+.pdf-find { display: flex; align-items: center; gap: 2px; border: 1px solid var(--line); border-radius: 3px; padding: 0 2px 0 8px; background: var(--bg-1); }
 .pdf-find > svg.lucide:first-child { color: var(--muted); }
 .pdf-find input { border: none; background: none; width: 200px; padding: 3px 4px; box-shadow: none; }
 .pdf-find input:focus { outline: none; box-shadow: none; }
@@ -1267,7 +1274,7 @@ input.invalid, input[aria-invalid="true"] { border-color: var(--danger); }
 .error-text { color: var(--danger); }
 .pdf-printing-box { flex-direction: row; align-items: center; gap: 12px; }
 .pdf-thumbs { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 10px 6px; }
-.pdf-thumb { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px; border: 1px solid transparent; background: none; border-radius: 6px; color: var(--muted); }
+.pdf-thumb { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px; border: 1px solid transparent; background: none; border-radius: 0; color: var(--muted); }
 .pdf-thumb canvas { width: 140px; height: auto; aspect-ratio: var(--thumb-ar, 1 / 1.4142); background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, .35); }
 .pdf-thumb:hover { background: var(--bg-3); border-color: transparent; }
 .pdf-thumb.on { border-color: var(--primary); background: var(--sel); color: var(--fg); }
@@ -1288,7 +1295,7 @@ svg.sig-ic.invalid { color: var(--danger); }
 .sig-modal-title { display: inline-flex; align-items: center; gap: 8px; }
 .sig-details { display: flex; flex-direction: column; gap: 12px; }
 .sig-checks { display: flex; flex-direction: column; gap: 6px; }
-.sig-check { display: flex; gap: 8px; align-items: flex-start; padding: 7px 10px; border-radius: 6px; background: var(--bg-2); border: 1px solid var(--line); line-height: 1.45; }
+.sig-check { display: flex; gap: 8px; align-items: flex-start; padding: 7px 10px; border-radius: 0; background: var(--bg-2); border: 1px solid var(--line); line-height: 1.45; }
 .sig-check > svg.lucide { flex: 0 0 auto; margin-top: 2px; }
 .sig-check.ok > svg.lucide { color: var(--ok); }
 .sig-check.warn { border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
@@ -1302,8 +1309,8 @@ svg.sig-ic.invalid { color: var(--danger); }
 .pdf-kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .sel-text { user-select: text; cursor: text; }
 .cert-chain { display: flex; flex-direction: column; gap: 6px; }
-.cert-card { border: 1px solid var(--line); border-radius: 6px; background: var(--bg-2); }
-.cert-head { display: flex; align-items: center; gap: 8px; width: 100%; border: none; background: none; text-align: left; padding: 6px 10px; border-radius: 6px; }
+.cert-card { border: 1px solid var(--line); border-radius: 0; background: var(--bg-2); }
+.cert-head { display: flex; align-items: center; gap: 8px; width: 100%; border: none; background: none; text-align: left; padding: 6px 10px; border-radius: 0; }
 .cert-head:hover { background: var(--bg-3); border: none; }
 .cert-role { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; min-width: 62px; }
 .cert-name { flex: 1; min-width: 0; font-weight: 600; }
@@ -1322,10 +1329,12 @@ svg.sig-ic.invalid { color: var(--danger); }
 .pdf-home-head { display: flex; align-items: center; gap: 14px; }
 .pdf-home-head h2 { margin: 0 0 2px; font-size: 20px; }
 svg.pdf-home-ic { width: 40px; height: 40px; color: #ff7b72; }
-.pdf-guide { border: 1px solid var(--line); border-radius: 6px; background: var(--bg-2); padding: 8px 12px; line-height: 1.5; }
+.pdf-guide { border: 1px solid var(--line); border-radius: 0; background: var(--bg-2); padding: 8px 12px; line-height: 1.5; }
 .pdf-guide ol { margin: 4px 0; padding-left: 20px; }
-.pdf-card { border: 1px solid var(--line); border-radius: 8px; background: var(--bg); padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
-.pdf-card-title { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+/* Khối ở màn hình chính PDF / Editor: phẳng như .pane (khung chứa không bo góc), tiêu đề là dải giống .pane-title. */
+.pdf-card { border: 1px solid var(--line); border-radius: 0; background: var(--bg); padding: 0 0 10px; display: flex; flex-direction: column; gap: 8px; }
+.pdf-card > :not(.pdf-card-title) { margin-left: 12px; margin-right: 12px; }
+.pdf-card-title { display: flex; align-items: center; gap: 6px; padding: 6px 10px; font-size: 11px; font-weight: 600; color: var(--muted); border-bottom: 1px solid var(--line); background: var(--bg-2); }
 .pdf-recent { max-height: 40vh; overflow: auto; margin: 0 -14px; }
 .pdf-recent-row { padding: 5px 14px; }
 .pdf-recent-row:hover .row-actions, .pdf-recent-row:focus-within .row-actions { visibility: visible; }
@@ -1346,6 +1355,34 @@ svg.pdf-home-ic { width: 40px; height: 40px; color: #ff7b72; }
 /* Modal chi tiết chữ ký: đang kiểm lại (sau Trust) → phủ mờ + dòng loading; xong → nháy phần đã cập nhật. */
 .sig-details { position: relative; }
 .sig-details.busy > :not(.sig-busy) { opacity: .45; pointer-events: none; transition: opacity .15s; }
-.sig-busy { position: sticky; top: 0; z-index: 2; display: flex; justify-content: center; padding: 6px 10px; border-radius: 6px; background: var(--bg-2); border: 1px solid var(--line); }
+.sig-busy { position: sticky; top: 0; z-index: 2; display: flex; justify-content: center; padding: 6px 10px; border-radius: 0; background: var(--bg-2); border: 1px solid var(--line); }
 @keyframes sig-flash { 0% { box-shadow: 0 0 0 2px var(--accent); background: color-mix(in srgb, var(--accent) 18%, var(--bg-2)); } 100% { box-shadow: 0 0 0 0 transparent; } }
 .cert-chain.flash .cert-card, .sig-checks.flash .sig-check { animation: sig-flash 1.4s ease-out; }
+
+/* ── Editor ── */
+.ed-app { position: relative; display: flex; flex-direction: column; min-height: 0; height: 100%; }
+.ed-app.file-drop::after { content: ""; position: absolute; inset: 4px; border: 2px dashed var(--primary); border-radius: 0; background: color-mix(in srgb, var(--primary) 8%, transparent); pointer-events: none; z-index: 5; }
+.ed-tab { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.ed-tab > .toolbar { flex: 0 0 auto; border-bottom: 1px solid var(--line); padding: 4px 8px; gap: 4px; }
+.ed-host { flex: 1; min-height: 0; overflow: hidden; }
+.ed-host .cm-editor { height: 100%; }
+.ed-status { flex: 0 0 auto; display: flex; align-items: center; gap: 14px; padding: 2px 10px; border-top: 1px solid var(--line); background: var(--bg-2); font-size: 12px; color: var(--muted); min-height: 24px; }
+.ed-status button { border: none; background: none; color: var(--muted); padding: 1px 4px; font-size: 12px; }
+.ed-status button:hover { color: var(--fg); background: var(--bg-3); }
+.ed-status .picker > button { border: none; background: none; padding: 1px 4px; font-size: 12px; min-width: 0 !important; }
+.ed-status .bad { color: var(--danger); }
+.ed-status .good { color: var(--ok); }
+.ed-msg { max-width: 50%; }
+.ed-keys { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 14px 22px; }
+.ed-keys h4 { margin: 0 0 4px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
+.ed-keys .row { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; border-bottom: 1px solid var(--line-muted); font-size: 12.5px; }
+.ed-keys kbd { font-family: inherit; font-size: 11.5px; padding: 0 6px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; background: var(--bg-2); white-space: nowrap; }
+.ed-keys mark { background: color-mix(in srgb, var(--warn) 35%, transparent); color: inherit; }
+.ed-exts { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 4px 12px; }
+.ed-ext { display: flex; align-items: center; gap: 8px; padding: 3px 6px; border-radius: 0; min-height: 30px; }
+.ed-ext b { min-width: 74px; font-weight: 600; }
+.ed-ext.on b { color: var(--ok); }
+.ed-ext button { padding: 2px 8px; font-size: 12px; }
+.tb-sep { width: 1px; align-self: stretch; background: var(--line); margin: 2px 4px; }
+.icon-btn.on { color: var(--accent); background: var(--bg-3); }
+.pdf-home-ic.ed-home-ic { color: #3fb950; } /* cùng màu icon Editor trong launcher */

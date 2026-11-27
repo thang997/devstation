@@ -1,7 +1,7 @@
 import { memo, useState, type ComponentType, type ReactNode } from "react";
 import { CircleSlash, Copy, PanelLeft, X, SquareX } from "lucide-react";
 import type { AppId, Tab } from "../apps/types";
-import { useWorkbench } from "../store/workbench";
+import { requestCloseTabs, useWorkbench } from "../store/workbench";
 import { Splitter, useSplitSize } from "./Resizable";
 import { ContextMenu, type CtxItem } from "./ContextMenu";
 import { useT } from "../store/lang";
@@ -39,9 +39,6 @@ export function TabbedLayout({
   const tr = useT();
   const app = useWorkbench((s) => s.apps[appId]);
   const focusTab = useWorkbench((s) => s.focusTab);
-  const closeTab = useWorkbench((s) => s.closeTab);
-  const closeOtherTabs = useWorkbench((s) => s.closeOtherTabs);
-  const closeAllTabs = useWorkbench((s) => s.closeAllTabs);
   const openTab = useWorkbench((s) => s.openTab);
   const toggleSidebar = useWorkbench((s) => s.toggleSidebar);
   const [sidebarW, setSidebarW] = useSplitSize("sidebar", SIDEBAR_DEFAULT, SIDEBAR_MIN, SIDEBAR_MAX);
@@ -55,9 +52,9 @@ export function TabbedLayout({
   const tabMenuItems = (t: Tab): CtxItem[] => [
     { id: "dup", icon: <Copy />, label: tr("shell.duplicate"), action: () => duplicateTab(t) },
     { id: "s1", sep: true },
-    { id: "close", icon: <X />, label: tr("shell.closeTab"), action: () => closeTab(t.id) },
-    { id: "others", icon: <CircleSlash />, label: tr("shell.closeOthers"), disabled: app.tabs.length < 2, action: () => closeOtherTabs(t.id) },
-    { id: "all", icon: <SquareX />, label: tr("shell.closeAll"), danger: true, action: () => closeAllTabs(appId) },
+    { id: "close", icon: <X />, label: tr("shell.closeTab"), action: () => void requestCloseTabs([t.id]) },
+    { id: "others", icon: <CircleSlash />, label: tr("shell.closeOthers"), disabled: app.tabs.length < 2, action: () => void requestCloseTabs(app.tabs.filter((x) => x.id !== t.id).map((x) => x.id)).then(() => useWorkbench.getState().focusTab(t.id)) },
+    { id: "all", icon: <SquareX />, label: tr("shell.closeAll"), danger: true, action: () => void requestCloseTabs(app.tabs.map((x) => x.id)) },
   ];
 
   return (
@@ -100,13 +97,13 @@ export function TabbedLayout({
               role="tab"
               aria-selected={t.id === app.activeTabId}
               tabIndex={t.id === app.activeTabId ? 0 : -1}
-              onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === "Delete")) { e.preventDefault(); closeTab(t.id); } }}
+              onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === "Delete")) { e.preventDefault(); void requestCloseTabs([t.id]); } }}
               onClick={() => focusTab(t.id)}
-              onAuxClick={(e) => e.button === 1 && closeTab(t.id)}
+              onAuxClick={(e) => { if (e.button === 1) void requestCloseTabs([t.id]); }}
               onContextMenu={(e) => { e.preventDefault(); setTabMenu({ x: e.clientX, y: e.clientY, tab: t }); }}
             >
               <span className="ellipsis">{t.title}</span>
-              <button className="x" tabIndex={-1} title={tr("shell.closeTab")} aria-label={tr("shell.closeTab")} onClick={(e) => { e.stopPropagation(); closeTab(t.id); }}><X /></button>
+              <button className="x" tabIndex={-1} title={tr("shell.closeTab")} aria-label={tr("shell.closeTab")} onClick={(e) => { e.stopPropagation(); void requestCloseTabs([t.id]); }}><X /></button>
             </div>
           ))}
         </div>

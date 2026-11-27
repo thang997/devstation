@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { ChevronUp, SquareTerminal, X } from "lucide-react";
 import { appById, orderedApps } from "../apps/registry";
-import { useWorkbench } from "../store/workbench";
+import { requestCloseTabs, useWorkbench } from "../store/workbench";
 import { toggleTheme, useTheme } from "../store/theme";
 import { toggleLang, useLang, useT, type TKey } from "../store/lang";
 import { AppHost } from "./AppHost";
@@ -73,7 +73,7 @@ export function Shell() {
       }
       else if (mod && key === "w" && s.activeApp) {
         const tabId = s.apps[s.activeApp].activeTabId;
-        if (tabId) { e.preventDefault(); s.closeTab(tabId); }
+        if (tabId) { e.preventDefault(); void requestCloseTabs([tabId]); }
       }
       else if (e.key === "Escape" && s.launcherOpen) s.setLauncher(false);
     };

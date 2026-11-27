@@ -34,8 +34,10 @@ pub struct PdfState {
 pub const CHOOSER_FILE: &str = "DevStation-default-app.pdf";
 #[cfg_attr(not(windows), allow(dead_code))]
 const MINI_PDF: &[u8] = b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n";
-fn is_chooser_file(a: &str) -> bool {
-    std::path::Path::new(a).file_name().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(CHOOSER_FILE))
+/// Phần tên (không đuôi) của file tạm chọn app — app PDF dùng `.pdf`, Editor dùng `.txt`/`.json`… cùng tên này.
+pub const CHOOSER_STEM: &str = "DevStation-default-app";
+pub(crate) fn is_chooser_file(a: &str) -> bool {
+    std::path::Path::new(a).file_stem().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(CHOOSER_STEM))
 }
 
 pub fn pdf_args<I: IntoIterator<Item = String>>(args: I, cwd: Option<&std::path::Path>) -> Vec<String> {
@@ -55,9 +57,15 @@ pub fn pdf_args<I: IntoIterator<Item = String>>(args: I, cwd: Option<&std::path:
 
 /// Lúc khởi động: file .pdf trong tham số dòng lệnh → hàng đợi (cửa sổ main sẽ mở app PDF).
 pub fn init(app: &tauri::AppHandle) {
-    let files = pdf_args(std::env::args().skip(1), std::env::current_dir().ok().as_deref());
+    let cwd = std::env::current_dir().ok();
+    let files = pdf_args(std::env::args().skip(1), cwd.as_deref());
     if !files.is_empty() {
         app.state::<PdfState>().pending.lock().unwrap().extend(files);
+    }
+    // File khác (.txt, .json, .xml… — người dùng chọn DevStation để mở) → app Editor.
+    let others = crate::editor::file_args(std::env::args().skip(1), cwd.as_deref());
+    if !others.is_empty() {
+        crate::editor::queue(app, others);
     }
     // Bản cài: giữ DevStation trong danh sách app mở được PDF (Open with / Settings → Default apps). Bản dev KHÔNG làm
     // (sẽ trỏ đăng ký tới exe debug). Chạy nền — đọc/ghi registry không chặn lúc mở app.
@@ -66,6 +74,7 @@ pub fn init(app: &tauri::AppHandle) {
         if let Ok(exe) = exe_path() {
             winreg::ensure_registered(&exe);
         }
+        crate::editor::ensure_registered();
     });
 }
 
@@ -78,7 +87,16 @@ pub fn on_second_instance(app: &tauri::AppHandle, argv: Vec<String>, cwd: String
     if argv.iter().skip(1).any(|a| is_chooser_file(a)) {
         return;
     }
+    // File không phải PDF → app Editor (cửa sổ Editor tự đưa lên, không kéo cửa sổ khác).
+    let others = crate::editor::file_args(argv.iter().skip(1).cloned(), Some(std::path::Path::new(&cwd)));
+    let had_others = !others.is_empty();
+    if had_others {
+        crate::editor::open_from_explorer(app, others);
+    }
     let files = pdf_args(argv.into_iter().skip(1), Some(std::path::Path::new(&cwd)));
+    if files.is_empty() && had_others {
+        return;
+    }
     let wins = app.webview_windows();
     let target = ["app-pdf", "main"]
         .iter()
@@ -152,7 +170,7 @@ pub fn pdf_open_url(url: String) -> Result<(), String> {
 }
 
 #[cfg(windows)]
-fn wide(s: &str) -> Vec<u16> {
+pub(crate) fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
@@ -265,7 +283,7 @@ fn cert_out(der: &[u8], trusted: &[Vec<u8>]) -> Option<CertOut> {
 
 // ───────────────────────── danh sách Trust của app ─────────────────────────
 
-fn data_dir() -> std::path::PathBuf {
+pub(crate) fn data_dir() -> std::path::PathBuf {
     #[cfg(windows)]
     if let Some(p) = std::env::var_os("LOCALAPPDATA") {
         return std::path::PathBuf::from(p).join("DevStation");
@@ -1179,7 +1197,7 @@ pub struct DefaultStatus {
 }
 
 #[cfg(windows)]
-mod winreg {
+pub(crate) mod winreg {
     use super::wide;
     use windows_sys::Win32::System::Registry::*;
 
@@ -1202,7 +1220,7 @@ mod winreg {
         set(&format!("Software\\Classes\\Applications\\{exe_name}\\SupportedTypes"), Some(".pdf"), "")?;
         set(&format!("Software\\Classes\\Applications\\{exe_name}\\shell\\open\\command"), None, &open)?;
         set("Software\\DevStation\\Capabilities", Some("ApplicationName"), "DevStation")?;
-        set("Software\\DevStation\\Capabilities", Some("ApplicationDescription"), "DevStation PDF viewer")?;
+        set("Software\\DevStation\\Capabilities", Some("ApplicationDescription"), "DevStation — PDF viewer, text editor")?;
         set("Software\\DevStation\\Capabilities\\FileAssociations", Some(".pdf"), PROGID)?;
         set("Software\\RegisteredApplications", Some("DevStation"), "Software\\DevStation\\Capabilities")?;
         notify();
@@ -1276,6 +1294,21 @@ mod winreg {
         }
     }
 
+    /// Khoá có ít nhất một giá trị (dùng để biết còn liên kết nào trong FileAssociations không).
+    pub fn has_values(path: &str) -> bool {
+        unsafe {
+            let p = wide(path);
+            let mut key: HKEY = std::ptr::null_mut();
+            if RegOpenKeyExW(HKEY_CURRENT_USER, p.as_ptr(), 0, KEY_READ, &mut key) != 0 {
+                return false;
+            }
+            let mut count: u32 = 0;
+            RegQueryInfoKeyW(key, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), &mut count, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut());
+            RegCloseKey(key);
+            count > 0
+        }
+    }
+
     pub fn notify() {
         unsafe {
             windows_sys::Win32::UI::Shell::SHChangeNotify(windows_sys::Win32::UI::Shell::SHCNE_ASSOCCHANGED as i32, windows_sys::Win32::UI::Shell::SHCNF_IDLIST, std::ptr::null(), std::ptr::null());
@@ -1284,8 +1317,13 @@ mod winreg {
 
     /// File .exe Windows đang dùng để mở .pdf.
     pub fn default_exe() -> Option<String> {
+        default_exe_for(".pdf")
+    }
+
+    /// Exe Windows đang dùng để mở đuôi `ext` (".txt"…) — đọc theo lựa chọn thật (UserChoice > HKCU > HKLM).
+    pub fn default_exe_for(ext: &str) -> Option<String> {
         use windows_sys::Win32::UI::Shell::{AssocQueryStringW, ASSOCF_NONE, ASSOCSTR_EXECUTABLE};
-        let ext = wide(".pdf");
+        let ext = wide(ext);
         let verb = wide("open");
         let mut buf = vec![0u16; 1024];
         let mut len = buf.len() as u32;
@@ -1299,7 +1337,7 @@ mod winreg {
 }
 
 #[cfg(windows)]
-fn exe_path() -> Result<String, String> {
+pub(crate) fn exe_path() -> Result<String, String> {
     std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).map_err(|e| e.to_string())
 }
 
@@ -1316,6 +1354,37 @@ pub fn pdf_default_status() -> DefaultStatus {
     }
     #[cfg(not(windows))]
     DefaultStatus { supported: false, registered: false, is_default: false, dev: cfg!(debug_assertions) }
+}
+
+/// Mở hộp thoại "How do you want to open …?" của Windows bằng `OpenWith.exe` cho `target` và chờ nó đóng
+/// (tối đa 10 phút). Dùng chung cho app PDF + Editor. KHÔNG dùng SHOpenWithDialog trong tiến trình app (UCPD chặn).
+#[cfg(windows)]
+pub(crate) async fn open_with_dialog(target: String) -> Result<(), String> {
+    let openwith = std::env::var_os("SystemRoot")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| "C:\\Windows".into())
+        .join("System32")
+        .join("OpenWith.exe");
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let mut child = std::process::Command::new(&openwith)
+        .arg(&target)
+        .spawn()
+        .map_err(|e| format!("Không mở được hộp thoại chọn app của Windows ({e})"))?;
+        // Chờ người dùng chọn xong (tối đa 10 phút); hộp thoại tự đóng khi mất focus thì cũng về đây.
+        let t0 = std::time::Instant::now();
+        while t0.elapsed() < std::time::Duration::from_secs(600) {
+        if let Ok(Some(_)) = child.try_wait() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        // Windows ghi lựa chọn ngay khi bấm OK, nhưng đọc lại có thể trễ một chút.
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(())
 }
 
 /// "Đặt làm app PDF mặc định": ghi đăng ký (HKCU) rồi mở hộp thoại "How do you want to open .pdf files?" của Windows
@@ -1341,30 +1410,7 @@ pub async fn pdf_register_default(file: Option<String>) -> Result<DefaultStatus,
             std::fs::write(&p, MINI_PDF).map_err(|e| e.to_string())?;
         }
         let target = p.to_string_lossy().into_owned();
-        let openwith = std::env::var_os("SystemRoot")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| "C:\\Windows".into())
-            .join("System32")
-            .join("OpenWith.exe");
-        tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
-            let mut child = std::process::Command::new(&openwith)
-                .arg(&target)
-                .spawn()
-                .map_err(|e| format!("Không mở được hộp thoại chọn app của Windows ({e})"))?;
-            // Chờ người dùng chọn xong (tối đa 10 phút); hộp thoại tự đóng khi mất focus thì cũng về đây.
-            let t0 = std::time::Instant::now();
-            while t0.elapsed() < std::time::Duration::from_secs(600) {
-                if let Ok(Some(_)) = child.try_wait() {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(250));
-            }
-            // Windows ghi lựa chọn ngay khi bấm OK, nhưng đọc lại có thể trễ một chút.
-            std::thread::sleep(std::time::Duration::from_millis(600));
-            Ok(())
-        })
-        .await
-        .map_err(|e| e.to_string())??;
+        open_with_dialog(target).await?;
         Ok(pdf_default_status())
     }
     #[cfg(not(windows))]
@@ -1402,9 +1448,14 @@ pub fn pdf_unregister_default() -> Result<(), String> {
         let exe_name = std::path::Path::new(&exe).file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "devstation.exe".into());
         del_tree(&format!("Software\\Classes\\{PROGID}"));
         del_value("Software\\Classes\\.pdf\\OpenWithProgids", PROGID);
-        del_tree(&format!("Software\\Classes\\Applications\\{exe_name}"));
-        del_tree("Software\\DevStation\\Capabilities");
-        del_value("Software\\RegisteredApplications", "DevStation");
+        // Applications\<exe> + Capabilities dùng chung với Editor → chỉ bỏ mục .pdf; hết mục mới xoá hẳn.
+        del_value(&format!("Software\\Classes\\Applications\\{exe_name}\\SupportedTypes"), ".pdf");
+        del_value("Software\\DevStation\\Capabilities\\FileAssociations", ".pdf");
+        if !has_values("Software\\DevStation\\Capabilities\\FileAssociations") {
+            del_tree(&format!("Software\\Classes\\Applications\\{exe_name}"));
+            del_tree("Software\\DevStation\\Capabilities");
+            del_value("Software\\RegisteredApplications", "DevStation");
+        }
         // Nhớ là người dùng đã gỡ → lúc khởi động không tự đăng ký lại (`ensure_registered`).
         let _ = set("Software\\DevStation", Some(OPT_OUT), "1");
         notify();

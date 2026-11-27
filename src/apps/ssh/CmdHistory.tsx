@@ -164,7 +164,7 @@ const CmdRow = memo(function CmdRow({ cmd, ts, n, note, editing, removable, api 
   const tr = useT();
   return (
     <div
-      className={`cmdh-row ${note ? "noted" : ""}`}
+      className="cmdh-row"
       tabIndex={0}
       role="option"
       aria-selected={false}

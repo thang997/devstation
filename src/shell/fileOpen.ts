@@ -29,7 +29,16 @@ export async function initFileOpen() {
       window.dispatchEvent(new Event("ds-pdf-pending"));
     } else if (target) await emitTo(target, "pdf-pending");
   });
-  if (!windowAppParam && (await isMainWindow()) && (await invoke<boolean>("pdf_has_pending").catch(() => false))) {
-    useWorkbench.getState().openApp("pdf");
+  // File văn bản (.txt, .json…) mở từ Explorer → app Editor (giống PDF).
+  await me.listen("editor-open-request", async () => {
+    const target = await launchApp("editor");
+    if (target === me.label) {
+      await focusWindow(me);
+      window.dispatchEvent(new Event("ds-editor-pending"));
+    } else if (target) await emitTo(target, "editor-pending");
+  });
+  if (!windowAppParam && (await isMainWindow())) {
+    if (await invoke<boolean>("pdf_has_pending").catch(() => false)) useWorkbench.getState().openApp("pdf");
+    else if (await invoke<boolean>("editor_has_pending").catch(() => false)) useWorkbench.getState().openApp("editor");
   }
 }

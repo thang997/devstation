@@ -57,6 +57,8 @@ interface WorkbenchState {
   /** Mở tab trong app của nó (tự chuyển sang app đó); nếu đã có tab cùng id thì chỉ chuyển sang. */
   openTab: (tab: Tab) => void;
   closeTab: (id: string) => void;
+  /** Đổi tiêu đề / payload / cờ của tab (vd. Editor thêm dấu "●" khi chưa lưu, đổi tên sau "Lưu thành"). */
+  updateTab: (id: string, patch: Partial<Pick<Tab, "title" | "payload" | "danger">>) => void;
   /** Đóng mọi tab khác trong cùng app, giữ lại tab `id`. */
   closeOtherTabs: (id: string) => void;
   /** Đóng toàn bộ tab của một app. */
@@ -75,7 +77,7 @@ const ownerOf = (apps: Record<AppId, AppState>, tabId: string) =>
 export const useWorkbench = create<WorkbenchState>((set) => ({
   activeApp: null,
   mounted: [],
-  apps: { git: freshApp("git"), http: freshApp("http"), ssh: freshApp("ssh"), tools: freshApp("tools"), db: freshApp("db"), redis: freshApp("redis"), registry: freshApp("registry"), translate: freshApp("translate"), pdf: freshApp("pdf") },
+  apps: { git: freshApp("git"), http: freshApp("http"), ssh: freshApp("ssh"), tools: freshApp("tools"), db: freshApp("db"), redis: freshApp("redis"), registry: freshApp("registry"), translate: freshApp("translate"), pdf: freshApp("pdf"), editor: freshApp("editor") },
   panelOpen: false,
   launcherOpen: false,
   logs: [],
@@ -130,6 +132,13 @@ export const useWorkbench = create<WorkbenchState>((set) => ({
         a.activeTabId === id ? (tabs[Math.min(idx, tabs.length - 1)]?.id ?? null) : a.activeTabId;
       return { apps: { ...s.apps, [appId]: { ...a, tabs, activeTabId } } };
     }),
+  updateTab: (id, patch) =>
+    set((s) => {
+      const appId = ownerOf(s.apps, id);
+      if (!appId) return {};
+      const a = s.apps[appId];
+      return { apps: { ...s.apps, [appId]: { ...a, tabs: a.tabs.map((t) => (t.id === id ? { ...t, ...patch } : t)) } } };
+    }),
   focusTab: (id) =>
     set((s) => {
       const appId = ownerOf(s.apps, id);
@@ -164,3 +173,30 @@ export const useWorkbench = create<WorkbenchState>((set) => ({
       logs: [...s.logs.slice(-499), `[${new Date().toLocaleTimeString()}] ${line}`],
     })),
 }));
+
+/* ── Hỏi trước khi đóng tab ──
+ * App đăng ký hàm hỏi (vd. Editor: tab chưa lưu → Lưu / Không lưu / Huỷ). Thao tác đóng của NGƯỜI DÙNG (nút X, Ctrl+W,
+ * chuột giữa, menu Close / Close others / Close all) đi qua `requestCloseTabs`; đóng do code (mở lại tab…) vẫn gọi
+ * thẳng `closeTab`. Tắt cả app / cửa sổ KHÔNG hỏi (Editor giữ bản nháp cho lần mở sau). */
+type CloseGuard = (tabIds: string[]) => Promise<string[]>;
+const closeGuards = new Map<AppId, CloseGuard>();
+
+/** Guard trả về danh sách tab ĐƯỢC đóng (bỏ những tab người dùng chọn Huỷ). `null` = gỡ guard. */
+export function setCloseGuard(appId: AppId, guard: CloseGuard | null) {
+  if (guard) closeGuards.set(appId, guard);
+  else closeGuards.delete(appId);
+}
+
+export async function requestCloseTabs(ids: string[]) {
+  const s = useWorkbench.getState();
+  const byApp = new Map<AppId, string[]>();
+  for (const id of ids) {
+    const appId = ownerOf(s.apps, id);
+    if (appId) byApp.set(appId, [...(byApp.get(appId) ?? []), id]);
+  }
+  for (const [appId, list] of byApp) {
+    const guard = closeGuards.get(appId);
+    const ok = guard ? await guard(list) : list;
+    for (const id of ok) useWorkbench.getState().closeTab(id);
+  }
+}
