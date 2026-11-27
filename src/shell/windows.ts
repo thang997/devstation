@@ -51,7 +51,7 @@ export async function registerWindowApp(id: AppId | null) {
 }
 
 /** Đưa một cửa sổ lên trước (bỏ thu nhỏ, hiện, focus). */
-async function focusWindow(w: { unminimize(): Promise<void>; show(): Promise<void>; setFocus(): Promise<void> }) {
+export async function focusWindow(w: { unminimize(): Promise<void>; show(): Promise<void>; setFocus(): Promise<void> }) {
   await w.unminimize().catch(() => {});
   await w.show().catch(() => {});
   await w.setFocus().catch(() => {});
@@ -147,6 +147,9 @@ export async function launchApp(id: AppId): Promise<string | null> {
   w.once("tauri://error", (e) => {
     useWorkbench.getState().log(`✗ ${t("shell.cannotOpenWindow")}: ${String(e.payload)}`);
   });
+  // Tạo xong thì đưa lên trước: khi mở từ Explorer (file .pdf) không cửa sổ nào của app đang được focus → Windows có thể
+  // mở cửa sổ mới ở SAU các cửa sổ khác.
+  w.once("tauri://created", () => void focusWindow(w));
   return null;
 }
 

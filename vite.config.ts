@@ -39,8 +39,48 @@ function pdfjsAssets(): Plugin {
   };
 }
 
+/**
+ * CSS của pdf.js (`pdf_viewer.css`) có quy tắc class chung chung (`.sidebar` bo góc + đổ bóng, `.hidden`, `.error`,
+ * `.selected`, `.title`, `.dialog`, `.loading`…) trùng class của app → nạp vào là sidebar mọi app thành khung nổi bo góc.
+ * Bọc mọi quy tắc trong `@scope (.pdf-scroll)` (khung xem PDF) để chỉ áp bên trong viewer; khối `:root` (biến CSS) và
+ * at-rule khai báo (`@font-face`, `@keyframes`, `@property`, `@import`) giữ ở ngoài.
+ */
+function scopePdfjsCss(): Plugin {
+  const keepGlobal = (head: string) => /^(:root\b|@font-face|@keyframes|@property|@import|@charset|@layer\s+[^{]*;)/.test(head);
+  return {
+    name: "scope-pdfjs-css",
+    enforce: "pre",
+    transform(code, id) {
+      if (!/pdfjs-dist[\\/]web[\\/]pdf_viewer\.css/.test(id.split("?")[0])) return null;
+      const global: string[] = [];
+      const scoped: string[] = [];
+      let i = 0;
+      while (i < code.length) {
+        // Bỏ khoảng trắng / comment ở cấp ngoài cùng.
+        if (/\s/.test(code[i])) { i++; continue; }
+        if (code.startsWith("/*", i)) { const e = code.indexOf("*/", i + 2); i = e < 0 ? code.length : e + 2; continue; }
+        // Một câu lệnh cấp ngoài: tới `;` (at-rule không có khối) hoặc tới `}` đóng khối khớp.
+        let j = i, depth = 0, quote = "";
+        for (; j < code.length; j++) {
+          const c = code[j];
+          if (quote) { if (c === "\\") j++; else if (c === quote) quote = ""; continue; }
+          if (c === '"' || c === "'") { quote = c; continue; }
+          if (code.startsWith("/*", j)) { const e = code.indexOf("*/", j + 2); j = e < 0 ? code.length : e + 1; continue; }
+          if (c === "{") depth++;
+          else if (c === "}") { depth--; if (depth === 0) { j++; break; } }
+          else if (c === ";" && depth === 0) { j++; break; }
+        }
+        const stmt = code.slice(i, j);
+        (keepGlobal(stmt.trimStart()) ? global : scoped).push(stmt);
+        i = j;
+      }
+      return { code: `${global.join("\n")}\n@scope (.pdf-scroll) {\n${scoped.join("\n")}\n}\n`, map: null };
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react(), pdfjsAssets()],
+  plugins: [react(), pdfjsAssets(), scopePdfjsCss()],
   clearScreen: false,
   server: {
     port: 1430,

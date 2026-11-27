@@ -50,11 +50,20 @@ pub fn init(app: &tauri::AppHandle) {
     if !files.is_empty() {
         app.state::<PdfState>().pending.lock().unwrap().extend(files);
     }
+    // Bản cài: giữ DevStation trong danh sách app mở được PDF (Open with / Settings → Default apps). Bản dev KHÔNG làm
+    // (sẽ trỏ đăng ký tới exe debug). Chạy nền — đọc/ghi registry không chặn lúc mở app.
+    #[cfg(all(windows, not(debug_assertions)))]
+    std::thread::spawn(|| {
+        if let Ok(exe) = exe_path() {
+            winreg::ensure_registered(&exe);
+        }
+    });
 }
 
 /// Tiến trình thứ hai được mở (double-click file .pdf khi app đang chạy) → tauri-plugin-single-instance gọi vào đây
 /// trong tiến trình ĐANG chạy. Có file → xếp hàng + báo một cửa sổ (ưu tiên cửa sổ app PDF) mở app PDF; không có
 /// file → chỉ đưa cửa sổ lên trước.
+#[cfg_attr(debug_assertions, allow(dead_code))] // chỉ dùng ở bản cài (single-instance)
 pub fn on_second_instance(app: &tauri::AppHandle, argv: Vec<String>, cwd: String) {
     let files = pdf_args(argv.into_iter().skip(1), Some(std::path::Path::new(&cwd)));
     let wins = app.webview_windows();
@@ -63,13 +72,17 @@ pub fn on_second_instance(app: &tauri::AppHandle, argv: Vec<String>, cwd: String
         .find_map(|l| wins.get(*l).cloned())
         .or_else(|| wins.values().find(|w| !w.label().starts_with("webtr-")).cloned());
     let Some(w) = target else { return };
-    let _ = w.unminimize();
-    let _ = w.show();
-    let _ = w.set_focus();
-    if !files.is_empty() {
-        app.state::<PdfState>().pending.lock().unwrap().extend(files);
-        let _ = app.emit_to(w.label(), "pdf-open-request", ());
+    if files.is_empty() {
+        // Mở lại app (không kèm file) → đưa cửa sổ lên trước.
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+        return;
     }
+    // Có file: KHÔNG đưa cửa sổ này lên — nó có thể đang là app khác (main đã thành SSH…). JS (`fileOpen.ts`) tìm
+    // đúng cửa sổ chứa app PDF rồi chỉ đưa cửa sổ đó lên trước.
+    app.state::<PdfState>().pending.lock().unwrap().extend(files);
+    let _ = app.emit_to(w.label(), "pdf-open-request", ());
 }
 
 #[tauri::command]
@@ -1158,6 +1171,46 @@ mod winreg {
     use windows_sys::Win32::System::Registry::*;
 
     pub const PROGID: &str = "DevStation.PDF";
+    /// Giá trị trong HKCU\Software\DevStation: "1" = người dùng đã bấm "Gỡ đăng ký" → không tự đăng ký lại.
+    pub const OPT_OUT: &str = "PdfUnregistered";
+
+    /// Ghi đăng ký "mở được PDF" (ProgId, Applications\<exe>, Capabilities + RegisteredApplications) — để DevStation có
+    /// trong hộp thoại Open with và Settings → Default apps. KHÔNG đổi app mặc định (UserChoice do người dùng chọn).
+    pub fn write_registration(exe: &str) -> Result<(), String> {
+        let open = format!("\"{exe}\" \"%1\"");
+        set(&format!("Software\\Classes\\{PROGID}"), None, "PDF Document")?;
+        set(&format!("Software\\Classes\\{PROGID}"), Some("FriendlyTypeName"), "PDF Document")?;
+        set(&format!("Software\\Classes\\{PROGID}\\DefaultIcon"), None, &format!("\"{exe}\",0"))?;
+        set(&format!("Software\\Classes\\{PROGID}\\Application"), Some("ApplicationName"), "DevStation")?;
+        set(&format!("Software\\Classes\\{PROGID}\\shell\\open\\command"), None, &open)?;
+        set("Software\\Classes\\.pdf\\OpenWithProgids", Some(PROGID), "")?;
+        let exe_name = std::path::Path::new(exe).file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "devstation.exe".into());
+        set(&format!("Software\\Classes\\Applications\\{exe_name}"), Some("FriendlyAppName"), "DevStation")?;
+        set(&format!("Software\\Classes\\Applications\\{exe_name}\\SupportedTypes"), Some(".pdf"), "")?;
+        set(&format!("Software\\Classes\\Applications\\{exe_name}\\shell\\open\\command"), None, &open)?;
+        set("Software\\DevStation\\Capabilities", Some("ApplicationName"), "DevStation")?;
+        set("Software\\DevStation\\Capabilities", Some("ApplicationDescription"), "DevStation PDF viewer")?;
+        set("Software\\DevStation\\Capabilities\\FileAssociations", Some(".pdf"), PROGID)?;
+        set("Software\\RegisteredApplications", Some("DevStation"), "Software\\DevStation\\Capabilities")?;
+        notify();
+        Ok(())
+    }
+
+    /// Lúc khởi động (bản cài): đăng ký còn thiếu / trỏ exe khác (đổi thư mục cài, bị phần mềm khác xoá) → ghi lại.
+    /// Bỏ qua nếu người dùng đã gỡ đăng ký. Đủ rồi thì không ghi gì (không gửi SHChangeNotify mỗi lần mở app).
+    #[cfg_attr(debug_assertions, allow(dead_code))] // chỉ gọi ở bản cài
+    pub fn ensure_registered(exe: &str) {
+        if get("Software\\DevStation", Some(OPT_OUT)).as_deref() == Some("1") {
+            return;
+        }
+        let want = format!("\"{exe}\" \"%1\"");
+        let ok = get(&format!("Software\\Classes\\{PROGID}\\shell\\open\\command"), None).is_some_and(|c| c.eq_ignore_ascii_case(&want))
+            && get("Software\\RegisteredApplications", Some("DevStation")).is_some()
+            && get("Software\\DevStation\\Capabilities\\FileAssociations", Some(".pdf")).is_some();
+        if !ok {
+            let _ = write_registration(exe);
+        }
+    }
 
     pub fn set(path: &str, name: Option<&str>, value: &str) -> Result<(), String> {
         unsafe {
@@ -1252,36 +1305,22 @@ pub fn pdf_default_status() -> DefaultStatus {
     DefaultStatus { supported: false, registered: false, is_default: false, dev: cfg!(debug_assertions) }
 }
 
-/// Đăng ký DevStation vào danh sách app mở được .pdf (HKCU) rồi mở hộp thoại "Open with" của Windows
-/// (`SHOpenWithDialog`, GẮN vào cửa sổ app → luôn nổi trên cùng, chặn tới khi đóng) để NGƯỜI DÙNG chọn DevStation +
-/// "Always use this app" — Windows 8+ không cho app tự ghi lựa chọn mặc định (UserChoice có hash).
-/// Trước đây chạy rundll32 OpenAs_RunDLL ở tiến trình riêng → hộp thoại hay bị đẩy ra SAU cửa sổ app (bấm như không có gì);
-/// không có file thì mở Settings, mà Windows 10 không nhảy tới .pdf.
-/// Lệnh SYNC (chạy trên main thread) vì hộp thoại modal cần cửa sổ cha của luồng UI. Trả về trạng thái sau khi đóng hộp thoại.
+/// "Đặt làm app PDF mặc định": ghi đăng ký (HKCU) rồi mở hộp thoại "How do you want to open .pdf files?" của Windows
+/// bằng **`OpenWith.exe`** (tiến trình của Windows) và chờ nó đóng → trả trạng thái sau đó.
+/// KHÔNG dùng `SHOpenWithDialog` trong tiến trình app nữa: driver **UCPD** (Windows 10 22H2+/11) chỉ cho tiến trình
+/// của Microsoft (OpenWith.exe, Settings…) ghi app mặc định cho `.pdf` → chọn DevStation + "Always" trong hộp thoại
+/// chạy trong devstation.exe bị chặn âm thầm (Windows không lưu). Windows 8+ cũng không cho app tự ghi (UserChoice
+/// có hash) — người dùng phải chọn; UI mở Settings → Default apps nếu đóng hộp thoại mà vẫn chưa là mặc định.
 #[tauri::command]
-pub fn pdf_register_default(window: tauri::Window, file: Option<String>) -> Result<DefaultStatus, String> {
+pub async fn pdf_register_default(file: Option<String>) -> Result<DefaultStatus, String> {
     #[cfg(windows)]
     {
         use winreg::*;
         let exe = exe_path()?;
-        let open = format!("\"{exe}\" \"%1\"");
-        set(&format!("Software\\Classes\\{PROGID}"), None, "PDF Document")?;
-        set(&format!("Software\\Classes\\{PROGID}"), Some("FriendlyTypeName"), "PDF Document")?;
-        set(&format!("Software\\Classes\\{PROGID}\\DefaultIcon"), None, &format!("\"{exe}\",0"))?;
-        set(&format!("Software\\Classes\\{PROGID}\\Application"), Some("ApplicationName"), "DevStation")?;
-        set(&format!("Software\\Classes\\{PROGID}\\shell\\open\\command"), None, &open)?;
-        set("Software\\Classes\\.pdf\\OpenWithProgids", Some(PROGID), "")?;
-        let exe_name = std::path::Path::new(&exe).file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "devstation.exe".into());
-        set(&format!("Software\\Classes\\Applications\\{exe_name}"), Some("FriendlyAppName"), "DevStation")?;
-        set(&format!("Software\\Classes\\Applications\\{exe_name}\\SupportedTypes"), Some(".pdf"), "")?;
-        set(&format!("Software\\Classes\\Applications\\{exe_name}\\shell\\open\\command"), None, &open)?;
-        set("Software\\DevStation\\Capabilities", Some("ApplicationName"), "DevStation")?;
-        set("Software\\DevStation\\Capabilities", Some("ApplicationDescription"), "DevStation PDF viewer")?;
-        set("Software\\DevStation\\Capabilities\\FileAssociations", Some(".pdf"), PROGID)?;
-        set("Software\\RegisteredApplications", Some("DevStation"), "Software\\DevStation\\Capabilities")?;
-        notify();
+        write_registration(&exe)?;
+        del_value("Software\\DevStation", OPT_OUT); // chủ động đăng ký lại → bỏ dấu "đã gỡ"
 
-        // Hộp thoại cần một tên file .pdf: dùng file đang mở, không có thì một file tạm (không mở file — không có OAIF_EXEC).
+        // Hộp thoại cần một tên file .pdf: dùng file đang mở, không có thì một file tạm (chỉ để chọn app, không mở).
         let target = match file.filter(|f| std::path::Path::new(f).is_file()) {
             Some(f) => f,
             None => {
@@ -1292,20 +1331,35 @@ pub fn pdf_register_default(window: tauri::Window, file: Option<String>) -> Resu
                 p.to_string_lossy().into_owned()
             }
         };
-        use windows_sys::Win32::UI::Shell::{SHOpenWithDialog, OAIF_ALLOW_REGISTRATION, OAIF_REGISTER_EXT, OPENASINFO};
-        let hwnd = window.hwnd().map(|h| h.0 as windows_sys::Win32::Foundation::HWND).unwrap_or(std::ptr::null_mut());
-        let path = wide(&target);
-        let info = OPENASINFO { pcszFile: path.as_ptr(), pcszClass: std::ptr::null(), oaifInFlags: OAIF_ALLOW_REGISTRATION | OAIF_REGISTER_EXT };
-        let hr = unsafe { SHOpenWithDialog(hwnd, &info) };
-        // 0x800704C7 = người dùng bấm Huỷ — không phải lỗi.
-        if hr < 0 && hr as u32 != 0x8007_04C7 {
-            return Err(format!("Không mở được hộp thoại chọn app (0x{:08X})", hr as u32));
-        }
+        let openwith = std::env::var_os("SystemRoot")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| "C:\\Windows".into())
+            .join("System32")
+            .join("OpenWith.exe");
+        tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+            let mut child = std::process::Command::new(&openwith)
+                .arg(&target)
+                .spawn()
+                .map_err(|e| format!("Không mở được hộp thoại chọn app của Windows ({e})"))?;
+            // Chờ người dùng chọn xong (tối đa 10 phút); hộp thoại tự đóng khi mất focus thì cũng về đây.
+            let t0 = std::time::Instant::now();
+            while t0.elapsed() < std::time::Duration::from_secs(600) {
+                if let Ok(Some(_)) = child.try_wait() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+            // Windows ghi lựa chọn ngay khi bấm OK, nhưng đọc lại có thể trễ một chút.
+            std::thread::sleep(std::time::Duration::from_millis(600));
+            Ok(())
+        })
+        .await
+        .map_err(|e| e.to_string())??;
         Ok(pdf_default_status())
     }
     #[cfg(not(windows))]
     {
-        let _ = (window, file);
+        let _ = file;
         Err("Chỉ hỗ trợ trên Windows".into())
     }
 }
@@ -1341,6 +1395,8 @@ pub fn pdf_unregister_default() -> Result<(), String> {
         del_tree(&format!("Software\\Classes\\Applications\\{exe_name}"));
         del_tree("Software\\DevStation\\Capabilities");
         del_value("Software\\RegisteredApplications", "DevStation");
+        // Nhớ là người dùng đã gỡ → lúc khởi động không tự đăng ký lại (`ensure_registered`).
+        let _ = set("Software\\DevStation", Some(OPT_OUT), "1");
         notify();
         Ok(())
     }

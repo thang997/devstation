@@ -1322,6 +1322,8 @@ svg.sig-ic.invalid { color: var(--danger); }
 .pdf-home-head { display: flex; align-items: center; gap: 14px; }
 .pdf-home-head h2 { margin: 0 0 2px; font-size: 20px; }
 svg.pdf-home-ic { width: 40px; height: 40px; color: #ff7b72; }
+.pdf-guide { border: 1px solid var(--line); border-radius: 6px; background: var(--bg-2); padding: 8px 12px; line-height: 1.5; }
+.pdf-guide ol { margin: 4px 0; padding-left: 20px; }
 .pdf-card { border: 1px solid var(--line); border-radius: 8px; background: var(--bg); padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
 .pdf-card-title { display: flex; align-items: center; gap: 8px; font-weight: 600; }
 .pdf-recent { max-height: 40vh; overflow: auto; margin: 0 -14px; }

@@ -33,9 +33,12 @@ fn write_text_file(path: String, content: String) -> Result<(), String> {
 }
 
 fn main() {
-    tauri::Builder::default()
-        // Phải đăng ký ĐẦU TIÊN: mở file .pdf khi app đang chạy → chuyển cho tiến trình đang chạy (app PDF).
-        .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| pdf::on_second_instance(app, argv, cwd)))
+    let builder = tauri::Builder::default();
+    // Phải đăng ký ĐẦU TIÊN: mở file .pdf khi app đang chạy → chuyển cho tiến trình đang chạy (app PDF).
+    // Chỉ ở bản cài: bản dev (`app:dev`) cùng identifier → đang mở bản cài thì bản dev bị chuyển sang đó rồi tự thoát.
+    #[cfg(not(debug_assertions))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, cwd| pdf::on_second_instance(app, argv, cwd)));
+    builder
         .plugin(tauri_plugin_dialog::init())
         // Tự cập nhật: đọc latest.json trên GitHub Releases, kiểm chữ ký bằng pubkey trong tauri.conf.json.
         .plugin(tauri_plugin_updater::Builder::new().build())

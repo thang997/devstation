@@ -3,7 +3,7 @@
  * Phát hành bản mới cho tính năng tự cập nhật (tauri-plugin-updater + GitHub Releases).
  *
  *   1. Tăng "version" trong src-tauri/tauri.conf.json (và package.json cho khớp).
- *   2. npm run release -- --notes "Nội dung thay đổi"
+ *   2. npm run release -- --notes-file notes.txt   (hoặc --notes "một dòng")
  *
  * Script: build có ký (private key ở ~/.tauri/devstation.key, KHÔNG nằm trong repo)
  *   → gom bộ cài + latest.json vào release/v<version>/
@@ -24,7 +24,9 @@ const tag = `v${version}`;
 
 const argv = process.argv.slice(2);
 const flag = (name) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1] : undefined; };
-const notes = flag("--notes") ?? `DevStation ${tag}`;
+// --notes-file <file>: ghi chú nhiều dòng (npm trên Windows chạy qua cmd.exe, cmd cắt đối số --notes ở dấu xuống dòng).
+const notesFile = flag("--notes-file");
+const notes = (notesFile ? readFileSync(resolve(notesFile), "utf8").trim() : flag("--notes")) ?? `DevStation ${tag}`;
 const skipBuild = argv.includes("--skip-build");
 
 const keyPath = process.env.TAURI_SIGNING_PRIVATE_KEY_PATH ?? join(homedir(), ".tauri", "devstation.key");

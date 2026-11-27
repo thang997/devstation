@@ -96,16 +96,37 @@ export async function takePending() {
   for (const p of list) await openPdfPath(p).catch(() => {});
 }
 
-/** Đặt DevStation làm app mở PDF: đăng ký + hộp thoại Windows, rồi báo kết quả ra Output. */
+/* ── Luồng "đặt làm app PDF mặc định" (dùng chung thẻ ở màn hình chính + nút trên toolbar) ── */
+/** `busy` = đang chờ hộp thoại Windows; `guide` = hộp thoại đóng mà chưa là mặc định → đã mở Settings, hiện hướng dẫn. */
+export interface DefaultFlow { busy: boolean; guide: boolean }
+let flow: DefaultFlow = { busy: false, guide: false };
+const flowSubs = new Set<() => void>();
+const setFlow = (f: Partial<DefaultFlow>) => { flow = { ...flow, ...f }; flowSubs.forEach((fn) => fn()); };
+export const useDefaultFlow = () =>
+  useSyncExternalStore((cb) => { flowSubs.add(cb); return () => { flowSubs.delete(cb); }; }, () => flow);
+/** Đã thành mặc định (đọc lại khi quay về app) → tắt hướng dẫn. */
+export const defaultDoneSeen = () => { if (flow.guide) setFlow({ guide: false }); };
+
+/** Đặt DevStation làm app mở PDF: đăng ký + hộp thoại "How do you want to open" của Windows (OpenWith.exe, chờ đóng).
+ *  Chưa thành mặc định (bấm ra ngoài / không tick "Always") → mở Settings → Default apps + hiện hướng dẫn từng bước. */
 export async function setDefaultPdfApp(file?: string) {
   const log = useWorkbench.getState().log;
+  if (flow.busy) return null;
+  setFlow({ busy: true });
   try {
     const st = await pdfApi.registerDefault(file);
-    if (st.isDefault) log(`✓ ${t("pdf.defaultDone")}`);
-    else log(`⚠ ${t("pdf.defaultNotChosen")}`);
+    if (st.isDefault) {
+      setFlow({ busy: false, guide: false });
+      log(`✓ ${t("pdf.defaultDone")}`);
+    } else {
+      setFlow({ busy: false, guide: true });
+      log(`⚠ ${t("pdf.defaultNotChosen")}`);
+      await pdfApi.openSettings().catch(() => {});
+    }
     if (st.dev) log(`⚠ ${t("pdf.defaultDev")}`);
     return st;
   } catch (e) {
+    setFlow({ busy: false });
     log(`✗ ${String(e)}`);
     return null;
   }

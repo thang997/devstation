@@ -1301,7 +1301,7 @@
     "contact": "Liên hệ",
     "copyPath": "Copy đường dẫn file",
     "copySha": "Copy SHA-256",
-    "defaultHint": "Windows không cho app tự đặt làm mặc định: sau khi đăng ký, chọn DevStation và tick \"Always use this app\" trong hộp thoại của Windows.",
+    "defaultHint": "Bấm nút, rồi trong hộp thoại của Windows chọn DevStation và tick \"Always use this app to open .pdf files\".",
     "defaultIs": "DevStation đang là app mặc định mở file PDF.",
     "defaultNot": "DevStation chưa được đăng ký để mở file PDF.",
     "defaultRegisteredNot": "Đã đăng ký, nhưng app khác vẫn đang là mặc định cho file PDF.",
@@ -1414,7 +1414,7 @@
     "zoomOut": "Thu nhỏ",
     "zoomWidth": "Vừa chiều ngang",
     "defaultDone": "DevStation đã là app mặc định mở file PDF.",
-    "defaultNotChosen": "Chưa đổi app PDF mặc định — trong hộp thoại Windows hãy chọn DevStation và tick \"Always use this app\".",
+    "defaultNotChosen": "Chưa đổi app PDF mặc định — đã mở Settings → Default apps của Windows: chọn DevStation cho .pdf.",
     "defaultDev": "Đang chạy bản dev: đăng ký trỏ tới exe debug, chỉ mở được khi npm run app:dev còn chạy. Hãy đặt mặc định từ bản đã cài.",
     "sigRevoked": "Chữ ký KHÔNG hợp lệ — chứng thư đã bị thu hồi",
     "sigDocmdpViolated": "Chứng nhận KHÔNG hợp lệ — tài liệu bị sửa theo cách không được phép",
@@ -1436,6 +1436,12 @@
     "bannerWeak": "Có chữ ký dùng thuật toán yếu (SHA-1).",
     "idIssuerMismatch": "Chuỗi chứng thư bị lệch: \"{cert}\" ghi là do \"{issuer}\" cấp, nhưng CA tìm được lại tên \"{ca}\" (cùng khoá, khác tên — thường là chứng thư cấp từ hệ thống THỬ NGHIỆM). Theo chuẩn X.509 tên phải khớp nên Trust gốc cũng không giúp được. Chỉ Trust thẳng chứng thư người ký nếu bạn biết rõ người ký.",
     "reverifying": "Đang kiểm lại chữ ký…",
-    "noteFallback": "Phần mềm ký ghi thuật toán dạng \"rsaEncryption\" (1.2.840.113549.1.1.1) — hợp lệ và rất phổ biến (Viettel, FPT, VNPT…) nhưng thư viện kiểm chính chưa hỗ trợ. DevStation đã kiểm bằng bộ kiểm riêng: chữ ký, mã băm nội dung và dấu thời gian đều đúng ({alg})."
+    "noteFallback": "Phần mềm ký ghi thuật toán dạng \"rsaEncryption\" (1.2.840.113549.1.1.1) — hợp lệ và rất phổ biến (Viettel, FPT, VNPT…) nhưng thư viện kiểm chính chưa hỗ trợ. DevStation đã kiểm bằng bộ kiểm riêng: chữ ký, mã băm nội dung và dấu thời gian đều đúng ({alg}).",
+    "defaultWaiting": "Đang chờ hộp thoại Windows…",
+    "defaultGuideTitle": "Windows chưa lưu lựa chọn — hoàn tất trong Settings (vừa mở):",
+    "defaultGuide1": "Kéo xuống, bấm \"Choose default apps by file type\".",
+    "defaultGuide2": "Tìm dòng .pdf, bấm vào app đang hiện bên cạnh (vd. Adobe Acrobat).",
+    "defaultGuide3": "Chọn DevStation trong danh sách.",
+    "defaultGuideAfter": "Quay lại đây — thẻ này tự cập nhật. Icon file trong Explorer đổi sau vài giây."
   }
 }

@@ -10,7 +10,9 @@ import { confirmDialog } from "../../shell/confirm";
 import { pdfApi, type DefaultStatus } from "./api";
 import { PdfTab } from "./PdfView";
 import { TrustManagerModal } from "./SigDetails";
-import { clearRecent, openDroppedFiles, openPdfDialog, openPdfPath, pruneDocs, removeRecent, setDefaultPdfApp, takePending, useRecent } from "./store";
+import { clearRecent, defaultDoneSeen, openDroppedFiles, openPdfDialog, openPdfPath, pruneDocs, removeRecent, setDefaultPdfApp, takePending, useDefaultFlow, useRecent } from "./store";
+import { Spinner } from "../../shell/Loading";
+import { Swap } from "../../shell/Swap";
 
 // Đóng tab → bỏ byte của file khỏi RAM.
 useWorkbench.subscribe((s, prev) => {
@@ -29,7 +31,8 @@ if (isTauri()) {
 function DefaultCard() {
   const tr = useT();
   const [st, setSt] = useState<DefaultStatus | null>(null);
-  const reload = () => void pdfApi.defaultStatus().then(setSt).catch(() => setSt(null));
+  const flow = useDefaultFlow();
+  const reload = () => void pdfApi.defaultStatus().then((s) => { setSt(s); if (s.isDefault) defaultDoneSeen(); }).catch(() => setSt(null));
   useEffect(() => {
     reload();
     // Người dùng chọn xong trong hộp thoại Windows rồi quay lại app → đọc lại trạng thái.
@@ -53,11 +56,26 @@ function DefaultCard() {
         {st.isDefault ? tr("pdf.defaultIs") : st.registered ? tr("pdf.defaultRegisteredNot") : tr("pdf.defaultNot")}
       </div>
       <div className="toolbar pdf-wrap">
-        {!st.isDefault && <button className="primary" onClick={() => void register()}><Star />{tr("pdf.setDefault")}</button>}
+        {!st.isDefault && (
+          <button className="primary" disabled={flow.busy} onClick={() => void register()}>
+            <Swap on={flow.busy} a={<><Spinner />{tr("pdf.defaultWaiting")}</>} b={<><Star />{tr("pdf.setDefault")}</>} />
+          </button>
+        )}
         {st.registered && <button onClick={() => void pdfApi.openSettings()}><Settings />{tr("pdf.openDefaultApps")}</button>}
         {st.registered && <button onClick={() => void unregister()}><Unlink />{tr("pdf.unregister")}</button>}
       </div>
-      {!st.isDefault && <div className="muted small">{tr("pdf.defaultHint")}</div>}
+      {!st.isDefault && !flow.guide && <div className="muted small">{tr("pdf.defaultHint")}</div>}
+      {!st.isDefault && flow.guide && (
+        <div className="pdf-guide small">
+          <div><b>{tr("pdf.defaultGuideTitle")}</b></div>
+          <ol>
+            <li>{tr("pdf.defaultGuide1")}</li>
+            <li>{tr("pdf.defaultGuide2")}</li>
+            <li>{tr("pdf.defaultGuide3")}</li>
+          </ol>
+          <div className="muted">{tr("pdf.defaultGuideAfter")}</div>
+        </div>
+      )}
       {st.dev && <div className="small pdf-dev-note"><TriangleAlert />{tr("pdf.defaultDev")}</div>}
     </div>
   );
