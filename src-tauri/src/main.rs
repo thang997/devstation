@@ -35,6 +35,9 @@ fn write_text_file(path: String, content: String) -> Result<(), String> {
 }
 
 fn main() {
+    // Vừa tắt app để cài bản cập nhật mà mở lại ngay khi trình cài chưa xong → chờ ngầm rồi mở bản mới (không nháy cửa sổ).
+    #[cfg(all(windows, not(debug_assertions)))]
+    update::defer_if_installing();
     let builder = tauri::Builder::default();
     // Phải đăng ký ĐẦU TIÊN: mở file .pdf khi app đang chạy → chuyển cho tiến trình đang chạy (app PDF).
     // Chỉ ở bản cài: bản dev (`app:dev`) cùng identifier → đang mở bản cài thì bản dev bị chuyển sang đó rồi tự thoát.

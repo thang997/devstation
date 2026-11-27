@@ -127,7 +127,71 @@ pub fn update_install(app: AppHandle, state: State<'_, UpdState>) -> Result<(), 
 }
 
 /// Tắt hẳn app (RunEvent::Exit) khi đã có bản tải sẵn (người dùng chọn "Muộn hơn") → cài luôn, KHÔNG mở lại app.
+/// Ghi mốc `update-installing` (version đang cài) để lần mở lại TRONG LÚC trình cài còn chạy biết mà chờ
+/// (`defer_if_installing`).
 pub fn install_on_exit(state: &UpdState) {
     let Some((update, bytes)) = state.inner.lock().ok().and_then(|mut i| i.ready.take()) else { return };
+    #[cfg(windows)]
+    {
+        let m = install_marker();
+        if let Some(d) = m.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        let _ = std::fs::write(&m, &update.version);
+    }
     let _ = update.restart_after_install(false).install(&bytes);
+}
+
+#[cfg(windows)]
+fn install_marker() -> std::path::PathBuf {
+    crate::pdf::data_dir().join("update-installing")
+}
+
+/// Mở lại app khi trình cài cập nhật (chạy ngầm sau khi tắt app) CHƯA xong. Nếu cứ mở bản cũ thì trình cài
+/// (Restart Manager) kill nó rồi tự mở lại → người dùng thấy cửa sổ nháy tắt rồi bật. Gọi ĐẦU TIÊN trong `main`,
+/// trước khi tạo cửa sổ: còn đang cài → giao cho một PowerShell ẩn chờ trình cài xong rồi mở bản mới (cùng tham số
+/// dòng lệnh, vd. file .pdf); tiến trình này thoát ngay, không hiện cửa sổ nào.
+#[cfg(all(windows, not(debug_assertions)))]
+pub fn defer_if_installing() {
+    use std::os::windows::process::CommandExt;
+    use std::time::Duration;
+    let m = install_marker();
+    let Ok(meta) = std::fs::metadata(&m) else { return };
+    let ver = std::fs::read_to_string(&m).unwrap_or_default();
+    let age = meta.modified().ok().and_then(|t| t.elapsed().ok()).unwrap_or(Duration::MAX);
+    // Đã là bản vừa cài (cài xong) hoặc mốc quá cũ (trình cài lỗi / bị huỷ) → bỏ mốc, mở bình thường.
+    if ver.trim() == env!("CARGO_PKG_VERSION") || age > Duration::from_secs(600) {
+        let _ = std::fs::remove_file(&m);
+        return;
+    }
+    let Ok(exe) = std::env::current_exe() else { return };
+    // Chuỗi PowerShell trong nháy đơn: ' → ''.
+    let q = |s: &str| format!("'{}'", s.replace('\'', "''"));
+    let args: Vec<String> =
+        std::env::args_os().skip(1).map(|a| q(&format!("\"{}\"", a.to_string_lossy()))).collect();
+    let start = if args.is_empty() {
+        format!("Start-Process -FilePath {}", q(&exe.to_string_lossy()))
+    } else {
+        format!("Start-Process -FilePath {} -ArgumentList @({})", q(&exe.to_string_lossy()), args.join(","))
+    };
+    // Trình cài của tauri-plugin-updater tên `<app>-<version>-installer.exe` (thư mục tạm). Chờ nó xuất hiện tối đa 5s
+    // (vừa tắt app xong mở lại ngay), rồi chờ nó chạy xong (tối đa 5 phút); bỏ mốc trước khi mở để không lặp lại.
+    let script = format!(
+        "$f={{@(Get-Process -EA 0 | ? {{ $_.Name -like 'devstation-*-installer' }}).Count -gt 0}}; \
+         $d=(Get-Date).AddSeconds(5); while(-not (& $f) -and (Get-Date) -lt $d){{Start-Sleep -m 150}}; \
+         $d=(Get-Date).AddMinutes(5); while((& $f) -and (Get-Date) -lt $d){{Start-Sleep -m 150}}; \
+         Remove-Item -LiteralPath {} -EA 0; {}",
+        q(&m.to_string_lossy()),
+        start
+    );
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let ok = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &script])
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .is_ok();
+    if ok {
+        std::process::exit(0);
+    }
+    let _ = std::fs::remove_file(&m);
 }
