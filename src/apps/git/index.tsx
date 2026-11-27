@@ -19,6 +19,7 @@ import { CommitView, FileDiff } from "./DiffParts";
 import { Archive, ArchiveRestore, ArrowDownToLine, ArrowUpFromLine, Check, Cloud, CloudDownload, Copy, Download, ExternalLink, EyeOff, FolderGit2, FolderOpen, GitBranch, GitBranchPlus, GitCommitHorizontal, GitMerge, History, LogIn, LogOut, Minus, Pencil, Plus, RefreshCw, RotateCcw, Save, Settings, Trash2, TriangleAlert, Undo2, X } from "lucide-react";
 import { refreshAllSummaries, repoName, setSummaryFrom, useRepos, type Repo } from "./repos";
 import { toggleTrace, traceDone, traceOn, traceStep } from "./trace";
+import { openRepoSettings, RepoSettingsHost } from "./RepoSettings";
 
 function openRepo(r: Repo) {
   useWorkbench.getState().openTab({ id: `git:${r.path}`, appId: "git", title: r.name, payload: { path: r.path } });
@@ -92,11 +93,13 @@ function RepoSwitcher({ currentPath }: { currentPath: string | null }) {
               : undefined;
           return { id: r.path, label: r.name, group: "Repository", icon: <FolderGit2 />, hint, selected: r.path === currentPath, removable: true };
         }),
+        ...(currentPath ? [{ id: "\u0000settings", label: tr("git.repoSettings"), group: tr("git.actions"), icon: <Settings /> }] : []),
         { id: "\u0000add", label: tr("git.addExistingRepo"), group: tr("git.actions"), icon: <Plus /> },
         { id: "\u0000clone", label: tr("git.cloneFromUrl"), group: tr("git.actions"), icon: <Download /> },
         { id: "\u0000account", label: tr("git.gitAccount"), group: tr("git.actions"), icon: <Settings /> },
       ]}
       onPick={(id) => {
+        if (id === "\u0000settings") return currentPath ? openRepoSettings(currentPath) : undefined;
         if (id === "\u0000add") return void addRepos().catch(() => {});
         if (id === "\u0000clone") return openClone();
         if (id === "\u0000account") return openAccount();
@@ -729,6 +732,7 @@ function RepoView({ tab }: { tab: Tab }) {
     <div className="view">
       <div className="toolbar">
         <RepoSwitcher currentPath={path} />
+        <button className="icon-btn" title={tr("git.repoSettings")} onClick={() => openRepoSettings(path)}><Settings /></button>
         <span className="tb-sep" />
         {newBranch === null ? (
           <Picker
@@ -1728,6 +1732,7 @@ function GitRoot() {
   return (
     <>
       <TabbedLayout appId="git" TabView={GitTab} empty={<GitEmpty />} />
+      <RepoSettingsHost />
       {accOpen && (
         <Modal title={<><Settings /> {tr("git.gitAccount2")}</>} width={560} onClose={closeAccount}>
           <AccountView />
@@ -1742,12 +1747,21 @@ function GitRoot() {
   );
 }
 
+/** Đường dẫn repo của tab Git đang mở (id tab = "git:<path>"). */
+function activeRepoPath(): string | null {
+  const id = useWorkbench.getState().apps.git?.activeTabId;
+  return id?.startsWith("git:") ? id.slice(4) : null;
+}
+
 const gitApp: AppModule = {
   View: GitRoot,
   commands: () => [
     { id: "git.add", group: "Git", title: t("git.addExistingRepo3"), run: () => void addRepos().catch(() => {}) },
     { id: "git.clone", group: "Git", title: t("git.cloneRepositoryFromUrl"), run: openClone },
     { id: "git.account", group: "Git", title: t("git.gitAccountLoginIdentity"), run: openAccount },
+    ...(activeRepoPath()
+      ? [{ id: "git.repoSettings", group: "Git", title: t("git.rsOpenSettings"), run: () => { const p = activeRepoPath(); if (p) openRepoSettings(p); } }]
+      : []),
     { id: "git.trace", group: "Git", title: t("git.traceToggle"), hint: traceOn() ? "ON" : "OFF", run: toggleTrace },
     ...useRepos.getState().repos.map((r) => ({
       id: `git.open.${r.path}`,

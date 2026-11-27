@@ -1393,3 +1393,16 @@ svg.pdf-home-ic { width: 40px; height: 40px; color: #ff7b72; }
 .ed-preview .pane-title { border-radius: 0; }
 .ed-preview-note { font-weight: normal; }
 .ed-preview-frame { flex: 1; width: 100%; border: 0; background: #fff; }
+
+/* Git — Repository settings */
+.rs { display: flex; flex-direction: column; gap: 14px; }
+.rs-sec { display: flex; flex-direction: column; gap: 6px; }
+.rs-cap { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .02em; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+.rs-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.rs-val { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rs-link { color: var(--accent); text-decoration: none; cursor: pointer; }
+.rs-link:hover { text-decoration: underline; }
+.rs-sub { padding-left: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rs-remote { display: flex; flex-direction: column; gap: 3px; }
+.rs-name { flex: none; font-family: var(--mono, monospace); }
+.rs-name-input { width: 110px; flex: none; }

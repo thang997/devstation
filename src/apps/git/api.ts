@@ -125,3 +125,35 @@ export interface Identity {
 }
 
 export const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+export interface RemoteInfo {
+  name: string;
+  /** URL fetch (đã bỏ mật khẩu/token). */
+  fetch: string;
+  /** URL push nếu khác fetch. */
+  push: string | null;
+  /** Trang web của repo. */
+  web: string | null;
+  /** URL gốc có nhúng mật khẩu/token (đã ẩn). */
+  secret: boolean;
+}
+
+export interface RepoInfo {
+  path: string;
+  gitDir: string;
+  branch: string | null;
+  upstream: string | null;
+  remotes: RemoteInfo[];
+  userName: string | null;
+  userEmail: string | null;
+  identityLocal: boolean;
+}
+
+/** Repository settings: repo ở đâu, remote/link là gì. */
+export const repoSettings = {
+  info: (path: string) => call<RepoInfo>("git_repo_info", { path }),
+  setUrl: (path: string, name: string, url: string) => call<void>("git_remote_set_url", { path, name, url }),
+  add: (path: string, name: string, url: string) => call<void>("git_remote_add", { path, name, url }),
+  remove: (path: string, name: string) => call<void>("git_remote_remove", { path, name }),
+  openWeb: (url: string) => call<void>("git_open_web", { url }),
+};

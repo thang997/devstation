@@ -564,20 +564,57 @@ fn open_url(url: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Dựng URL web của một commit từ URL remote (github/gitlab/bitbucket/chung).
-fn commit_web_url(remote: &str, hash: &str) -> Option<String> {
+/// Bỏ phần `user:mật khẩu@` (token) khỏi URL remote http(s) — không hiện/không copy bí mật ra UI.
+/// Trả (URL đã bỏ mật khẩu, có mật khẩu không). Giữ tên user (`https://user@host/…`) vì không phải bí mật.
+fn strip_url_secret(url: &str) -> (String, bool) {
+    let Some((scheme, rest)) = url.split_once("://") else { return (url.to_string(), false) };
+    if !(scheme == "http" || scheme == "https") {
+        return (url.to_string(), false);
+    }
+    let host_end = rest.find('/').unwrap_or(rest.len());
+    let auth_host = &rest[..host_end];
+    let Some((auth, host)) = auth_host.rsplit_once('@') else { return (url.to_string(), false) };
+    match auth.split_once(':') {
+        Some((user, _pw)) => {
+            let user = if user.is_empty() { String::new() } else { format!("{user}@") };
+            (format!("{scheme}://{user}{host}{}", &rest[host_end..]), true)
+        }
+        None => (url.to_string(), false),
+    }
+}
+
+/// Trang web của repo từ URL remote (github/gitlab/bitbucket/chung): `git@host:a/b.git`, `ssh://git@host[:port]/a/b`,
+/// `https://[user@]host/a/b.git` → `https://host/a/b`. Không dựng được (đường dẫn file, giao thức lạ) → None.
+fn repo_web_url(remote: &str) -> Option<String> {
     let r = remote.trim();
-    let https = if let Some(rest) = r.strip_prefix("git@") {
-        // scp-style: git@host:owner/repo.git → https://host/owner/repo.git
-        format!("https://{}", rest.replacen(':', "/", 1))
-    } else if let Some(rest) = r.strip_prefix("ssh://") {
-        format!("https://{}", rest.trim_start_matches("git@"))
-    } else if r.starts_with("http://") || r.starts_with("https://") {
-        r.to_string()
+    let hostpath = if let Some(rest) = r.strip_prefix("ssh://") {
+        // ssh://git@host:2222/owner/repo → host/owner/repo (cổng ssh không phải cổng web)
+        let rest = rest.rsplit_once('@').map_or(rest, |(_, h)| h);
+        let (host, path) = rest.split_once('/')?;
+        format!("{}/{}", host.split(':').next().unwrap_or(host), path)
+    } else if let Some((scheme, rest)) = r.split_once("://") {
+        if scheme != "http" && scheme != "https" {
+            return None;
+        }
+        let host_end = rest.find('/').unwrap_or(rest.len());
+        let host = rest[..host_end].rsplit_once('@').map_or(&rest[..host_end], |(_, h)| h);
+        return Some(format!("{scheme}://{host}{}", rest[host_end..].trim_end_matches('/').trim_end_matches(".git")));
+    } else if let Some((userhost, path)) = r.split_once(':') {
+        // scp-style: [user@]host:owner/repo.git (bỏ qua ổ đĩa Windows "C:\…")
+        if userhost.len() <= 1 || path.starts_with('\\') || path.starts_with("//") {
+            return None;
+        }
+        let host = userhost.rsplit_once('@').map_or(userhost, |(_, h)| h);
+        format!("{host}/{}", path.trim_start_matches('/'))
     } else {
         return None;
     };
-    let base = https.trim_end_matches('/').trim_end_matches(".git").to_string();
+    Some(format!("https://{}", hostpath.trim_end_matches('/').trim_end_matches(".git")))
+}
+
+/// Dựng URL web của một commit từ URL remote (github/gitlab/bitbucket/chung).
+fn commit_web_url(remote: &str, hash: &str) -> Option<String> {
+    let base = repo_web_url(remote)?;
     Some(if base.contains("gitlab") {
         format!("{base}/-/commit/{hash}")
     } else if base.contains("bitbucket") {
@@ -597,6 +634,176 @@ pub async fn git_open_commit_remote(path: String, hash: String) -> Result<(), St
     let url = commit_web_url(remote.trim(), &hash)
         .ok_or_else(|| format!("Không dựng được URL web từ remote: {}", remote.trim()))?;
     open_url(&url)
+}
+
+/* ── Repository settings: repo nằm ở đâu, remote/link là gì ── */
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteInfo {
+    name: String,
+    /// URL fetch (đã bỏ mật khẩu/token nếu có).
+    fetch: String,
+    /// URL push nếu khác fetch.
+    push: Option<String>,
+    /// Trang web của repo (mở trình duyệt).
+    web: Option<String>,
+    /// URL gốc có nhúng mật khẩu/token (đã ẩn).
+    secret: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoInfo {
+    path: String,
+    git_dir: String,
+    branch: Option<String>,
+    upstream: Option<String>,
+    remotes: Vec<RemoteInfo>,
+    user_name: Option<String>,
+    user_email: Option<String>,
+    /// Danh tính commit đặt riêng cho repo này (`git config --local`), không phải global.
+    identity_local: bool,
+}
+
+/// Thông tin repo cho modal Repository settings. Chỉ đọc (không xếp hàng khoá repo); các lệnh chạy song song.
+#[tauri::command]
+pub async fn git_repo_info(path: String) -> Result<RepoInfo, String> {
+    let (top, gitdir, branch, upstream, remotes, ident) = tokio::join!(
+        git(&path, &["rev-parse", "--show-toplevel"]),
+        git(&path, &["rev-parse", "--absolute-git-dir"]),
+        git(&path, &["branch", "--show-current"]),
+        git(&path, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]),
+        git(&path, &["remote", "-v"]),
+        git(&path, &["config", "--show-scope", "--get-regexp", r"^user\.(name|email)$"]),
+    );
+    let top = top?;
+    let some = |r: Result<String, String>| r.ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+
+    // `git remote -v`: "origin\t<url> (fetch)" / "origin\t<url> (push)".
+    let mut list: Vec<RemoteInfo> = Vec::new();
+    for line in remotes.unwrap_or_default().lines() {
+        let Some((name, rest)) = line.split_once('\t') else { continue };
+        let (url, kind) = match rest.rsplit_once(' ') {
+            Some((u, k)) => (u.trim(), k),
+            None => (rest.trim(), "(fetch)"),
+        };
+        let (clean, secret) = strip_url_secret(url);
+        let idx = match list.iter().position(|r| r.name == name) {
+            Some(i) => i,
+            None => {
+                list.push(RemoteInfo { name: name.to_string(), fetch: String::new(), push: None, web: None, secret: false });
+                list.len() - 1
+            }
+        };
+        let r = &mut list[idx];
+        r.secret |= secret;
+        if kind == "(push)" {
+            r.push = Some(clean);
+        } else {
+            r.web = repo_web_url(url);
+            r.fetch = clean;
+        }
+    }
+    for r in &mut list {
+        if r.push.as_deref() == Some(r.fetch.as_str()) {
+            r.push = None;
+        }
+    }
+    // origin lên đầu, còn lại giữ thứ tự git trả về.
+    list.sort_by_key(|r| r.name != "origin");
+
+    // "--show-scope": "<scope>\tuser.name <giá trị>" — dòng sau ghi đè dòng trước (local sau global).
+    let (mut user_name, mut user_email, mut identity_local) = (None, None, false);
+    for line in ident.unwrap_or_default().lines() {
+        let Some((scope, kv)) = line.split_once('\t') else { continue };
+        let Some((key, val)) = kv.split_once(' ') else { continue };
+        if scope == "local" || scope == "worktree" {
+            identity_local = true;
+        }
+        match key {
+            "user.name" => user_name = Some(val.to_string()),
+            "user.email" => user_email = Some(val.to_string()),
+            _ => {}
+        }
+    }
+    Ok(RepoInfo {
+        path: top.trim().replace('/', std::path::MAIN_SEPARATOR_STR),
+        git_dir: some(gitdir).unwrap_or_default().replace('/', std::path::MAIN_SEPARATOR_STR),
+        branch: some(branch),
+        upstream: some(upstream),
+        remotes: list,
+        user_name,
+        user_email,
+        identity_local,
+    })
+}
+
+fn check_remote_args(name: &str, url: Option<&str>) -> Result<(), String> {
+    if name.is_empty() || name.starts_with('-') || name.contains(char::is_whitespace) {
+        return Err("Tên remote không hợp lệ".into());
+    }
+    if let Some(u) = url {
+        if u.is_empty() || u.starts_with('-') {
+            return Err("Nhập URL remote".into());
+        }
+    }
+    Ok(())
+}
+
+/// Đổi URL của remote (`git remote set-url`).
+#[tauri::command]
+pub async fn git_remote_set_url(path: String, name: String, url: String) -> Result<(), String> {
+    let _serial = repo_lock(&path).lock_owned().await;
+    let (n, u) = (name.trim(), url.trim());
+    check_remote_args(n, Some(u))?;
+    git(&path, &["remote", "set-url", n, u]).await.map(|_| ())
+}
+
+/// Thêm remote (`git remote add`).
+#[tauri::command]
+pub async fn git_remote_add(path: String, name: String, url: String) -> Result<(), String> {
+    let _serial = repo_lock(&path).lock_owned().await;
+    let (n, u) = (name.trim(), url.trim());
+    check_remote_args(n, Some(u))?;
+    git(&path, &["remote", "add", n, u]).await.map(|_| ())
+}
+
+/// Xoá remote (`git remote remove`) — chỉ bỏ liên kết trong repo local, không đụng repo trên server.
+#[tauri::command]
+pub async fn git_remote_remove(path: String, name: String) -> Result<(), String> {
+    let _serial = repo_lock(&path).lock_owned().await;
+    let n = name.trim();
+    check_remote_args(n, None)?;
+    git(&path, &["remote", "remove", n]).await.map(|_| ())
+}
+
+/// Mở trang web của repo (chỉ http/https).
+#[tauri::command]
+pub fn git_open_web(url: String) -> Result<(), String> {
+    let u = url.trim();
+    if !(u.starts_with("https://") || u.starts_with("http://")) || u.contains(char::is_whitespace) || u.contains('"') {
+        return Err("URL không hợp lệ".into());
+    }
+    open_url(u)
+}
+
+#[cfg(test)]
+mod web_url_tests {
+    use super::*;
+    #[test]
+    fn web_urls() {
+        assert_eq!(repo_web_url("git@github.com:a/b.git").as_deref(), Some("https://github.com/a/b"));
+        assert_eq!(repo_web_url("ssh://git@gitlab.x.vn:2222/g/sub/r.git").as_deref(), Some("https://gitlab.x.vn/g/sub/r"));
+        assert_eq!(repo_web_url("https://u:tok@github.com/a/b.git").as_deref(), Some("https://github.com/a/b"));
+        assert_eq!(repo_web_url("http://10.0.0.5:8080/a/b/").as_deref(), Some("http://10.0.0.5:8080/a/b"));
+        assert_eq!(repo_web_url("C:\\repos\\x"), None);
+        assert_eq!(repo_web_url("/srv/git/x.git"), None);
+        assert_eq!(strip_url_secret("https://u:tok@github.com/a/b.git"), ("https://u@github.com/a/b.git".into(), true));
+        assert_eq!(strip_url_secret("https://:tok@h/a"), ("https://h/a".into(), true));
+        assert_eq!(strip_url_secret("https://u@h/a"), ("https://u@h/a".into(), false));
+        assert_eq!(commit_web_url("git@gitlab.com:a/b.git", "abc").as_deref(), Some("https://gitlab.com/a/b/-/commit/abc"));
+    }
 }
 
 #[derive(Serialize)]
