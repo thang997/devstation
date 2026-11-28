@@ -1,4 +1,4 @@
-import { useMemo, useState, useSyncExternalStore } from "react";
+import { useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { X } from "lucide-react";
 import { APPS, appShortcut, loadApp, loadedApp, moveApp, orderedApps, resetAppOrder, subscribeAppOrder } from "../apps/registry";
 import type { AppManifest, Command } from "../apps/types";
@@ -43,6 +43,10 @@ export function Launcher({ inline = false }: { inline?: boolean }) {
   const version = useAppVersion();
   const [q, setQ] = useState("");
   const [sel, setSel] = useState(0);
+  const listRef = useRef<HTMLDivElement>(null);
+  /** Lần đổi `sel` này do bàn phím (↑/↓, gõ lọc, Alt+↑/↓) → cuộn mục đang chọn vào tầm nhìn; rê chuột thì không cuộn. */
+  const kbNav = useRef(false);
+  const selKey = (fn: (s: number) => number) => { kbNav.current = true; setSel(fn); };
   const appOrder = useSyncExternalStore(subscribeAppOrder, orderedApps);
   /** Kéo-thả sắp thứ tự app: app đang kéo + hàng đang rê lên (chèn trước hàng đó; null = cuối). */
   const [drag, setDrag] = useState<{ id: AppManifest["id"]; over: AppManifest["id"] | "end" | null } | null>(null);
@@ -88,6 +92,12 @@ export function Launcher({ inline = false }: { inline?: boolean }) {
   }, [q, commands, appOrder]);
   const canReorder = !q.trim();
 
+  useLayoutEffect(() => {
+    if (!kbNav.current) return;
+    kbNav.current = false;
+    listRef.current?.querySelector<HTMLElement>(".launcher-app.on, .launcher-cmd.on")?.scrollIntoView({ block: "nearest" });
+  }, [sel, items]);
+
   /** Alt+↑/↓: dời app đang chọn lên/xuống một bậc. */
   const nudge = (dir: -1 | 1) => {
     const it = items[sel];
@@ -97,7 +107,7 @@ export function Launcher({ inline = false }: { inline?: boolean }) {
     if (j < 0 || j >= appOrder.length) return;
     // Xuống: chèn trước app đứng sau app kế tiếp (hoặc về cuối).
     moveApp(it.app.id, dir < 0 ? appOrder[j].id : (appOrder[j + 1]?.id ?? null));
-    setSel(j);
+    selKey(() => j);
   };
 
   const run = (it: Item | undefined) => {
@@ -113,15 +123,16 @@ export function Launcher({ inline = false }: { inline?: boolean }) {
         autoFocus
         value={q}
         placeholder={tr("shell.searchAppsOrCommandsSelectEnter")}
-        onChange={(e) => { setQ(e.target.value); setSel(0); }}
+        onChange={(e) => { setQ(e.target.value); selKey(() => 0); }}
         onKeyDown={(e) => {
           if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) { e.preventDefault(); nudge(e.key === "ArrowUp" ? -1 : 1); }
-          else if (e.key === "ArrowDown") { e.preventDefault(); setSel((s) => Math.min(s + 1, items.length - 1)); }
-          else if (e.key === "ArrowUp") { e.preventDefault(); setSel((s) => Math.max(s - 1, 0)); }
+          else if (e.key === "ArrowDown") { e.preventDefault(); selKey((s) => Math.min(s + 1, items.length - 1)); }
+          else if (e.key === "ArrowUp") { e.preventDefault(); selKey((s) => Math.max(s - 1, 0)); }
           else if (e.key === "Enter") run(items[sel]);
         }}
       />
       <div
+        ref={listRef}
         className={`launcher-list ${drag?.over === "end" ? "drop-end" : ""}`}
         onDragOver={(e) => { if (!drag) return; e.preventDefault(); if (drag.over !== "end") setDrag({ ...drag, over: "end" }); }}
         onDrop={(e) => { e.preventDefault(); if (drag) moveApp(drag.id, null); setDrag(null); }}
