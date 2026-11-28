@@ -1142,7 +1142,22 @@
     "sudoTitle": "Cần quyền root",
     "sudoAsk": "Phiên SFTP chạy bằng user \"{user}\", không có quyền ghi vào:\n{path}\n\n(Terminal có thể hiện root vì bạn đã sudo trong đó — panel file là phiên riêng.)\n\nThử lại bằng sudo? DevStation chạy lệnh qua ssh và tự điền mật khẩu SSH đã lưu khi sudo hỏi. Chỉ hỏi một lần cho panel này.",
     "sudoRetry": "Thử lại bằng sudo",
-    "sftpNoPermission": "Không có quyền: \"{user}\" không ghi được vào {path}."
+    "sftpNoPermission": "Không có quyền: \"{user}\" không ghi được vào {path}.",
+    "dockerGroupByService": "Gom theo service",
+    "dockerCopyService": "Copy tên service",
+    "dockerNodes": "{n} container",
+    "dockerUnhealthy": "{n} không khoẻ",
+    "dockerOrphan": "Container mồ côi",
+    "dockerMaybeOrphan": "Có thể mồ côi",
+    "dockerOrphans": "{n} mồ côi",
+    "dockerOrphanSwarm": "Swarm đã bỏ task này ({state}) nhưng container vẫn chạy",
+    "dockerOrphanMissing": "Swarm không còn task này nhưng container vẫn chạy",
+    "dockerOrphanDuplicate": "trùng slot với container mới hơn {newer} — thường là bản cũ chưa được tắt",
+    "dockerRemove": "Xoá",
+    "dockerRemoveOrphan": "Xoá container mồ côi",
+    "dockerRemoveTitle": "Xoá container",
+    "dockerRemoveConfirm": "Xoá container {name} ({image}) trên {host}?\n\nLý do: {reason}.\n\nChạy docker rm -f — container bị dừng và xoá (mất dữ liệu ghi trong container, volume vẫn giữ). Task hiện tại của Swarm vẫn chạy bình thường.",
+    "dockerRemoveProd": "Đây là server PROD."
   },
   "tools": {
     "showRaw": "Raw",

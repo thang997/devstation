@@ -1406,3 +1406,18 @@ svg.pdf-home-ic { width: 40px; height: 40px; color: #ff7b72; }
 .rs-remote { display: flex; flex-direction: column; gap: 3px; }
 .rs-name { flex: none; font-family: var(--mono, monospace); }
 .rs-name-input { width: 110px; flex: none; }
+
+/* SSH — Docker: gom container theo service */
+.docker-group { display: flex; flex-direction: column; gap: 6px; }
+.docker-group:not(.solo) > .docker-row { margin-left: 22px; }
+.docker-group-head { display: flex; align-items: center; gap: 6px; padding: 4px 6px; cursor: pointer; user-select: none; color: var(--fg); min-width: 0; }
+.docker-group-head:hover { background: var(--bg-2); }
+.docker-group-head > svg { flex: none; color: var(--muted); }
+.docker-group-head > svg + svg { color: var(--accent); }
+.docker-group-head .badge { flex: none; }
+.badge.warn { color: var(--warn, #d29922); border-color: currentColor; }
+
+.docker-row.orphan { border-color: var(--warn); }
+.docker-orphan { display: flex; align-items: center; gap: 4px; color: var(--warn); min-width: 0; margin-top: 2px; }
+.docker-orphan > svg { flex: none; }
+.docker-row .error-box { margin-top: 4px; }

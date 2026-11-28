@@ -29,6 +29,19 @@ export interface DockerContainer {
   image: string;
   status: string;
   ports: string;
+  /** Service (label Swarm / Compose); rỗng = chạy lẻ. */
+  service?: string;
+  /** Compose project. */
+  project?: string;
+  /** Thời điểm tạo container (chuỗi của docker, cùng múi giờ server). */
+  created?: string;
+  /** Swarm: id task + slot (số replica). */
+  taskId?: string;
+  slot?: number | null;
+  /** Swarm (node manager): trạng thái mong muốn của task ("Running", "Shutdown"…; "missing" = Swarm không còn task); rỗng = không biết. */
+  swarmDesired?: string;
+  swarmCurrent?: string;
+  swarmError?: string;
 }
 
 export interface TunnelCfg {
@@ -72,6 +85,8 @@ export const ssh = {
   statStop: (id: string) => invoke<void>("ssh_stat_stop", { id }),
   /** Liệt kê container Docker đang chạy trên server. */
   dockerPs: (cfg: ConnectCfg) => (isTauri() ? invoke<DockerContainer[]>("ssh_docker_ps", { cfg }) : needApp()),
+  /** docker rm -f (xoá container mồ côi). */
+  dockerRm: (cfg: ConnectCfg, id: string) => (isTauri() ? invoke<void>("ssh_docker_rm", { cfg, id }) : needApp()),
   /** Cuối ~/.bash_history + ~/.zsh_history trên server (mới nhất trước, bỏ trùng). */
   shellHistory: (cfg: ConnectCfg) => (isTauri() ? invoke<string[]>("ssh_shell_history", { cfg }) : needApp()),
 };

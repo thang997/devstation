@@ -1142,7 +1142,22 @@
     "sudoTitle": "Root permission needed",
     "sudoAsk": "The SFTP session runs as \"{user}\", which cannot write to:\n{path}\n\n(The terminal may show root because you used sudo there — the file panel is a separate session.)\n\nRetry with sudo? DevStation runs the command via ssh and fills in your saved SSH password at the sudo prompt. It will ask only once for this panel.",
     "sudoRetry": "Retry with sudo",
-    "sftpNoPermission": "No permission: \"{user}\" cannot write to {path}."
+    "sftpNoPermission": "No permission: \"{user}\" cannot write to {path}.",
+    "dockerGroupByService": "Group by service",
+    "dockerCopyService": "Copy service name",
+    "dockerNodes": "{n} containers",
+    "dockerUnhealthy": "{n} not healthy",
+    "dockerOrphan": "Orphan container",
+    "dockerMaybeOrphan": "Possibly orphaned",
+    "dockerOrphans": "{n} orphaned",
+    "dockerOrphanSwarm": "Swarm already dropped this task ({state}) but the container is still running",
+    "dockerOrphanMissing": "the task no longer exists in Swarm but the container is still running",
+    "dockerOrphanDuplicate": "same slot as the newer container {newer} — likely an old copy that wasn't stopped",
+    "dockerRemove": "Remove",
+    "dockerRemoveOrphan": "Remove orphan container",
+    "dockerRemoveTitle": "Remove container",
+    "dockerRemoveConfirm": "Remove container {name} ({image}) on {host}?\n\nReason: {reason}.\n\nRuns docker rm -f — the container is stopped and deleted (its writable layer is lost; volumes are kept). Swarm keeps running the current task.",
+    "dockerRemoveProd": "This is a PROD server."
   },
   "tools": {
     "showRaw": "Raw",

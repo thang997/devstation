@@ -3,8 +3,8 @@ import { copyText } from "../../shell/clipboard";
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
-  ChevronDown, ChevronRight, Container, Copy, CornerDownRight, FileUp, Folder, FolderOpen, FolderPlus, Hash, History, Image, KeyRound, List, Lock,
-  Monitor, Pencil, Play, Plus, RefreshCw, Save, Search, Server, Settings, Square, SquareTerminal, Target, Trash2, TriangleAlert, Waypoints, X, Zap,
+  Boxes, ChevronDown, ChevronRight, Container, Copy, CornerDownRight, FileUp, Folder, FolderOpen, FolderPlus, Hash, History, Image, KeyRound, List, Lock,
+  Layers, Monitor, Pencil, Play, Plus, RefreshCw, Save, Search, Server, Settings, Square, SquareTerminal, Target, Trash2, TriangleAlert, Waypoints, X, Zap,
 } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { AppModule, Tab } from "../types";
@@ -23,6 +23,7 @@ import { Splitter, useSplitSize } from "../../shell/Resizable";
 import { SftpPanel } from "./SftpPanel";
 import { SshStats } from "./SshStats";
 import { ssh, dockerFs, errText, type ConnectCfg, type DockerContainer } from "./api";
+import { findOrphans, groupByService, isUnhealthy, serviceOf, type Orphan } from "./dockerGroup";
 import { jumpCfgFor, removeHost, saveHost, setHosts, uid, useHosts, type SavedHost } from "./hosts";
 import { addFolder, removeFolder, renameFolder, toggleFolder, tunnelFolders, useFolders } from "./folders";
 import {
@@ -858,6 +859,8 @@ function TunnelModal({ tunnel, onClose }: { tunnel: SavedTunnel; onClose: () => 
 
 /* ── Modal Docker: liệt kê container + exec vào ── */
 
+const LS_DOCKER_GROUP = "devstation.ssh.dockerGroup";
+
 function DockerModal({ cfg, base, onClose }: { cfg: ConnectCfg; base: ExecBase; onClose: () => void }) {
   const tr = useT();
   const [list, setList] = useState<DockerContainer[] | null>(null);
@@ -865,6 +868,11 @@ function DockerModal({ cfg, base, onClose }: { cfg: ConnectCfg; base: ExecBase; 
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
   const [menu, setMenu] = useState<{ x: number; y: number; items: CtxItem[] } | null>(null);
+  // Gom theo service (nhớ lựa chọn); nhóm đang gập.
+  const [grouped, setGrouped] = useState(() => localStorage.getItem(LS_DOCKER_GROUP) !== "0");
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  const toggleGrouped = () => setGrouped((g) => { localStorage.setItem(LS_DOCKER_GROUP, g ? "0" : "1"); return !g; });
+  const toggleGroup = (key: string) => setCollapsed((prev) => { const n = new Set(prev); if (n.has(key)) n.delete(key); else n.add(key); return n; });
   const load = () => {
     setLoading(true);
     setErr("");
@@ -876,8 +884,37 @@ function DockerModal({ cfg, base, onClose }: { cfg: ConnectCfg; base: ExecBase; 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load(); }, []);
   const exec = (c: DockerContainer) => { connectExec(base, c.name || c.id); onClose(); };
+  const orphans = useMemo(() => findOrphans(list ?? []), [list]);
+  const [removing, setRemoving] = useState<string | null>(null);
+  const [rmErr, setRmErr] = useState<{ id: string; msg: string } | null>(null);
+  const orphanText = (o: Orphan) =>
+    o.reason === "swarm" ? tr("ssh.dockerOrphanSwarm", { state: o.detail || "?" })
+    : o.reason === "missing" ? tr("ssh.dockerOrphanMissing")
+    : tr("ssh.dockerOrphanDuplicate", { newer: o.detail });
+  const removeOrphan = async (c: DockerContainer, o: Orphan) => {
+    const ok = await confirmDialog({
+      title: tr("ssh.dockerRemoveTitle"),
+      message: tr("ssh.dockerRemoveConfirm", { name: c.name || c.id.slice(0, 12), image: c.image, reason: orphanText(o), host: base.name || cfg.host })
+        + (base.prod ? `\n\n${tr("ssh.dockerRemoveProd")}` : ""),
+      confirmLabel: tr("ssh.dockerRemove"),
+    });
+    if (!ok) return;
+    setRemoving(c.id);
+    setRmErr(null);
+    try {
+      await ssh.dockerRm(cfg, c.id);
+      load();
+    } catch (e) {
+      setRmErr({ id: c.id, msg: errText(e) });
+    } finally {
+      setRemoving(null);
+    }
+  };
   const rowMenu = (c: DockerContainer): CtxItem[] => [
     { id: "exec", icon: <Play />, label: tr("ssh.execShellIntoContainer"), action: () => exec(c) },
+    ...(orphans.get(c.id)
+      ? [{ id: "rm", icon: <Trash2 />, label: tr("ssh.dockerRemoveOrphan"), danger: true, action: () => void removeOrphan(c, orphans.get(c.id)!) } as CtxItem]
+      : []),
     { id: "s1", sep: true },
     { id: "copy", icon: <Copy />, label: tr("ssh.copyName"), action: () => void copyText(c.name || c.id) },
     { id: "copyid", icon: <Hash />, label: tr("ssh.copyId"), action: () => void copyText(c.id) },
@@ -902,7 +939,7 @@ function DockerModal({ cfg, base, onClose }: { cfg: ConnectCfg; base: ExecBase; 
         {!loading && !err && list && list.length > 0 && (() => {
           const ql = q.trim().toLowerCase();
           const shown = ql
-            ? list.filter((c) => `${c.name} ${c.image} ${c.ports} ${c.id}`.toLowerCase().includes(ql))
+            ? list.filter((c) => `${c.name} ${c.image} ${c.ports} ${c.id} ${serviceOf(c).service} ${c.project ?? ""}`.toLowerCase().includes(ql))
             : list;
           return (
           <>
@@ -917,27 +954,78 @@ function DockerModal({ cfg, base, onClose }: { cfg: ConnectCfg; base: ExecBase; 
             />
             {q && <button className="icon-btn" title={tr("ssh.clear")} onClick={() => setQ("")}><X /></button>}
             <span className="muted small" style={{ whiteSpace: "nowrap" }}>{shown.length}/{list.length}</span>
+            <button className={grouped ? "icon-btn on" : "icon-btn"} title={tr("ssh.dockerGroupByService")} aria-pressed={grouped} onClick={toggleGrouped}><Layers /></button>
           </div>
           {shown.length === 0 ? (
             <div className="muted pad">{tr("ssh.noContainerMatches")} “{q}”.</div>
           ) : (
           <div className="docker-list">
-            {shown.map((c) => (
+            {(grouped ? groupByService(shown) : [{ key: "", service: "", project: "", items: shown }]).map((g) => {
+              const solo = !grouped || g.items.length < 2;
+              const open = solo || !collapsed.has(g.key) || !!ql;
+              const bad = g.items.filter(isUnhealthy).length;
+              const nOrphan = g.items.filter((c) => orphans.has(c.id)).length;
+              return (
+              <div key={g.key || "all"} className={solo ? "docker-group solo" : "docker-group"}>
+                {!solo && (
+                  <div
+                    className="docker-group-head"
+                    role="button"
+                    tabIndex={0}
+                    aria-expanded={open}
+                    onClick={() => toggleGroup(g.key)}
+                    onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleGroup(g.key); } }}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      setMenu({ x: e.clientX, y: e.clientY, items: [
+                        { id: "copysvc", icon: <Copy />, label: tr("ssh.dockerCopyService"), action: () => void copyText(g.service) },
+                      ] });
+                    }}
+                  >
+                    {open ? <ChevronDown /> : <ChevronRight />}
+                    <Boxes />
+                    <b className="ellipsis">{g.service}</b>
+                    {g.project && <span className="muted small ellipsis">{g.project}</span>}
+                    <span className="badge">{tr("ssh.dockerNodes", { n: g.items.length })}</span>
+                    {bad > 0 && <span className="badge warn">{tr("ssh.dockerUnhealthy", { n: bad })}</span>}
+                    {nOrphan > 0 && <span className="badge warn">{tr("ssh.dockerOrphans", { n: nOrphan })}</span>}
+                  </div>
+                )}
+                {open && g.items.map((c) => {
+                  const o = orphans.get(c.id);
+                  return (
               <div
                 key={c.id}
-                className="docker-row"
+                className={o ? "docker-row orphan" : "docker-row"}
                 onDoubleClick={() => exec(c)}
                 onContextMenu={(e) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, items: rowMenu(c) }); }}
                 title={tr("ssh.doubleClickToExecIntoThis")}
               >
                 <span className="docker-ic"><Container /></span>
                 <div className="grow" style={{ minWidth: 0 }}>
-                  <div className="ellipsis"><b>{c.name || c.id.slice(0, 12)}</b> <span className="muted small">{c.image}</span></div>
+                  <div className="ellipsis">
+                    <b>{c.name || c.id.slice(0, 12)}</b>{c.slot != null && <span className="muted small"> #{c.slot}</span>} <span className="muted small">{c.image}</span>
+                  </div>
                   <div className="muted small ellipsis">{c.status}{c.ports ? ` · ${c.ports}` : ""}</div>
+                  {o && (
+                    <div className="docker-orphan small" title={orphanText(o)}>
+                      <TriangleAlert /> <span className="ellipsis">{o.reason === "duplicate" ? tr("ssh.dockerMaybeOrphan") : tr("ssh.dockerOrphan")} — {orphanText(o)}</span>
+                    </div>
+                  )}
+                  {rmErr?.id === c.id && <div className="error-box pre small">{rmErr.msg}</div>}
                 </div>
+                {o && (
+                  <button className="danger" disabled={removing !== null} onClick={() => void removeOrphan(c, o)} title={tr("ssh.dockerRemoveOrphan")}>
+                    {removing === c.id ? <Spinner /> : <Trash2 />}{tr("ssh.dockerRemove")}
+                  </button>
+                )}
                 <button className="primary" onClick={() => exec(c)} title={tr("ssh.openAShellInsideThisContainer")}><SquareTerminal />Exec</button>
               </div>
-            ))}
+                  );
+                })}
+              </div>
+              );
+            })}
           </div>
           )}
           </>

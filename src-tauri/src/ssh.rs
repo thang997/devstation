@@ -1295,6 +1295,22 @@ pub struct DockerContainer {
     image: String,
     status: String,
     ports: String,
+    /// Service mà container thuộc về (label `com.docker.swarm.service.name` hoặc `com.docker.compose.service`);
+    /// rỗng = chạy lẻ (`docker run`) — UI tự đoán theo tên.
+    service: String,
+    /// Compose project (`com.docker.compose.project`) — phân biệt hai stack có cùng tên service.
+    project: String,
+    /// Thời điểm tạo container (`docker ps {{.CreatedAt}}`, cùng múi giờ server → so chuỗi được).
+    created: String,
+    /// Swarm: id task (label `com.docker.swarm.task.id`) và slot (số replica, từ `com.docker.swarm.task.name`).
+    task_id: String,
+    slot: Option<u32>,
+    /// Swarm (chỉ khi node là manager): trạng thái MONG MUỐN của task theo `docker service ps` — "Running",
+    /// "Shutdown"…; "missing" = Swarm không còn task này; rỗng = không biết (node worker / không phải Swarm).
+    swarm_desired: String,
+    /// Trạng thái hiện tại + lỗi của task theo Swarm ("Failed 5 days ago", "task: non-zero exit (137)").
+    swarm_current: String,
+    swarm_error: String,
 }
 
 /// Format tab-delimited để parse chắc tay (id đầy đủ, không cắt).
@@ -1302,7 +1318,13 @@ pub struct DockerContainer {
 // Dùng token ASCII in được, hầu như không xuất hiện trong tên/image/ports của docker.
 const DOCKER_DELIM: &str = "<%DS%>";
 const DOCKER_PS_FMT: &str =
-    "docker ps --no-trunc --format '{{.ID}}<%DS%>{{.Names}}<%DS%>{{.Image}}<%DS%>{{.Status}}<%DS%>{{.Ports}}' 2>&1";
+    "docker ps --no-trunc --format '{{.ID}}<%DS%>{{.Names}}<%DS%>{{.Image}}<%DS%>{{.Status}}<%DS%>{{.Ports}}<%DS%>{{.Label \"com.docker.swarm.service.name\"}}<%DS%>{{.Label \"com.docker.compose.service\"}}<%DS%>{{.Label \"com.docker.compose.project\"}}<%DS%>{{.CreatedAt}}<%DS%>{{.Label \"com.docker.swarm.task.id\"}}<%DS%>{{.Label \"com.docker.swarm.task.name\"}}' 2>&1; \
+     S=$(docker ps --format '{{.Label \"com.docker.swarm.service.name\"}}' 2>/dev/null | sort -u | grep -v '^$' | grep -v '<no value>'); \
+     if [ -n \"$S\" ] && docker node ls >/dev/null 2>&1; then echo __DS_TASKS__; \
+     docker service ps --no-trunc --format '{{.ID}}<%DS%>{{.DesiredState}}<%DS%>{{.CurrentState}}<%DS%>{{.Error}}' $S 2>/dev/null; fi";
+
+/// Mốc tách phần task Swarm (`docker service ps`, chỉ có khi node là manager) khỏi phần `docker ps`.
+const DOCKER_TASKS_MARK: &str = "__DS_TASKS__";
 
 /// Dấu nhắc mật khẩu sudo riêng của app (để nhận ra và tự điền, không lẫn với output).
 const SUDO_PROMPT: &str = "__DS_SUDO__:";
@@ -1437,9 +1459,30 @@ fn parse_docker_ps(out: &str) -> Result<Vec<DockerContainer>, String> {
     if low.contains("permission denied") && low.contains(".sock") {
         return Err("Không có quyền truy cập Docker (user không thuộc nhóm docker, server không có sudo).".into());
     }
-    let mut v = Vec::new();
+    // Phần sau mốc = task Swarm (`docker service ps`): id → (desired, current, error).
+    let mut tasks: Option<HashMap<String, (String, String, String)>> = None;
+    let mut ps_part = String::new();
     for line in out.lines() {
         let line = line.trim_end_matches('\r');
+        if line.trim() == DOCKER_TASKS_MARK {
+            tasks = Some(HashMap::new());
+            continue;
+        }
+        match tasks.as_mut() {
+            Some(t) => {
+                let c: Vec<&str> = line.split(DOCKER_DELIM).map(|s| s.trim()).collect();
+                if c.len() >= 3 && !c[0].is_empty() && c[0].chars().all(|ch| ch.is_ascii_alphanumeric()) {
+                    t.insert(c[0].to_string(), (c[1].to_string(), c[2].to_string(), c.get(3).copied().unwrap_or("").to_string()));
+                }
+            }
+            None => {
+                ps_part.push_str(line);
+                ps_part.push('\n');
+            }
+        }
+    }
+    let mut v = Vec::new();
+    for line in ps_part.lines() {
         if !line.contains(DOCKER_DELIM) {
             continue;
         }
@@ -1452,12 +1495,39 @@ fn parse_docker_ps(out: &str) -> Result<Vec<DockerContainer>, String> {
         if id.is_empty() || !id.chars().all(|c| c.is_ascii_hexdigit()) {
             continue;
         }
+        let col = |i: usize| cols.get(i).map(|s| s.trim()).unwrap_or("").to_string();
+        // Docker cũ in "<no value>" khi thiếu label.
+        let label = |i: usize| {
+            let s = col(i);
+            if s == "<no value>" { String::new() } else { s }
+        };
+        let swarm = label(5);
+        let task_id = label(9);
+        // task.name = "<service>.<slot>.<task id>" (service global: "<service>.<node id>.<task id>" → không có slot)
+        let task_name = label(10);
+        let slot = if swarm.is_empty() {
+            None
+        } else {
+            task_name.strip_prefix(&format!("{swarm}.")).and_then(|r| r.split('.').next()).and_then(|n| n.parse().ok())
+        };
+        let (swarm_desired, swarm_current, swarm_error) = match (&tasks, task_id.is_empty()) {
+            (Some(t), false) => t.get(&task_id).cloned().unwrap_or_else(|| ("missing".into(), String::new(), String::new())),
+            _ => Default::default(),
+        };
         v.push(DockerContainer {
             id: id.to_string(),
-            name: cols.get(1).map(|s| s.trim()).unwrap_or("").to_string(),
-            image: cols.get(2).map(|s| s.trim()).unwrap_or("").to_string(),
-            status: cols.get(3).map(|s| s.trim()).unwrap_or("").to_string(),
-            ports: cols.get(4).map(|s| s.trim()).unwrap_or("").to_string(),
+            name: col(1),
+            image: col(2),
+            status: col(3),
+            ports: col(4),
+            service: if swarm.is_empty() { label(6) } else { swarm },
+            project: label(7),
+            created: col(8),
+            task_id,
+            slot,
+            swarm_desired,
+            swarm_current,
+            swarm_error,
         });
     }
     // Không parse được container nào nhưng output CÓ nội dung → nhiều khả năng là lỗi khác
@@ -1523,6 +1593,32 @@ pub async fn ssh_docker_ps(cfg: ConnectCfg) -> Result<Vec<DockerContainer>, Stri
     .await
     .map_err(|e| e.to_string())??;
     parse_docker_ps(&out)
+}
+
+/// Xoá (dừng + gỡ) một container — dùng cho container mồ côi (Swarm đã bỏ task nhưng container vẫn chạy).
+/// `docker rm -f <id>`; id phải là hex (id đầy đủ hoặc rút gọn) để không ghép được gì khác vào lệnh.
+#[tauri::command]
+pub async fn ssh_docker_rm(cfg: ConnectCfg, id: String) -> Result<(), String> {
+    let id = id.trim().to_string();
+    if id.len() < 12 || id.len() > 64 || !id.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err("Container id không hợp lệ".into());
+    }
+    let cmd = format!("docker rm -f {id} 2>&1; echo __DS_RC__$?");
+    let out = tauri::async_runtime::spawn_blocking(move || {
+        ssh_run_once(&cfg, &with_docker_sudo(&cmd), std::time::Duration::from_secs(60), 200_000)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    if out.lines().any(|l| l.trim() == "__DS_RC__0") {
+        return Ok(());
+    }
+    let msg: String = out
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty() && !l.starts_with("__DS_RC__") && !l.contains(SUDO_PROMPT))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Err(if msg.is_empty() { "docker rm thất bại".into() } else { msg })
 }
 
 // ───────────── Duyệt file TRONG container Docker (qua `docker exec`, không phải sftp host) ─────────────
@@ -1866,5 +1962,39 @@ mod cmd_history_tests {
     fn server_history() {
         let out = "Warning: Permanently added 'x' (ED25519)\r\nroot@x's password: \r\n__DS_HIST_BEGIN__\r\nls\r\n#1700000000\r\ncd /etc\r\nls\r\n: 1700000001:0;git pull\r\n";
         assert_eq!(parse_shell_history(out), vec!["git pull", "ls", "cd /etc"]);
+    }
+}
+
+#[cfg(test)]
+mod docker_ps_tests {
+    use super::*;
+    #[test]
+    fn labels_to_service() {
+        let out = "motd\r\n\
+            aaa111<%DS%>shop-crm-1<%DS%>crm:1<%DS%>Up 2 days<%DS%><%DS%><%DS%>crm<%DS%>shop<%DS%>2026-11-26 10:00:00 +0700 +07<%DS%><%DS%>\r\n\
+            ccc333<%DS%>redis<%DS%>redis:7<%DS%>Up 5 days<%DS%><%DS%><no value><%DS%><no value><%DS%><no value>\r\n\
+            ddd444<%DS%>old<%DS%>img<%DS%>Up<%DS%>\r\n";
+        let v = parse_docker_ps(out).unwrap();
+        let s: Vec<(String, String)> = v.iter().map(|c| (c.service.clone(), c.project.clone())).collect();
+        assert_eq!(s, vec![("crm".into(), "shop".into()), ("".into(), "".into()), ("".into(), "".into())]);
+        assert!(v.iter().all(|c| c.swarm_desired.is_empty() && c.slot.is_none()));
+    }
+    #[test]
+    fn swarm_orphan_from_manager() {
+        // Giống thật: task wpof… Swarm đã đánh failed (desired Shutdown) nhưng container vẫn chạy; zbyr… là task đang chạy.
+        let out = "\
+            0a1b<%DS%>stag-crm_crm-app.1.wpof<%DS%>sha256:1e8a<%DS%>Up 5 days<%DS%>5000/tcp<%DS%>stag-crm_crm-app<%DS%><%DS%><%DS%>2026-11-23 10:51:00 +0700 +07<%DS%>wpof<%DS%>stag-crm_crm-app.1.wpof\r\n\
+            0c2d<%DS%>stag-crm_crm-app.1.zbyr<%DS%>reg/crm-app:8.0<%DS%>Up 23 hours<%DS%>5000/tcp<%DS%>stag-crm_crm-app<%DS%><%DS%><%DS%>2026-11-27 11:06:35 +0700 +07<%DS%>zbyr<%DS%>stag-crm_crm-app.1.zbyr\r\n\
+            0e3f<%DS%>stag-crm_crm-service.1.zzd4<%DS%>hddt:latest<%DS%>Up 1 hour<%DS%><%DS%>stag-crm_crm-service<%DS%><%DS%><%DS%>2026-11-28 09:00:00 +0700 +07<%DS%>zzd4<%DS%>stag-crm_crm-service.1.zzd4\r\n\
+            __DS_TASKS__\r\n\
+            wpof<%DS%>Shutdown<%DS%>Failed 5 days ago<%DS%>task: non-zero exit (137)\r\n\
+            zbyr<%DS%>Running<%DS%>Running 23 hours ago<%DS%>\r\n";
+        let v = parse_docker_ps(out).unwrap();
+        assert_eq!(v.len(), 3);
+        assert_eq!((v[0].slot, v[0].swarm_desired.as_str(), v[0].swarm_current.as_str()), (Some(1), "Shutdown", "Failed 5 days ago"));
+        assert_eq!(v[0].swarm_error, "task: non-zero exit (137)");
+        assert_eq!((v[1].slot, v[1].swarm_desired.as_str()), (Some(1), "Running"));
+        // task không còn trong danh sách của Swarm → missing
+        assert_eq!(v[2].swarm_desired, "missing");
     }
 }
